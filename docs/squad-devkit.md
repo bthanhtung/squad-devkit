@@ -85,8 +85,8 @@ This wrapper:
   settings);
 - leaves the squad when the CLI exits.
 
-The launcher refuses your home directory as a project; set
-`SQUAD_DEVKIT_ALLOW_HOME=1` to allow it.
+Workers record tasks in the manager's workspace (`SQUAD_DEVKIT_WORKSPACE`)
+even when they work in another repository with `--project`.
 
 ## Choosing the manager
 
@@ -121,7 +121,7 @@ been tested by this repository.
 ## Run
 
 ```sh
-squad-devkit                                  # asks for a project (Enter = current directory)
+squad-devkit                                  # from ~: general workspace; inside a repo: that repo
 squad-devkit my-project                       # name lookup under ~/Workspace and other roots
 squad-devkit my-project 'fix the failing login test'
 squad-devkit my-project --task '-v flag is ignored'
@@ -154,9 +154,23 @@ normally appends guidance to `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` and adds
 `.squad/` through `.git/info/exclude` instead. Set
 `SQUAD_DEVKIT_KEEP_INIT_FILES=1` to keep squad's edits.
 
+Without a project argument, the launcher uses the git repository containing the
+current directory. Started from your home directory, it opens the manager in the
+general workspace `~/.squad-devkit` (set `SQUAD_DEVKIT_GENERAL_WORKSPACE` for
+another path). There:
+
+- requests that need no repository, such as checking prod or staging logs,
+  querying metrics, or writing a report, run their workers in the workspace, and
+  reports go to `reports/`;
+- for code changes, the manager finds the repositories involved and passes
+  `--project <path>` to those workers.
+
+An explicit home directory argument is still refused, unless
+`SQUAD_DEVKIT_ALLOW_HOME=1` is set.
+
 A single argument of three or more words that names no project is taken as the
 objective, so `squad-devkit "check prod logs from 26/10 to 27/10"` works from
-inside a project. Elsewhere, it asks which project to use.
+inside a project, or from your home directory in the general workspace.
 
 ## Workers
 
@@ -183,6 +197,7 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 | `--title TITLE` | Task title (default: first line of the brief) |
 | `--profile NAME` | Codex profile (default `high`) |
 | `--mcp NAME`, `--all-mcp` | Codex: keep one or all MCP servers enabled |
+| `--project DIR` | Repository the worker works in (default: the manager's workspace) |
 | `--manager ID` | Manager agent ID (default `manager`) |
 
 The report is printed on stdout and saved to `.squad/workers/<id>-<time>.md`,
@@ -222,7 +237,7 @@ Each pane refreshes every second:
 ```
 dev-1 · codex (high) · role dev · ● RUNNING · 01:42
 Task: Fix the off-by-one in src/pager.rs::page_count
-Commands: 6 · failed: 1 · files changed: 2
+Calls: 6 · failed: 1 · files changed: 2
 Tokens: pending
 ──────────────────────────────────────────────
 ✗ cargo test pager  (exit 101)

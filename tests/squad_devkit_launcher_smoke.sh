@@ -95,30 +95,25 @@ local_dry_run="$(cd "$temp_directory" && "$repo_root/scripts/squad-devkit.sh" 'd
 [[ ! -d "$duplicate_directory/.squad" ]] || fail
 rm -rf "$temp_directory/duplicate"
 
-prompt_dry_run="$(cd "$HOME" && printf 'nope-not-real\ndemo project\n' |
-  SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/squad-devkit.sh" --dry-run 2>"$temp_directory/prompt-log")"
-[[ "$prompt_dry_run" == "$dry_run" ]] || fail
-rg -q "Project 'nope-not-real' not found in" "$temp_directory/prompt-log"
-rg -q 'Try another name or path' "$temp_directory/prompt-log"
 resolved_project_directory="$(cd "$project_directory" && pwd -P)"
-rg -Fq "Using project: $resolved_project_directory" "$temp_directory/prompt-log"
+mkdir -p "$project_directory/src/nested"
+nested_dry_run="$(cd "$project_directory/src/nested" && "$repo_root/scripts/squad-devkit.sh" --dry-run)"
+[[ "$nested_dry_run" == *"Project: $resolved_project_directory"* ]] || fail
+[[ "$nested_dry_run" != *'Mode: general workspace'* ]] || fail
+[[ "$nested_dry_run" == *'pass --project <path> to have one work in another repository'* ]] || fail
 plain_directory="$temp_directory/plain project"
 mkdir -p "$plain_directory"
 resolved_plain_directory="$(cd "$plain_directory" && pwd -P)"
-empty_line_dry_run="$(cd "$plain_directory" && printf '\n' |
-  SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/squad-devkit.sh" --dry-run 2>"$temp_directory/empty-line-log")"
-[[ "$empty_line_dry_run" == *"Project: $resolved_plain_directory"* ]] || fail
-rg -Fq "Using project: $resolved_plain_directory" "$temp_directory/empty-line-log"
-rg -q 'is not a git repository; squad init will create .squad/' "$temp_directory/empty-line-log"
-non_git_dry_run="$(printf '%s\n' "$plain_directory" |
-  SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/squad-devkit.sh" --dry-run)"
-[[ "$non_git_dry_run" == *"Project: $resolved_plain_directory"* ]] || fail
-if (cd "$HOME" && printf '\n' |
-  SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/squad-devkit.sh" --dry-run) >/dev/null 2>"$temp_directory/home-log"; then
-  echo 'Expected an empty answer in the home directory to be refused' >&2
-  exit 1
-fi
-rg -q 'Your home directory is not a project' "$temp_directory/home-log"
+plain_dry_run="$(cd "$plain_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run 2>"$temp_directory/plain-log")"
+[[ "$plain_dry_run" == *"Project: $resolved_plain_directory"* ]] || fail
+rg -q 'is not a git repository; squad init will create .squad/' "$temp_directory/plain-log"
+general_dry_run="$(cd "$HOME" && "$repo_root/scripts/squad-devkit.sh" --dry-run)"
+[[ "$general_dry_run" == *"Project: $HOME/.squad-devkit"* ]] || fail
+[[ "$general_dry_run" == *'Mode: general workspace'* ]] || fail
+[[ "$general_dry_run" == *'You are in the general squad workspace'*'Run those workers here without --project'*'pass --project <repository path> to those squad-worker runs'* ]] || fail
+[[ ! -e "$HOME/.squad-devkit" ]] || fail
+general_objective="$(cd "$HOME" && "$repo_root/scripts/squad-devkit.sh" 'check prod logs from 26/10-27/10' --dry-run)"
+[[ "$general_objective" == *'Mode: general workspace'*'Objective: check prod logs from 26/10-27/10'* ]] || fail
 if "$repo_root/scripts/squad-devkit.sh" "$HOME" --dry-run >/dev/null 2>"$temp_directory/home-log"; then
   echo 'Expected the home directory to be refused as a project' >&2
   exit 1
@@ -156,7 +151,7 @@ fi
 [[ "$(tmux show-options -gv prefix)" == C-b ]] || fail
 rg -q '^claude:--permission-mode auto You are the Claude Code manager.*You already joined the squad as manager;' "$DEVKIT_TEST_LOG"
 rg -q '## Your role \(.squad/roles/manager-devkit.md\).*You do not write code' "$DEVKIT_TEST_LOG"
-(cd "$project_directory" && squad agents) | rg -q '^  manager \(role: manager-devkit\)'
+rg -q '^  manager \(role: manager-devkit\)' <<<"$(cd "$project_directory" && squad agents)"
 [[ -f "$project_directory/.squad/managers/manager.pid" ]] || fail
 rg -Fq "squad-worker is: $repo_root/scripts/squad-worker.sh" "$DEVKIT_TEST_LOG"
 rg -q 'No objective was supplied' "$DEVKIT_TEST_LOG"

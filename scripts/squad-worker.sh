@@ -22,8 +22,9 @@ Usage: squad-worker <worker-id> --engine codex|ccr (--brief TEXT | --brief-file 
 Run one on-demand worker for the squad manager, then exit. The worker joins the
 squad, receives a structured task from the manager, works non-interactively,
 completes the task with its final report, and leaves. The report is printed on
-stdout and saved under .squad/workers/. Run it from the project root (or any
-directory below it that contains .squad/).
+stdout and saved under .squad/workers/. Task records, reports, and logs go to the
+manager's squad workspace (SQUAD_DEVKIT_WORKSPACE, or the nearest directory
+with .squad/ above the current one).
 
   --engine codex   codex exec, sandboxed to the workspace (--profile, default: high)
   --engine ccr     Claude Code through claude-code-router (cheap model);
@@ -34,6 +35,7 @@ directory below it that contains .squad/).
   --mcp NAME       codex only: keep this MCP server enabled (repeatable);
                    all others are disabled to keep the worker's context small
   --all-mcp        codex only: keep every configured MCP server
+  --project DIR    Directory the worker works in (default: the squad workspace)
   --manager ID     Manager agent ID that owns the task (default: manager)
 
 Environment: SQUAD_WORKER_CODEX_PROFILE (default profile),
@@ -49,11 +51,12 @@ brief=""
 brief_file=""
 profile="${SQUAD_WORKER_CODEX_PROFILE:-high}"
 manager_id="${SQUAD_MANAGER_ID:-manager}"
+project_directory=""
 keep_mcp=()
 all_mcp=0
 while (( $# > 0 )); do
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--mcp|--manager)
+    --engine|--role|--title|--brief|--brief-file|--profile|--mcp|--manager|--project)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -67,6 +70,7 @@ while (( $# > 0 )); do
         --profile) profile="$2" ;;
         --mcp) keep_mcp+=("$2") ;;
         --manager) manager_id="$2" ;;
+        --project) project_directory="$2" ;;
       esac
       shift
       ;;
@@ -120,14 +124,28 @@ if [[ "$engine" == ccr ]]; then
   require_command curl
 fi
 
-workspace_root="$PWD"
-while [[ ! -d "$workspace_root/.squad" ]]; do
-  if [[ "$workspace_root" == / ]]; then
-    echo "No .squad/ found above $PWD; run squad init or squad-devkit first" >&2
-    exit 1
+if [[ -n "$project_directory" ]]; then
+  if [[ ! -d "$project_directory" ]]; then
+    echo "Project directory does not exist: $project_directory" >&2
+    exit 2
   fi
-  workspace_root="$(dirname "$workspace_root")"
-done
+  project_directory="$(cd "$project_directory" && pwd)"
+fi
+if [[ -n "${SQUAD_DEVKIT_WORKSPACE:-}" && -d "$SQUAD_DEVKIT_WORKSPACE/.squad" ]]; then
+  workspace_root="$(cd "$SQUAD_DEVKIT_WORKSPACE" && pwd)"
+else
+  workspace_root="$PWD"
+  while [[ ! -d "$workspace_root/.squad" ]]; do
+    if [[ "$workspace_root" == / ]]; then
+      echo "No .squad/ found above $PWD; run squad init or squad-devkit first" >&2
+      exit 1
+    fi
+    workspace_root="$(dirname "$workspace_root")"
+  done
+fi
+# squad commands run in the squad workspace; the engine runs in the project,
+# which defaults to the workspace itself.
+project_directory="${project_directory:-$workspace_root}"
 cd "$workspace_root"
 
 client=codex
@@ -172,11 +190,14 @@ $role_instructions
 }
 ## Task $task_id: $title
 
+Project directory: $project_directory
+
 $brief
 
 ## Rules
 - Do only what the task asks and touch only the files it assigns you; other workers may be editing other files at the same time.
 - Do not commit, push, or delete unrelated files.
+- Use only the tools you were given. Never read credentials or tokens from configuration files; if a tool you need is missing, stop and report it.
 - If something blocks you, stop and explain it in the report instead of guessing.
 - Your final message is the report for $manager_id, at most 15 lines: result, files changed, verification you ran and its outcome, open issues."
 
@@ -295,11 +316,37 @@ ensure_ccr_server() {
   return 1
 }
 
+# Codex silently drops an MCP server whose bearer-token variable is unset, and
+# the worker then improvises around the missing tool. Fail fast instead.
+missing_mcp_tokens() {
+  local mcp_json="$1" server variable
+  for server in ${keep_mcp[@]+"${keep_mcp[@]}"}; do
+    variable="$(printf '%s' "$mcp_json" | jq -r --arg name "$server" \
+      '.[] | select(.name == $name) | .transport.bearer_token_env_var // empty' 2>/dev/null || true)"
+    if [[ -n "$variable" && -z "${!variable:-}" ]]; then
+      printf '%s (needs %s)\n' "$server" "$variable"
+    fi
+  done
+}
+
 status=0
 if [[ "$engine" == codex ]]; then
+  mcp_json="$(codex mcp list --json 2>/dev/null || true)"
+  missing=""
+  if command -v jq >/dev/null 2>&1; then
+    missing="$(missing_mcp_tokens "$mcp_json")"
+  fi
+  if [[ -n "$missing" ]]; then
+    {
+      echo "MCP servers requested with --mcp are missing their token environment variables:"
+      printf '%s\n' "$missing" | sed 's/^/  /'
+      echo "Export them in the shell that starts the manager (for example from ~/.zshrc)."
+    } | tee -a "$log_file" >&2
+    status=3
+  fi
   mcp_arguments=()
   if (( all_mcp == 0 )); then
-    configured_servers="$(codex mcp list --json 2>/dev/null |
+    configured_servers="$(printf '%s\n' "$mcp_json" |
       sed -n 's/^    "name": "\([^"]*\)",$/\1/p' || true)"
     while IFS= read -r server; do
       [[ -n "$server" ]] || continue
@@ -309,15 +356,20 @@ if [[ "$engine" == codex ]]; then
       mcp_arguments+=(-c "mcp_servers.$server.enabled=false")
     done <<<"$configured_servers"
   fi
-  codex exec --json --profile "$profile" --ephemeral --skip-git-repo-check \
-    --sandbox workspace-write ${mcp_arguments[@]+"${mcp_arguments[@]}"} \
-    --output-last-message "$report_file" "$prompt" </dev/null >"$log_file" 2>&1 || status=$?
+  if (( status == 0 )); then
+    codex exec --json --cd "$project_directory" --profile "$profile" --ephemeral --skip-git-repo-check \
+      --sandbox workspace-write ${mcp_arguments[@]+"${mcp_arguments[@]}"} \
+      --output-last-message "$workspace_root/$report_file" "$prompt" </dev/null >"$log_file" 2>&1 || status=$?
+  fi
 else
   tools="${SQUAD_WORKER_CCR_TOOLS:-Read,Edit,Write,Glob,Grep}"
   if ensure_ccr_server; then
     (
       eval "$(ccr activate)"
       unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+      report_file="$workspace_root/$report_file"
+      log_file="$workspace_root/$log_file"
+      cd "$project_directory"
       claude_arguments=(-p --strict-mcp-config --disable-slash-commands --no-session-persistence
         --tools "$tools" --allowedTools "$tools" --permission-mode acceptEdits)
       if command -v jq >/dev/null 2>&1; then

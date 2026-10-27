@@ -55,7 +55,7 @@ No worker runs, or spends tokens, while idle.
 ┌──────────────────────────────┬─────────────────────────────┐
 │ Claude Code · manager        │ dev-1 · codex (high)        │
 │                              │ ● RUNNING · 01:42           │
-│ > fix the flaky login test   │ Commands: 6 · failed: 1     │
+│ > fix the flaky login test   │ Calls: 6 · failed: 1        │
 │                              ├─────────────────────────────┤
 │ Planning… starting dev-1     │ doc-1 · ccr                 │
 │ (codex) and doc-1 (ccr)      │ ✓ COMPLETED · 00:12         │
@@ -87,7 +87,8 @@ The installer links `squad-devkit`, `squad-worker`, and `squad-monitor` into
 ### 2. Start a manager
 
 ```bash
-squad-devkit                                 # asks for a project (Enter = current dir)
+squad-devkit                                 # from ~: general workspace; inside a repo: that repo
+squad-devkit "check prod logs 26/10-27/10 and write a report"   # no project needed
 squad-devkit my-project                      # finds the git repo by name under ~/Workspace
 squad-devkit my-project "fix the flaky login test"
 squad-devkit my-project --tmux               # or --ghostty for a new window
@@ -106,7 +107,10 @@ mode. It coordinates and does not write code itself:
 
 The launcher joins the squad for the manager and leaves when you exit. It also
 archives managers whose process has ended, so a project keeps one `manager`.
-It refuses your home directory as a project.
+Started from your home directory, the manager runs in the general workspace
+`~/.squad-devkit`. Requests such as log checks and reports need no project there.
+For code changes, the manager finds the repositories involved and runs workers
+in them with `--project`.
 
 ### 3. Workers
 
@@ -130,6 +134,7 @@ squad-worker doc-1 --engine ccr --brief "Document the --json flag in README.md. 
 | `--engine codex --profile max` | Only hard or ambiguous problems |
 | `--role dev\|tester\|reviewer\|…` | Role prompt from `.squad/roles/<role>.md` |
 | `--mcp NAME` | Enable one MCP server for this worker (all are off by default) |
+| `--project DIR` | Work in another repository (default: the manager's workspace) |
 
 A worker joins the squad and receives a structured task. It runs once without
 interaction, completes the task with its report, messages the manager, and

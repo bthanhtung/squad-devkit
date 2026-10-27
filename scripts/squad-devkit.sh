@@ -30,10 +30,10 @@ Defaults to the git repository containing the current directory. Pass a project
 name to search ~/Workspace (up to 8 levels), or a directory to launch from anywhere. Existing
 directories take priority; duplicate names require an explicit path.
 Set SQUAD_DEVKIT_PROJECT_ROOT to search a different workspace directory.
-With no project argument, an interactive terminal asks for a project name, a
-path, or an empty line to use the current directory. Unknown names are asked
-again instead of aborting. Set SQUAD_DEVKIT_NO_PROMPT=1, or pass --no-prompt,
-to skip the question in scripts.
+With no project argument it uses the repository containing the current
+directory. Started from your home directory, it opens the manager in the
+general workspace (~/.squad-devkit): describe the work in the chat and the
+manager finds the repositories involved.
 Pass an objective after the project, or with --task, to start planning immediately.
 Without an objective the manager opens an interactive chat and asks for one first.
 
@@ -45,7 +45,7 @@ Without an objective the manager opens an interactive chat and asks for one firs
                 (or set SQUAD_DEVKIT_BACKEND=here|ghostty|tmux)
   --task TEXT   Objective for the manager; supports spaces when quoted
   --list        List the git projects found on this machine and exit
-  --no-prompt   Skip the interactive project question (or set SQUAD_DEVKIT_NO_PROMPT)
+  --no-prompt   Skip the first-run manager question (or set SQUAD_DEVKIT_NO_PROMPT)
   --dry-run     Show the manager command without changing the project
   --no-attach   tmux only: start the session in the background
 EOF
@@ -262,34 +262,6 @@ print_projects() {
   } | LC_ALL=C sort -u
 }
 
-prompt_for_project() {
-  local input=""
-  local resolved=""
-  while true; do
-    printf 'Project name or path (Enter = current directory): ' >&2
-    if ! IFS= read -r input; then
-      printf '\nNo project entered; aborting.\n' >&2
-      exit 1
-    fi
-    input="${input#"${input%%[![:space:]]*}"}"
-    input="${input%"${input##*[![:space:]]}"}"
-    if [[ -z "$input" ]]; then
-      if [[ "$(cd "$PWD" && pwd -P)" == "$(cd "$HOME" && pwd -P)" ]]; then
-        printf 'Your home directory is not a project. Enter a project name or path.\n' >&2
-        continue
-      fi
-      (cd "$PWD" && pwd -P)
-      return 0
-    fi
-    if resolved="$(resolve_project_reference "$input")" &&
-      resolved="$(resolve_project_directory "$resolved")"; then
-      printf '%s\n' "$resolved"
-      return 0
-    fi
-    printf 'Try another name or path (Ctrl-C to cancel).\n' >&2
-  done
-}
-
 # A single argument of three or more words that names no project is the
 # objective, not a project: squad-devkit "check the deploy logs".
 if [[ -n "$project_directory" && -z "$objective" ]] &&
@@ -318,24 +290,29 @@ if (( setup == 1 )); then
 fi
 manager_client="$(resolve_manager "$manager_client" "$interactive")"
 
-if [[ -z "$project_directory" ]]; then
-  if (( interactive == 1 )); then
-    project_directory="$(prompt_for_project)"
-    printf 'Using project: %s\n' "$project_directory" >&2
-  else
-    project_directory="$PWD"
+# Without a project argument, use the repository containing the current
+# directory. From the home directory, start in the general workspace instead:
+# the manager works out which projects a request involves.
+general_workspace=0
+if [[ -z "$project_directory" && "$(pwd -P)" == "$(cd "$HOME" && pwd -P)" ]] &&
+  ! is_truthy "${SQUAD_DEVKIT_ALLOW_HOME:-}"; then
+  general_workspace=1
+  project_directory="${SQUAD_DEVKIT_GENERAL_WORKSPACE:-$HOME/.squad-devkit}"
+  if (( dry_run == 0 )); then
+    mkdir -p "$project_directory"
   fi
-fi
-project_directory="$(resolve_project_reference "$project_directory")"
-project_directory="$(resolve_project_directory "$project_directory")"
-if ! git -C "$project_directory" rev-parse --show-toplevel >/dev/null 2>&1; then
-  printf 'Note: %s is not a git repository; squad init will create .squad/ there.\n' \
-    "$project_directory" >&2
-fi
-project_directory="$(cd "$project_directory" && pwd -P)"
-if [[ "$project_directory" == "$(cd "$HOME" && pwd -P)" ]] && ! is_truthy "${SQUAD_DEVKIT_ALLOW_HOME:-}"; then
-  echo "Refusing to use your home directory as the project; pass a project name or path." >&2
-  exit 1
+else
+  project_directory="$(resolve_project_reference "${project_directory:-$PWD}")"
+  project_directory="$(resolve_project_directory "$project_directory")"
+  if ! git -C "$project_directory" rev-parse --show-toplevel >/dev/null 2>&1; then
+    printf 'Note: %s is not a git repository; squad init will create .squad/ there.\n' \
+      "$project_directory" >&2
+  fi
+  project_directory="$(cd "$project_directory" && pwd -P)"
+  if [[ "$project_directory" == "$(cd "$HOME" && pwd -P)" ]] && ! is_truthy "${SQUAD_DEVKIT_ALLOW_HOME:-}"; then
+    echo "Refusing to use your home directory as the project; pass a project name or path." >&2
+    exit 1
+  fi
 fi
 project_name="$(basename "$project_directory" | tr -cs '[:alnum:]' '-' | cut -c1-24)"
 project_hash="$(printf '%s' "$project_directory" | cksum | awk '{print $1}')"
@@ -373,6 +350,11 @@ Each worker messages you when it finishes. Wait with one command, squad receive 
 fi
 manager_prompt="You are the $(manager_label "$manager_client") manager of this squad devkit, in an interactive session in this repository. You already joined the squad as {{MANAGER_ID}}; workers report to you automatically.
 $worker_line"
+if (( general_workspace == 1 )); then
+  manager_prompt+=$'\n\n'"You are in the general squad workspace ($project_directory), not inside a project. Many requests need no repository: checking logs or metrics (prod, staging), querying data, and writing reports. Run those workers here without --project, give them the MCP servers they need, and save reports under reports/ in this workspace. When a request changes or inspects code, work out which repositories it involves (they live under ~/Workspace; $script_dir/squad-devkit.sh --list lists them) and pass --project <repository path> to those squad-worker runs. Keep plans in .squad/plans/ here. Ask the human only when the repository is genuinely unclear."
+else
+  manager_prompt+=$'\n\n'"Workers work in this repository by default; pass --project <path> to have one work in another repository."
+fi
 if [[ -n "$objective" ]]; then
   manager_prompt+=$'\n\n'"The human's objective is:
 
@@ -387,6 +369,9 @@ manager_title="$(manager_label "$manager_client")"
 
 if (( dry_run == 1 )); then
   printf 'Project: %s\nBackend: %s\nSession: %s\n' "$project_directory" "$backend" "$session_name"
+  if (( general_workspace == 1 )); then
+    printf 'Mode: general workspace\n'
+  fi
   printf 'Manager: %s\n' "$manager_client"
   printf 'Objective: %s\n' "${objective:-<ask in chat>}"
   printf 'Workers: %s\n' "$worker_command"

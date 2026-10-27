@@ -91,8 +91,8 @@ summarise_log() {
     | ([$events[] | select(.type == "turn.completed") | .usage]
        + [$events[] | select(.type == "result") | .usage | select(. != null)]) as $usage
     | [
-        ([$done[] | select(.type == "command_execution")] | length) + ($tools | length),
-        ([$done[] | select(.type == "command_execution" and .exit_code != 0)] | length) + ($tool_errors | length),
+        ([$done[] | select(.type == "command_execution" or .type == "mcp_tool_call")] | length) + ($tools | length),
+        ([$done[] | select((.type == "command_execution" and .exit_code != 0) or (.type == "mcp_tool_call" and .status != "completed"))] | length) + ($tool_errors | length),
         ([$done[] | select(.type == "file_change") | .changes[]?] | length)
           + ([$tools[] | select(.name == "Edit" or .name == "Write")] | length),
         ([$usage[] | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)] | add // ""),
@@ -104,6 +104,8 @@ summarise_log() {
       | if .type == "item.completed" then .item
           | if .type == "command_execution" then
               (if .exit_code == 0 then "✓ " else "✗ " end) + (.command | cmd) + (if .exit_code == 0 then "" else "  (exit \(.exit_code))" end)
+            elif .type == "mcp_tool_call" then
+              (if .status == "completed" then "⚙ " else "✗ " end) + "\(.server)/\(.tool)"
             elif .type == "file_change" then "✎ " + ([.changes[]? | .path] | join(", ") | short)
             elif .type == "agent_message" then "» " + (.text | short)
             elif .type == "error" then "! " + (.message | short)
@@ -151,7 +153,7 @@ render_run() {
     failed) state_label="✗ FAILED (exit ${exit_status:-?})" ;;
     *) state_label="${state:-?}" ;;
   esac
-  local call_label="Commands"
+  local call_label="Calls"
   [[ "$engine" == ccr ]] && call_label="Tool calls"
   local token_label="pending"
   if [[ -n "$tokens_in$tokens_out" ]]; then

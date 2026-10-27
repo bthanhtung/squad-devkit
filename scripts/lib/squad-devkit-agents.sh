@@ -61,22 +61,30 @@ devkit_config_file() {
   printf '%s' "${SQUAD_DEVKIT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/squad-devkit/config}"
 }
 
-saved_manager() {
+devkit_config_get() {
   local file
   file="$(devkit_config_file)"
   [[ -f "$file" ]] || return 0
-  sed -n 's/^manager=//p' "$file" | tail -n 1
+  sed -n "s/^$1=//p" "$file" | tail -n 1
 }
 
-save_manager() {
+devkit_config_set() {
   local file
   file="$(devkit_config_file)"
   mkdir -p "$(dirname "$file")"
   if [[ -f "$file" ]]; then
-    grep -v '^manager=' "$file" >"$file.tmp" || true
+    grep -v "^$1=" "$file" >"$file.tmp" || true
     mv "$file.tmp" "$file"
   fi
-  printf 'manager=%s\n' "$1" >>"$file"
+  printf '%s=%s\n' "$1" "$2" >>"$file"
+}
+
+saved_manager() {
+  devkit_config_get manager
+}
+
+save_manager() {
+  devkit_config_set manager "$1"
 }
 
 # Asks which installed CLI should be the manager; prints the choice.

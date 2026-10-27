@@ -57,8 +57,10 @@ if [[ -f .squad/roles/manager-devkit.md ]]; then
   prompt+="$(grep -v '^<!-- squad-devkit template' .squad/roles/manager-devkit.md)"
 fi
 
-# squad-worker reads SQUAD_MANAGER_ID, so workers report to this manager.
+# squad-worker reads these, so workers report to this manager and record
+# their tasks here even when they work in another project (--project).
 export SQUAD_MANAGER_ID="$manager_id"
+export SQUAD_DEVKIT_WORKSPACE="$PWD"
 status=0
 eval "$(manager_start_command "$client" "$prompt")" || status=$?
 exit "$status"

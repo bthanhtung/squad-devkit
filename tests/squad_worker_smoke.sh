@@ -24,7 +24,7 @@ mkdir -p "$project_directory/src" "$test_bin" "$temp_directory/home"
 cat >"$test_bin/codex" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1 $2" == 'mcp list' ]]; then
-  printf '[\n  {\n    "name": "figma",\n    "enabled": true\n  },\n  {\n    "name": "sentry",\n    "enabled": true\n  }\n]\n'
+  printf '[\n  {\n    "name": "figma",\n    "enabled": true,\n    "transport": {"bearer_token_env_var": "FAKE_FIGMA_TOKEN"}\n  },\n  {\n    "name": "sentry",\n    "enabled": true\n  }\n]\n'
   exit 0
 fi
 printf 'codex:%s\n' "${*//$'\n'/\\n}" >>"$WORKER_TEST_LOG"
@@ -48,6 +48,7 @@ EOF
 cat >"$test_bin/claude" <<'EOF'
 #!/usr/bin/env bash
 printf 'claude:%s:%s\n' "$ANTHROPIC_BASE_URL" "${*//$'\n'/\\n}" >>"$WORKER_TEST_LOG"
+printf 'claude-pwd:%s\n' "$PWD" >>"$WORKER_TEST_LOG"
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"README.md"}}]}}'
 echo '{"type":"result","num_turns":2,"usage":{"input_tokens":1200,"output_tokens":80},"result":"Wrote README.md. Verification: re-read the file."}'
 EOF
@@ -77,13 +78,13 @@ codex_output="$(cd src && printf 'Fix add() in calc.py\nFiles you own: calc.py\n
 [[ "$codex_output" == '[dev-1 · codex · task '* ]] || fail
 [[ "$codex_output" == *'Fixed add(). Files: calc.py. Verification: ok.'* ]] || fail
 codex_call="$(grep '^codex:' "$WORKER_TEST_LOG")"
-[[ "$codex_call" == *'exec --json --profile high --ephemeral --skip-git-repo-check --sandbox workspace-write'* ]] || fail
+[[ "$codex_call" == *"exec --json --cd $PWD --profile high --ephemeral --skip-git-repo-check --sandbox workspace-write"* ]] || fail
 [[ "$codex_call" == *'-c mcp_servers.figma.enabled=false'* ]] || fail
 [[ "$codex_call" != *'mcp_servers.sentry'* ]] || fail
 [[ "$codex_call" == *'You are dev-1, a dev worker in a squad led by manager.'* ]] || fail
 [[ "$codex_call" == *'Role: developer.'* && "$codex_call" != *'squad-devkit template'* ]] || fail
 [[ "$codex_call" == *'## Task '*': Fix add() in calc.py'* ]] || fail
-squad task list --status completed | grep -q 'assigned_to: dev-1'
+grep -q 'assigned_to: dev-1' <<<"$(squad task list --status completed)"
 [[ "$(squad agents)" != *'dev-1 '* ]] || fail
 ls .squad/workers/dev-1-*.md >/dev/null
 dev_one_status="$(ls .squad/workers/dev-1-*.status)"
@@ -96,7 +97,7 @@ monitor_frame="$("$repo_root/scripts/squad-worker-monitor.sh" "$dev_one_status" 
 [[ "$monitor_frame" == *'Fixed add(). Files: calc.py. Verification: ok.'* ]] || fail
 [[ "$("$repo_root/scripts/squad-worker-monitor.sh" --all --once)" == *'dev-1'*'codex/high'*'completed'* ]] || fail
 [[ ! -e .squad/workers/.pane.lock ]] || fail
-squad receive manager | grep -q 'dev-1 (codex) completed task .* Report: .*/.squad/workers/dev-1-'
+grep -q 'dev-1 (codex) completed task .* Report: .*/.squad/workers/dev-1-' <<<"$(squad receive manager)"
 
 ccr_output="$("$worker" doc-1 --engine ccr --role writer --title 'Write README' \
   --brief 'Create README.md. Files you own: README.md')"
@@ -110,7 +111,7 @@ ccr_frame="$("$repo_root/scripts/squad-worker-monitor.sh" "$(ls .squad/workers/d
 [[ "$ccr_frame" == *'Tool calls: 1'*'files changed: 1'*'turns: 2'* ]] || fail
 [[ "$ccr_frame" == *'Tokens: in 1,200 · out 80'* ]] || fail
 [[ "$ccr_frame" == *'→ Write README.md'* ]] || fail
-squad task list --status completed | grep -q 'assigned_to: doc-1'
+grep -q 'assigned_to: doc-1' <<<"$(squad task list --status completed)"
 
 status=0
 FAKE_CODEX_FAIL=1 "$worker" dev-2 --engine codex --profile medium --brief 'Break things' \
@@ -118,9 +119,37 @@ FAKE_CODEX_FAIL=1 "$worker" dev-2 --engine codex --profile medium --brief 'Break
 [[ "$status" == 3 ]] || fail
 grep -q 'dev-2 (codex) failed on task .* with exit status 3' "$temp_directory/error"
 grep -q -- '--profile medium' "$WORKER_TEST_LOG"
-squad receive manager | grep -q 'dev-2 (codex) failed'
+grep -q 'dev-2 (codex) failed' <<<"$(squad receive manager)"
 grep -qx 'state=failed' .squad/workers/dev-2-*.status
 grep -qx 'exit=3' .squad/workers/dev-2-*.status
+
+status=0
+"$worker" mcp-1 --engine codex --mcp figma --brief 'Needs figma' >/dev/null 2>"$temp_directory/error" || status=$?
+[[ "$status" == 3 ]] || fail
+grep -q 'figma (needs FAKE_FIGMA_TOKEN)' "$temp_directory/error"
+grep -qx 'state=failed' .squad/workers/mcp-1-*.status
+[[ "$(grep -c 'Needs figma' "$WORKER_TEST_LOG")" == 0 ]] || fail
+FAKE_FIGMA_TOKEN=secret "$worker" mcp-2 --engine codex --mcp figma --brief 'Has figma token' >/dev/null
+grep -q 'Has figma token' "$WORKER_TEST_LOG"
+grep -q 'Never read credentials or tokens from configuration files' "$WORKER_TEST_LOG"
+
+other_project="$temp_directory/other project"
+mkdir -p "$other_project"
+resolved_other="$(cd "$other_project" && pwd)"
+(cd "$temp_directory" && SQUAD_DEVKIT_WORKSPACE="$project_directory" \
+  "$worker" far-1 --engine codex --project "$other_project" --brief 'Work elsewhere' >/dev/null)
+grep -q "^codex:exec --json --cd $resolved_other --profile high" "$WORKER_TEST_LOG"
+grep -q "Project directory: $resolved_other" "$WORKER_TEST_LOG"
+grep -q 'assigned_to: far-1' <<<"$(squad task list --status completed)"
+ls .squad/workers/far-1-*.md >/dev/null
+[[ ! -e "$other_project/.squad" ]] || fail
+"$worker" far-2 --engine ccr --project "$other_project" --brief 'Edit elsewhere. Files you own: notes.md' >/dev/null
+grep -qx "claude-pwd:$resolved_other" "$WORKER_TEST_LOG"
+if "$worker" far-3 --engine codex --project "$temp_directory/missing" --brief 'Nowhere' >/dev/null 2>"$temp_directory/error"; then
+  echo 'Expected a missing --project directory to fail' >&2
+  exit 1
+fi
+grep -q 'Project directory does not exist' "$temp_directory/error"
 
 cat >"$test_bin/osascript" <<'EOF'
 #!/usr/bin/env bash
