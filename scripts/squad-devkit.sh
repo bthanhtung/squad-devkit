@@ -202,10 +202,10 @@ resolve_project_reference() {
     [[ -n "$match" ]] && matches+=("$match")
   done < <(find_project_matches "$search_name")
   if [[ -n "$suffix_filter" ]]; then
-    for match in "${matches[@]}"; do
+    for match in ${matches[@]+"${matches[@]}"}; do
       [[ "$match" == *"$suffix_filter" ]] && filtered+=("$match")
     done
-    matches=("${filtered[@]}")
+    matches=(${filtered[@]+"${filtered[@]}"})
   fi
   case "${#matches[@]}" in
     0)
@@ -274,6 +274,10 @@ prompt_for_project() {
     input="${input#"${input%%[![:space:]]*}"}"
     input="${input%"${input##*[![:space:]]}"}"
     if [[ -z "$input" ]]; then
+      if [[ "$(cd "$PWD" && pwd -P)" == "$(cd "$HOME" && pwd -P)" ]]; then
+        printf 'Your home directory is not a project. Enter a project name or path.\n' >&2
+        continue
+      fi
       (cd "$PWD" && pwd -P)
       return 0
     fi
@@ -285,6 +289,15 @@ prompt_for_project() {
     printf 'Try another name or path (Ctrl-C to cancel).\n' >&2
   done
 }
+
+# A single argument of three or more words that names no project is the
+# objective, not a project: squad-devkit "check the deploy logs".
+if [[ -n "$project_directory" && -z "$objective" ]] &&
+  (( $(printf '%s' "$project_directory" | wc -w) >= 3 )) &&
+  ! resolve_project_reference "$project_directory" >/dev/null 2>&1; then
+  objective="$project_directory"
+  project_directory=""
+fi
 
 if (( list_projects == 1 )); then
   printf 'Projects found in: %s\n' "$(search_roots_display)"
@@ -320,6 +333,10 @@ if ! git -C "$project_directory" rev-parse --show-toplevel >/dev/null 2>&1; then
     "$project_directory" >&2
 fi
 project_directory="$(cd "$project_directory" && pwd -P)"
+if [[ "$project_directory" == "$(cd "$HOME" && pwd -P)" ]] && ! is_truthy "${SQUAD_DEVKIT_ALLOW_HOME:-}"; then
+  echo "Refusing to use your home directory as the project; pass a project name or path." >&2
+  exit 1
+fi
 project_name="$(basename "$project_directory" | tr -cs '[:alnum:]' '-' | cut -c1-24)"
 project_hash="$(printf '%s' "$project_directory" | cksum | awk '{print $1}')"
 session_name="squad-devkit-${project_name}-${project_hash}"
@@ -342,29 +359,19 @@ elif [[ "$backend" == ghostty ]]; then
 fi
 
 worker_command="$script_dir/squad-worker.sh"
-join_command="squad join manager --role manager-devkit"
-client_flag="$(squad_client_flag "$manager_client")"
-if [[ -n "$client_flag" ]]; then
-  join_command+=" --client $client_flag"
-fi
-join_command+=" --protocol-version 2"
 if (( ${#worker_engines[@]} == 0 )); then
-  worker_line="3. No worker engine is installed, so do the work yourself instead of starting squad-worker."
+  worker_line="No worker engine is installed, so do the work yourself instead of starting squad-worker."
 else
-  worker_line="3. squad-worker is: $worker_command
+  worker_line="squad-worker is: $worker_command
    Installed worker engines: ${worker_engines[*]}"
   if [[ "$manager_client" == claude ]]; then
-    worker_line+=$'\n'"   Start workers with run_in_background: true; you are notified when each one exits."
+    worker_line+=$'\n'"Start workers with run_in_background: true; you are notified when each one exits."
   else
-    worker_line+=$'\n'"   Start each worker as a detached job: squad-worker ... >.squad/workers/<id>.out 2>&1 &
-   Each worker messages you when it finishes. Wait with one command, squad receive <your ID> --wait --timeout 900, instead of polling or sleeping."
+    worker_line+=$'\n'"Start each worker as a detached job: squad-worker ... >.squad/workers/<id>.out 2>&1 &
+Each worker messages you when it finishes. Wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
   fi
 fi
-manager_prompt="You are the $(manager_label "$manager_client") manager of this squad devkit, in an interactive session in this repository.
-
-1. Run: $join_command
-   If it joins under another ID, pass --manager <that ID> to every squad-worker run.
-2. Follow the role instructions it prints (also in .squad/roles/manager-devkit.md).
+manager_prompt="You are the $(manager_label "$manager_client") manager of this squad devkit, in an interactive session in this repository. You already joined the squad as {{MANAGER_ID}}; workers report to you automatically.
 $worker_line"
 if [[ -n "$objective" ]]; then
   manager_prompt+=$'\n\n'"The human's objective is:
@@ -375,7 +382,7 @@ Start researching and planning now. Do not ask for the objective again unless it
 else
   manager_prompt+=$'\n\n'"No objective was supplied. Greet the human briefly and wait for their instruction in this chat."
 fi
-manager_command="$(manager_start_command "$manager_client" "$manager_prompt")"
+manager_command="$(shell_join "$script_dir/lib/squad-devkit-manager.sh" "$manager_client" "$manager_prompt")"
 manager_title="$(manager_label "$manager_client")"
 
 if (( dry_run == 1 )); then
@@ -384,13 +391,50 @@ if (( dry_run == 1 )); then
   printf 'Objective: %s\n' "${objective:-<ask in chat>}"
   printf 'Workers: %s\n' "$worker_command"
   printf 'manager: %s\n' "$manager_command"
+  printf 'cli: %s\n' "$(manager_start_command "$manager_client" PROMPT)"
   exit 0
 fi
 
 template_marker='<!-- squad-devkit template'
 
-prepare_project() {
+# squad init appends guidance to CLAUDE.md, AGENTS.md, and GEMINI.md and adds
+# .squad/ to .gitignore. In a git repository, keep those files as they were and
+# ignore .squad/ through .git/info/exclude instead, so launching never dirties
+# the working tree. SQUAD_DEVKIT_KEEP_INIT_FILES=1 keeps squad's edits.
+squad_init_project() {
+  if is_truthy "${SQUAD_DEVKIT_KEEP_INIT_FILES:-}" ||
+    ! git -C "$project_directory" rev-parse --show-toplevel >/dev/null 2>&1; then
+    (cd "$project_directory" && squad init >/dev/null)
+    return 0
+  fi
+  local snapshot_directory file
+  snapshot_directory="$(mktemp -d "${TMPDIR:-/tmp}/squad-devkit-init.XXXXXX")"
+  for file in CLAUDE.md AGENTS.md GEMINI.md .gitignore; do
+    if [[ -e "$project_directory/$file" ]]; then
+      cp -p "$project_directory/$file" "$snapshot_directory/$file"
+    fi
+  done
   (cd "$project_directory" && squad init >/dev/null)
+  for file in CLAUDE.md AGENTS.md GEMINI.md .gitignore; do
+    if [[ -e "$snapshot_directory/$file" ]]; then
+      cmp -s "$snapshot_directory/$file" "$project_directory/$file" ||
+        cp -p "$snapshot_directory/$file" "$project_directory/$file"
+    else
+      rm -f "$project_directory/$file"
+    fi
+  done
+  rm -rf "$snapshot_directory"
+  local exclude_file
+  exclude_file="$(cd "$project_directory" && git rev-parse --git-path info/exclude)"
+  [[ "$exclude_file" == /* ]] || exclude_file="$project_directory/$exclude_file"
+  mkdir -p "$(dirname "$exclude_file")"
+  if ! grep -qxE '/?\.squad/?' "$exclude_file" 2>/dev/null; then
+    printf '.squad/\n' >>"$exclude_file"
+  fi
+}
+
+prepare_project() {
+  squad_init_project
   local role=""
   local source=""
   local destination=""

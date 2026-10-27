@@ -33,8 +33,16 @@ manager_start_command() {
   local prompt="$2"
   local binary
   binary="$(command -v "$client")"
+  local permission_mode="${SQUAD_DEVKIT_PERMISSION_MODE-auto}"
   case "$client" in
-    claude|codex|grok) shell_join "$binary" "$prompt" ;;
+    claude)
+      if [[ -n "$permission_mode" && "$permission_mode" != default ]]; then
+        shell_join "$binary" --permission-mode "$permission_mode" "$prompt"
+      else
+        shell_join "$binary" "$prompt"
+      fi
+      ;;
+    codex|grok) shell_join "$binary" "$prompt" ;;
     agy|gemini) shell_join "$binary" -i "$prompt" ;;
     opencode) shell_join "$binary" --prompt "$prompt" ;;
   esac

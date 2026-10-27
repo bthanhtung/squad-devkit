@@ -52,6 +52,42 @@ Codex profiles are files named `$CODEX_HOME/<profile>.config.toml`, for example
 `~/.codex/high.config.toml`. Workers use `high` unless told otherwise; set
 `SQUAD_WORKER_CODEX_PROFILE` to change the default.
 
+## How the manager works
+
+The manager coordinates and does not write code. Its role
+(`templates/devkit/manager-devkit.md`, installed as
+`.squad/roles/manager-devkit.md`) tells it to:
+
+1. Read the code it will change and the code that calls it.
+2. Write a plan to `.squad/plans/<name>.md` with the goal, findings
+   (`path:line`), decisions, tasks with disjoint file ownership, and acceptance
+   checks.
+3. Give each worker a complete brief: the goal, the files the worker owns, the
+   exact changes, the steps, the acceptance criteria, the verification
+   commands, and what is out of scope.
+4. Verify each report against `git diff` and rerun the verification.
+5. For each failed check, start a fix run with the same worker ID listing the
+   defects. After two failed rounds, raise the profile, split the task, or ask
+   you.
+6. Run the full acceptance checks, optionally add a reviewer worker, and report
+   to you with evidence.
+
+The launcher runs the manager through `scripts/lib/squad-devkit-manager.sh`.
+This wrapper:
+
+- archives managers whose recorded process has exited (or, without a pid
+  file, that were not seen for `SQUAD_DEVKIT_STALE_MINUTES`, default 30);
+- joins as `manager`, records its pid in `.squad/managers/`, and exports
+  `SQUAD_MANAGER_ID` so workers report to it;
+- embeds the role file in the prompt;
+- starts Claude Code with `--permission-mode auto` (set
+  `SQUAD_DEVKIT_PERMISSION_MODE` to another mode, or to `default` to use your
+  settings);
+- leaves the squad when the CLI exits.
+
+The launcher refuses your home directory as a project; set
+`SQUAD_DEVKIT_ALLOW_HOME=1` to allow it.
+
 ## Choosing the manager
 
 | CLI | Started as |
@@ -111,6 +147,16 @@ Each launch runs `squad init` and installs the role prompts `manager-devkit`,
 start with the `<!-- squad-devkit template` line are refreshed from
 `templates/devkit/`. Delete that line to keep your own edits; the launcher then
 only prints a note when the template changes.
+
+In a git repository the launcher leaves the working tree clean. `squad init`
+normally appends guidance to `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` and adds
+`.squad/` to `.gitignore`; the launcher restores those files and ignores
+`.squad/` through `.git/info/exclude` instead. Set
+`SQUAD_DEVKIT_KEEP_INIT_FILES=1` to keep squad's edits.
+
+A single argument of three or more words that names no project is taken as the
+objective, so `squad-devkit "check prod logs from 26/10 to 27/10"` works from
+inside a project. Elsewhere, it asks which project to use.
 
 ## Workers
 

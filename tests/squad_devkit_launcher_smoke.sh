@@ -71,6 +71,14 @@ if "$repo_root/scripts/squad-devkit.sh" 'missing project' --dry-run >"$temp_dire
   exit 1
 fi
 rg -q 'not found in' "$temp_directory/error"
+if "$repo_root/scripts/squad-devkit.sh" 'missing/project' --dry-run >"$temp_directory/error" 2>&1; then
+  echo 'Expected an unknown folder/name to fail' >&2
+  exit 1
+fi
+rg -q "Project 'missing/project' not found in" "$temp_directory/error"
+sentence_dry_run="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" 'check prod logs from 26/10-27/10' --dry-run)"
+[[ "$sentence_dry_run" == *"Objective: check prod logs from 26/10-27/10"* ]] || fail
+[[ "$sentence_dry_run" == *"Project: $(cd "$project_directory" && pwd -P)"* ]] || fail
 duplicate_directory="$temp_directory/duplicate/demo project"
 mkdir -p "$duplicate_directory"
 git init -q "$duplicate_directory"
@@ -105,15 +113,32 @@ rg -q 'is not a git repository; squad init will create .squad/' "$temp_directory
 non_git_dry_run="$(printf '%s\n' "$plain_directory" |
   SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/squad-devkit.sh" --dry-run)"
 [[ "$non_git_dry_run" == *"Project: $resolved_plain_directory"* ]] || fail
-home_dry_run="$(cd "$HOME" && printf '\n' |
-  SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/squad-devkit.sh" --dry-run 2>/dev/null)"
-[[ "$home_dry_run" == *"Project: $(cd "$HOME" && pwd -P)"* ]] || fail
+if (cd "$HOME" && printf '\n' |
+  SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/squad-devkit.sh" --dry-run) >/dev/null 2>"$temp_directory/home-log"; then
+  echo 'Expected an empty answer in the home directory to be refused' >&2
+  exit 1
+fi
+rg -q 'Your home directory is not a project' "$temp_directory/home-log"
+if "$repo_root/scripts/squad-devkit.sh" "$HOME" --dry-run >/dev/null 2>"$temp_directory/home-log"; then
+  echo 'Expected the home directory to be refused as a project' >&2
+  exit 1
+fi
+rg -q 'Refusing to use your home directory' "$temp_directory/home-log"
+[[ "$(SQUAD_DEVKIT_ALLOW_HOME=1 "$repo_root/scripts/squad-devkit.sh" "$HOME" --dry-run)" == *"Project: $(cd "$HOME" && pwd -P)"* ]] || fail
 list_output="$("$repo_root/scripts/squad-devkit.sh" --list)"
 [[ "$list_output" == *'Projects found in:'* ]] || fail
 [[ "$list_output" == *"demo project"* ]] || fail
 [[ "$list_output" == *"$resolved_project_directory"* ]] || fail
 
+printf '# Demo rules\n' >"$project_directory/CLAUDE.md"
+printf 'node_modules/\n' >"$project_directory/.gitignore"
+(cd "$project_directory" && git add CLAUDE.md .gitignore && git -c user.name=t -c user.email=t@t commit -qm init)
 (cd "$HOME" && "$repo_root/scripts/squad-devkit.sh" 'demo project' --no-attach)
+[[ "$(cat "$project_directory/CLAUDE.md")" == '# Demo rules' ]] || fail
+[[ "$(cat "$project_directory/.gitignore")" == 'node_modules/' ]] || fail
+[[ ! -e "$project_directory/AGENTS.md" && ! -e "$project_directory/GEMINI.md" ]] || fail
+grep -qx '.squad/' "$project_directory/.git/info/exclude"
+[[ -z "$(cd "$project_directory" && git status --porcelain)" ]] || fail
 for attempt in {1..30}; do
   if [[ -f "$DEVKIT_TEST_LOG" ]]; then
     break
@@ -129,7 +154,10 @@ fi
 [[ "$(tmux list-panes -t "$session_name" -F '#{pane_title}')" == 'Claude Code · manager' ]] || fail
 [[ "$(tmux show-options -t "$session_name" -v prefix)" == C-a ]] || fail
 [[ "$(tmux show-options -gv prefix)" == C-b ]] || fail
-rg -q '^claude:.*squad join manager --role manager-devkit --client claude --protocol-version 2' "$DEVKIT_TEST_LOG"
+rg -q '^claude:--permission-mode auto You are the Claude Code manager.*You already joined the squad as manager;' "$DEVKIT_TEST_LOG"
+rg -q '## Your role \(.squad/roles/manager-devkit.md\).*You do not write code' "$DEVKIT_TEST_LOG"
+(cd "$project_directory" && squad agents) | rg -q '^  manager \(role: manager-devkit\)'
+[[ -f "$project_directory/.squad/managers/manager.pid" ]] || fail
 rg -Fq "squad-worker is: $repo_root/scripts/squad-worker.sh" "$DEVKIT_TEST_LOG"
 rg -q 'No objective was supplied' "$DEVKIT_TEST_LOG"
 [[ "$(cat "$DEVKIT_TEST_LOG")" != *ERROR* ]] || fail
@@ -158,6 +186,9 @@ chmod +x "$test_bin/osascript-id"
 (cd "$HOME" && TERM_PROGRAM=ghostty SQUAD_DEVKIT_OSASCRIPT="$test_bin/osascript-id" \
   "$repo_root/scripts/squad-devkit.sh" "$project_directory" --here 'check the deploy logs' 2>"$temp_directory/here-log")
 rg -Fq "here:$resolved_project_directory:GHOSTTY-7:" "$DEVKIT_TEST_LOG"
+rg -q '^here:.*You already joined the squad as manager;' "$DEVKIT_TEST_LOG"
+[[ "$(cd "$project_directory" && squad agents)" != *'manager'* ]] || fail
+[[ ! -e "$project_directory/.squad/managers/manager.pid" ]] || fail
 rg -q "^here:.*The human's objective is:.*check the deploy logs" "$DEVKIT_TEST_LOG"
 cmp -s "$repo_root/templates/devkit/manager-devkit.md" "$project_directory/.squad/roles/manager-devkit.md"
 [[ "$(cat "$project_directory/.squad/roles/dev.md")" == 'my own dev role' ]] || fail
@@ -179,7 +210,7 @@ ghostty_dry_run="$("$repo_root/scripts/squad-devkit.sh" "$project_directory" --g
 [[ "$(sed -n '2p' "$DEVKIT_OSASCRIPT_LOG")" == "$resolved_project_directory" ]] || fail
 manager_script="$(sed -n '3p' "$DEVKIT_OSASCRIPT_LOG")"
 [[ -x "$manager_script" ]] || fail
-rg -Fq 'manager-devkit' "$manager_script"
+rg -Fq 'lib/squad-devkit-manager.sh' "$manager_script"
 rg -Fq 'No objective was supplied' "$manager_script"
 rg -Fq 'export SQUAD_DEVKIT_GHOSTTY_TERMINAL="$(osascript -e' "$manager_script"
 bash -n "$manager_script"

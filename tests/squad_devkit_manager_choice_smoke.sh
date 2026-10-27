@@ -34,9 +34,10 @@ grep -q '1) codex' "$temp_directory/log"
 grep -q '2) agy' "$temp_directory/log"
 grep -q 'Enter a number from 1 to 2.' "$temp_directory/log"
 [[ "$choice" == *'Manager: agy'* ]] || fail
-[[ "$choice" == *"manager: $test_bin/agy -i "* ]] || fail
-[[ "$choice" == *'squad join manager --role manager-devkit --protocol-version 2'* ]] || fail
-[[ "$choice" == *'squad receive <your ID> --wait --timeout 900'* ]] || fail
+[[ "$choice" == *"manager: $repo_root/scripts/lib/squad-devkit-manager.sh agy "* ]] || fail
+[[ "$choice" == *"cli: $test_bin/agy -i PROMPT"* ]] || fail
+[[ "$choice" == *'You already joined the squad as {{MANAGER_ID}}'* ]] || fail
+[[ "$choice" == *'squad receive {{MANAGER_ID}} --wait --timeout 900'* ]] || fail
 [[ "$choice" == *'You are the Antigravity CLI manager'* ]] || fail
 [[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=agy' ]] || fail
 
@@ -47,11 +48,13 @@ saved="$(SQUAD_DEVKIT_FORCE_PROMPT=1 "$devkit" "$project_directory" --dry-run </
 fake_cli claude
 [[ "$("$devkit" "$project_directory" --dry-run)" == *'Manager: agy'* ]] || fail
 override="$("$devkit" "$project_directory" --manager claude --dry-run)"
-[[ "$override" == *'Manager: claude'* && "$override" == *'--client claude'* ]] || fail
+[[ "$override" == *'Manager: claude'* ]] || fail
+[[ "$override" == *"cli: $test_bin/claude --permission-mode auto PROMPT"* ]] || fail
+[[ "$(SQUAD_DEVKIT_PERMISSION_MODE=default "$devkit" "$project_directory" --manager claude --dry-run)" == *"cli: $test_bin/claude PROMPT"* ]] || fail
 [[ "$override" == *'run_in_background: true'* ]] || fail
 [[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=agy' ]] || fail
 codex_run="$(SQUAD_DEVKIT_MANAGER=codex "$devkit" "$project_directory" --dry-run)"
-[[ "$codex_run" == *"manager: $test_bin/codex "* && "$codex_run" == *'--client codex'* ]] || fail
+[[ "$codex_run" == *"cli: $test_bin/codex PROMPT"* ]] || fail
 if "$devkit" "$project_directory" --manager cursor --dry-run 2>"$temp_directory/log"; then
   echo 'Expected an unknown manager to fail' >&2
   exit 1
@@ -88,4 +91,40 @@ rm "$SQUAD_DEVKIT_CONFIG"
 install_output="$("$repo_root/scripts/install-devkit.sh" --no-prompt)"
 [[ "$install_output" == *'Manager: claude (Claude Code)'* ]] || fail
 [[ ! -e "$SQUAD_DEVKIT_CONFIG" ]] || fail
-echo 'PASS: manager defaults to Claude Code, first-run choice is saved, overrides, setup, and installer'
+# The manager wrapper archives dead managers, joins, embeds the role, and leaves on exit.
+wrapper="$repo_root/scripts/lib/squad-devkit-manager.sh"
+cat >"$test_bin/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s\n' "$SQUAD_MANAGER_ID" "${*//$'\n'/\\n}" >>"$MANAGER_TEST_LOG"
+squad agents >>"$MANAGER_TEST_LOG"
+EOF
+chmod +x "$test_bin/claude"
+export MANAGER_TEST_LOG="$temp_directory/manager-log"
+cd "$project_directory"
+squad init >/dev/null
+cp "$repo_root/templates/devkit/manager-devkit.md" .squad/roles/manager-devkit.md
+mkdir -p .squad/managers
+squad join manager --role manager-devkit >/dev/null
+sleep 30 &
+live_pid=$!
+squad join manager-2 --role manager-devkit >/dev/null
+printf '%s\n' "$live_pid" >.squad/managers/manager-2.pid
+printf '999999\n' >.squad/managers/manager.pid
+"$wrapper" claude 'Hello {{MANAGER_ID}}.'
+grep -q '^manager|--permission-mode auto Hello manager\.\\n\\n## Your role (.squad/roles/manager-devkit.md)' "$MANAGER_TEST_LOG"
+grep -q 'You do not write code' "$MANAGER_TEST_LOG"
+[[ "$(grep -c 'squad-devkit template' "$MANAGER_TEST_LOG")" == 0 ]] || fail
+grep -q '^  manager-2 (role: manager-devkit)' "$MANAGER_TEST_LOG"
+[[ "$(squad agents)" != *'manager '* ]] || fail
+[[ "$(squad agents)" == *'manager-2'* ]] || fail
+[[ ! -e .squad/managers/manager.pid && -e .squad/managers/manager-2.pid ]] || fail
+kill "$live_pid"
+wait "$live_pid" 2>/dev/null || true
+squad join manager-9 --role manager-devkit >/dev/null
+rm .squad/managers/manager-2.pid
+: >"$MANAGER_TEST_LOG"
+SQUAD_DEVKIT_STALE_MINUTES=-1 "$wrapper" claude 'Again as {{MANAGER_ID}}.'
+grep -q '^manager|' "$MANAGER_TEST_LOG"
+[[ "$(grep -c 'manager-2\|manager-9' "$MANAGER_TEST_LOG")" == 0 ]] || fail
+[[ -z "$(squad agents | grep manager || true)" ]] || fail
+echo 'PASS: manager defaults to Claude Code, first-run choice is saved, overrides, setup, installer, and manager lifecycle'

@@ -93,9 +93,20 @@ squad-devkit my-project "fix the flaky login test"
 squad-devkit my-project --tmux               # or --ghostty for a new window
 ```
 
-The manager starts in the current terminal. It handles questions and small
-changes itself. Larger work is split into tasks with disjoint file ownership,
-and each task goes to a worker.
+The manager starts in the current terminal, in Claude Code's `auto` permission
+mode. It coordinates and does not write code itself:
+
+1. It investigates the code and writes a detailed plan to `.squad/plans/`.
+2. It sends each worker a complete brief: the files the worker owns, the exact
+   changes, the acceptance criteria, and the verification commands.
+3. It checks every report against `git diff` and reruns the verification.
+4. When something is wrong, it sends the same worker a fix brief listing each
+   defect, until every check passes.
+5. It reports to you with evidence.
+
+The launcher joins the squad for the manager and leaves when you exit. It also
+archives managers whose process has ended, so a project keeps one `manager`.
+It refuses your home directory as a project.
 
 ### 3. Workers
 
