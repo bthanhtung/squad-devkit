@@ -409,9 +409,17 @@ prepare_project() {
   done
 }
 
+# squad-worker splits worker monitor panes next to this Ghostty terminal.
+ghostty_focused_terminal='tell application "Ghostty" to get id of focused terminal of selected tab of front window'
+
 if [[ "$backend" == here ]]; then
   prepare_project
   cd "$project_directory"
+  if [[ -z "${TMUX:-}" && "${TERM_PROGRAM:-}" == ghostty ]] &&
+    command -v "${SQUAD_DEVKIT_OSASCRIPT:-osascript}" >/dev/null 2>&1; then
+    SQUAD_DEVKIT_GHOSTTY_TERMINAL="$("${SQUAD_DEVKIT_OSASCRIPT:-osascript}" -e "$ghostty_focused_terminal" 2>/dev/null || true)"
+    export SQUAD_DEVKIT_GHOSTTY_TERMINAL
+  fi
   eval "exec $manager_command"
 fi
 
@@ -419,8 +427,9 @@ if [[ "$backend" == ghostty ]]; then
   prepare_project
   launcher_directory="$(mktemp -d "${TMPDIR:-/tmp}/squad-devkit.XXXXXX")"
   manager_script="$launcher_directory/manager.sh"
-  printf '#!/bin/bash\ncd %s || exit 1\nexport PATH=%s\nexec %s\n' \
-    "$(shell_escape "$project_directory")" "$(shell_escape "$PATH")" "$manager_command" >"$manager_script"
+  printf '#!/bin/bash\ncd %s || exit 1\nexport PATH=%s\nexport SQUAD_DEVKIT_GHOSTTY_TERMINAL="$(osascript -e %s 2>/dev/null)"\nexec %s\n' \
+    "$(shell_escape "$project_directory")" "$(shell_escape "$PATH")" \
+    "$(shell_escape "$ghostty_focused_terminal")" "$manager_command" >"$manager_script"
   chmod +x "$manager_script"
   "$osascript_command" "$script_dir/lib/squad-devkit-ghostty.applescript" \
     "$project_directory" "$manager_script" "$manager_title · manager"

@@ -44,6 +44,114 @@
 
 ---
 
+## squad-devkit: one manager, on-demand workers
+
+This fork adds **squad-devkit**. You talk to one manager agent (Claude Code by
+default). The manager plans the work and starts **Codex** or **CCR** workers
+only when work needs delegating. Each worker gets its own live monitor pane.
+No worker runs, or spends tokens, while idle.
+
+```
+┌──────────────────────────────┬─────────────────────────────┐
+│ Claude Code · manager        │ dev-1 · codex (high)        │
+│                              │ ● RUNNING · 01:42           │
+│ > fix the flaky login test   │ Commands: 6 · failed: 1     │
+│                              ├─────────────────────────────┤
+│ Planning… starting dev-1     │ doc-1 · ccr                 │
+│ (codex) and doc-1 (ccr)      │ ✓ COMPLETED · 00:12         │
+└──────────────────────────────┴─────────────────────────────┘
+```
+
+### 1. Install
+
+Requirements: macOS, [`squad`](#install), one manager CLI, and at least one
+worker engine: `codex`, or `ccr` from
+[claude-code-router](https://github.com/musistudio/claude-code-router).
+`jq` (bundled with recent macOS) enables live metrics.
+
+```bash
+brew install mco-org/tap/squad
+git clone https://github.com/bthanhtung/squad-devkit.git
+squad-devkit/scripts/install-devkit.sh
+```
+
+The installer links `squad-devkit`, `squad-worker`, and `squad-monitor` into
+`~/.local/bin` and picks the manager:
+
+- If **Claude Code** is installed, it is the manager and nothing is asked.
+- Otherwise the installer lists the CLIs it found (`codex`, `agy`, `gemini`,
+  `grok`, `opencode`) and asks which one should manage. The answer is saved in
+  `~/.config/squad-devkit/config`.
+- Run `squad-devkit --setup` to choose again, or pass `--manager codex` for one run.
+
+### 2. Start a manager
+
+```bash
+squad-devkit                                 # asks for a project (Enter = current dir)
+squad-devkit my-project                      # finds the git repo by name under ~/Workspace
+squad-devkit my-project "fix the flaky login test"
+squad-devkit my-project --tmux               # or --ghostty for a new window
+```
+
+The manager starts in the current terminal. It handles questions and small
+changes itself. Larger work is split into tasks with disjoint file ownership,
+and each task goes to a worker.
+
+### 3. Workers
+
+The manager runs workers for you. You can also run one yourself from the project:
+
+```bash
+squad-worker dev-1 --engine codex --role dev --brief-file - <<'BRIEF'
+Fix the off-by-one in src/pager.rs::page_count.
+Files you own: src/pager.rs, tests/pager_test.rs.
+Verify: cargo test pager
+BRIEF
+
+squad-worker doc-1 --engine ccr --brief "Document the --json flag in README.md. Files you own: README.md"
+```
+
+| Choice | Use it for |
+|---|---|
+| `--engine ccr` | Cheap local model, file tools only: docs, small exact edits, summaries |
+| `--engine codex --profile medium` | Mechanical edits and tests from a precise spec |
+| `--engine codex` (profile `high`) | Normal implementation that needs a shell, builds, or tests |
+| `--engine codex --profile max` | Only hard or ambiguous problems |
+| `--role dev\|tester\|reviewer\|…` | Role prompt from `.squad/roles/<role>.md` |
+| `--mcp NAME` | Enable one MCP server for this worker (all are off by default) |
+
+A worker joins the squad and receives a structured task. It runs once without
+interaction, completes the task with its report, messages the manager, and
+leaves. Reports are saved in `.squad/workers/` and listed by `squad task list`.
+
+### 4. Monitor
+
+Each worker opens a pane next to the manager in **Herdr**, **tmux**, or
+**Ghostty**. The first pane goes to the right of the manager, and later panes
+stack below it. Focus stays on the manager. Every second the pane shows:
+
+- the state (running, completed, or failed) and the elapsed time
+- commands or tool calls, failures, and changed files
+- tokens (Codex reports them when the run ends; CCR does not report them)
+- recent activity and, at the end, the report
+
+Press Enter to close a finished pane. Set `SQUAD_WORKER_PANE_HOLD=60` to
+close panes automatically, or `SQUAD_WORKER_PANES=0` to open none. In any
+other terminal, run `squad-monitor --all` for a table of every worker run.
+
+### Why it saves tokens
+
+- **No idle workers.** The previous always-on workers spent about 1M tokens
+  polling before they got any work.
+- **Small worker context.** Codex workers start with MCP servers off, so a
+  small task costs about 18k tokens instead of 52–98k.
+- **Right-sized models.** The manager picks CCR or a Codex profile for each task.
+- **No polling.** The manager waits for worker reports instead of polling.
+
+Full reference: [docs/squad-devkit.md](./docs/squad-devkit.md).
+
+---
+
 ## Install
 
 ```bash

@@ -44,8 +44,8 @@ least one manager CLI and, for workers, `codex` and/or `ccr`
 /absolute/path/to/squad/scripts/install-devkit.sh
 ```
 
-The installer links `squad-devkit` and `squad-worker` into `~/.local/bin` (set
-`SQUAD_DEVKIT_BIN_DIR` for another directory). It then picks the manager as
+The installer links `squad-devkit`, `squad-worker`, and `squad-monitor` into
+`~/.local/bin` (set `SQUAD_DEVKIT_BIN_DIR` for another directory). It then picks the manager as
 described below and lists the worker engines it found.
 
 Codex profiles are files named `$CODEX_HOME/<profile>.config.toml`, for example
@@ -153,6 +153,48 @@ stopped and then time out.
 Parallel workers share the repository, so the manager must give each worker
 files that no other running worker edits. Workers never commit. The manager asks
 you before commits, pushes, or destructive actions.
+
+## Watching workers
+
+Every worker opens its own monitor pane next to the manager while it runs:
+
+- **tmux** (`squad-devkit --tmux`, or a manager started inside tmux): the
+  manager stays on the left and worker panes stack on the right
+  (`main-vertical` layout). Focus stays on the manager.
+- **Herdr**: the worker splits the manager's Herdr pane (`HERDR_PANE_ID`): the
+  first worker goes to its right, later workers stack below the previous one,
+  and focus stays on the manager. Herdr takes priority over Ghostty, so this
+  also applies to Herdr running inside Ghostty.
+- **Ghostty** (`squad-devkit` in a Ghostty terminal, or `--ghostty`): the
+  launcher records the manager's terminal id. Splits follow the same layout,
+  and focus returns to the manager.
+- **Other terminals** (Terminal.app, iTerm2) get no automatic panes. Run
+  `squad-monitor --all` in a spare window instead, or use `--tmux`.
+
+Each pane refreshes every second:
+
+```
+dev-1 · codex (high) · role dev · ● RUNNING · 01:42
+Task: Fix the off-by-one in src/pager.rs::page_count
+Commands: 6 · failed: 1 · files changed: 2
+Tokens: pending
+──────────────────────────────────────────────
+✗ cargo test pager  (exit 101)
+✎ src/pager.rs
+… running: cargo test pager
+```
+
+It shows commands (Codex) or tool calls and turns (CCR), failures, changed
+files, and recent activity. Codex reports token usage when the run finishes.
+claude-code-router does not report tokens, so CCR panes say so. When the run
+ends, the pane shows the final state and the start of the report, and closes
+when you press Enter. Set `SQUAD_WORKER_PANE_HOLD=<seconds>` to close it
+automatically, or `SQUAD_WORKER_PANES=0` to open no panes.
+
+`squad-monitor --all` shows one table of every run in `.squad/workers`
+(worker, engine, role, state, elapsed time, calls, tokens, task). It works in
+any terminal. Each run keeps `<id>-<time>.status`, `.log` (JSON events), and
+`.md` (report) in that directory.
 
 ## Upgrading from the four-pane setup
 

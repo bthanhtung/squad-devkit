@@ -9,7 +9,7 @@ usage() {
   cat <<'EOF'
 Usage: install-devkit.sh [--manager CLI] [--no-prompt]
 
-Link squad-devkit and squad-worker into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
+Link squad-devkit, squad-worker, and squad-monitor into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
 and choose the manager CLI. Claude Code is the default when installed; without
 it, the installer asks which installed CLI should manage and saves the answer.
 Re-run it, or run squad-devkit --setup, to change the choice.
@@ -45,7 +45,8 @@ bin_directory="${SQUAD_DEVKIT_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$bin_directory"
 ln -sfn "$script_dir/squad-devkit.sh" "$bin_directory/squad-devkit"
 ln -sfn "$script_dir/squad-worker.sh" "$bin_directory/squad-worker"
-printf 'Linked squad-devkit and squad-worker into %s\n' "$bin_directory"
+ln -sfn "$script_dir/squad-worker-monitor.sh" "$bin_directory/squad-monitor"
+printf 'Linked squad-devkit, squad-worker, and squad-monitor into %s\n' "$bin_directory"
 case ":$PATH:" in
   *":$bin_directory:"*) ;;
   *) printf 'Add %s to your PATH to run them from any terminal.\n' "$bin_directory" ;;

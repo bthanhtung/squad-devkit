@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source_file="${BASH_SOURCE[0]}"
+while [[ -L "$source_file" ]]; do
+  source_directory="$(cd "$(dirname "$source_file")" && pwd)"
+  link_target="$(readlink "$source_file")"
+  if [[ "$link_target" == /* ]]; then
+    source_file="$link_target"
+  else
+    source_file="$source_directory/$link_target"
+  fi
+done
+script_dir="$(cd "$(dirname "$source_file")" && pwd)"
+
 usage() {
   cat <<'EOF'
 Usage: squad-worker <worker-id> --engine codex|ccr (--brief TEXT | --brief-file FILE)
@@ -130,7 +142,12 @@ if [[ -z "$joined_id" ]]; then
   exit 1
 fi
 worker_id="$joined_id"
+status_file=""
 leave_squad() {
+  local exit_status=$?
+  if [[ -n "$status_file" && -f "$status_file" ]] && grep -qx 'state=running' "$status_file"; then
+    write_status failed "$exit_status"
+  fi
   squad leave "$worker_id" >/dev/null 2>&1 || true
 }
 trap leave_squad EXIT
@@ -168,6 +185,95 @@ mkdir -p "$output_directory"
 run_name="$worker_id-$(date +%Y%m%d-%H%M%S)"
 report_file="$output_directory/$run_name.md"
 log_file="$output_directory/$run_name.log"
+status_file="$output_directory/$run_name.status"
+started_at="$(date +%s)"
+run_profile=""
+[[ "$engine" == codex ]] && run_profile="$profile"
+
+write_status() {
+  local state="$1"
+  local exit_status="${2:-}"
+  local finished=""
+  [[ "$state" != running ]] && finished="$(date +%s)"
+  {
+    printf 'worker=%s\nengine=%s\nprofile=%s\nrole=%s\n' "$worker_id" "$engine" "$run_profile" "$role"
+    printf 'title=%s\ntask=%s\nstate=%s\n' "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state"
+    printf 'started=%s\nfinished=%s\nexit=%s\n' "$started_at" "$finished" "$exit_status"
+    printf 'log=%s\nreport=%s\n' "$workspace_root/$log_file" "$workspace_root/$report_file"
+  } >"$status_file.tmp"
+  mv "$status_file.tmp" "$status_file"
+}
+write_status running
+
+# Opens a live monitor pane for this run next to the manager: a tmux split when
+# the manager runs in tmux, a Herdr split inside Herdr, or a Ghostty split when
+# squad-devkit recorded the manager's Ghostty terminal. SQUAD_WORKER_PANES=0
+# disables it.
+open_monitor_pane() {
+  [[ "${SQUAD_WORKER_PANES:-1}" != 0 ]] || return 0
+  local pane_script="$output_directory/$run_name.monitor.sh"
+  # Pane shells start from the terminal, not from this process, so pass settings explicitly.
+  {
+    printf '#!/bin/bash\n'
+    [[ -n "${SQUAD_WORKER_PANE_HOLD:-}" ]] &&
+      printf 'export SQUAD_WORKER_PANE_HOLD=%q\n' "$SQUAD_WORKER_PANE_HOLD"
+    printf 'exec %q %q\n' "$script_dir/squad-worker-monitor.sh" "$workspace_root/$status_file"
+  } >"$pane_script"
+  chmod +x "$pane_script"
+  local title="$worker_id · $engine"
+  if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    local pane
+    pane="$(tmux split-window -d -h -P -F '#{pane_id}' -t "$TMUX_PANE" -c "$workspace_root" \
+      "$workspace_root/$pane_script" 2>/dev/null)" || return 0
+    tmux select-pane -t "$pane" -T "$title" 2>/dev/null || true
+    tmux select-layout -t "$TMUX_PANE" main-vertical 2>/dev/null || true
+    return 0
+  fi
+  local backend="" manager_pane=""
+  local osascript_command="${SQUAD_DEVKIT_OSASCRIPT:-osascript}"
+  if [[ -n "${HERDR_PANE_ID:-}" ]] && command -v herdr >/dev/null 2>&1; then
+    backend=herdr
+    manager_pane="$HERDR_PANE_ID"
+  elif [[ -n "${SQUAD_DEVKIT_GHOSTTY_TERMINAL:-}" ]] && command -v "$osascript_command" >/dev/null 2>&1; then
+    backend=ghostty
+    manager_pane="$SQUAD_DEVKIT_GHOSTTY_TERMINAL"
+  else
+    return 0
+  fi
+  # Serialise splits so parallel workers stack instead of splitting the same pane.
+  local lock="$output_directory/.pane.lock"
+  local attempt
+  for attempt in $(seq 1 40); do
+    mkdir "$lock" 2>/dev/null && break
+    sleep 0.25
+  done
+  local last_file="$output_directory/.$backend-${manager_pane//[^A-Za-z0-9_-]/_}.last"
+  local previous=""
+  [[ -f "$last_file" ]] && previous="$(cat "$last_file")"
+  local created=""
+  if [[ "$backend" == herdr ]]; then
+    # The first worker splits right of the manager; later ones stack below the previous worker.
+    local split_output=""
+    if [[ -n "$previous" ]]; then
+      split_output="$(herdr pane split "$previous" --direction down --cwd "$workspace_root" 2>/dev/null || true)"
+    fi
+    if [[ "$split_output" != *'"pane_id"'* ]]; then
+      split_output="$(herdr pane split "$manager_pane" --direction right --cwd "$workspace_root" 2>/dev/null || true)"
+    fi
+    created="$(printf '%s' "$split_output" | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p')"
+    if [[ -n "$created" ]]; then
+      herdr pane rename "$created" "$title" >/dev/null 2>&1 || true
+      herdr pane run "$created" "exec $(printf '%q' "$workspace_root/$pane_script")" >/dev/null 2>&1 || true
+    fi
+  else
+    created="$("$osascript_command" "$script_dir/lib/squad-worker-ghostty.applescript" \
+      "$manager_pane" "$previous" "$workspace_root" "$workspace_root/$pane_script" "$title" 2>/dev/null || true)"
+  fi
+  [[ -n "$created" ]] && printf '%s\n' "$created" >"$last_file"
+  rmdir "$lock" 2>/dev/null || true
+  return 0
+}
+open_monitor_pane
 
 ensure_ccr_server() {
   local port
@@ -185,7 +291,7 @@ ensure_ccr_server() {
     fi
     sleep 1
   done
-  echo "claude-code-router did not start on port $port; see $output_directory/ccr-server.log" >&2
+  echo "claude-code-router did not start on port $port; see $output_directory/ccr-server.log" >>"$log_file"
   return 1
 }
 
@@ -203,7 +309,7 @@ if [[ "$engine" == codex ]]; then
       mcp_arguments+=(-c "mcp_servers.$server.enabled=false")
     done <<<"$configured_servers"
   fi
-  codex exec --profile "$profile" --ephemeral --skip-git-repo-check \
+  codex exec --json --profile "$profile" --ephemeral --skip-git-repo-check \
     --sandbox workspace-write ${mcp_arguments[@]+"${mcp_arguments[@]}"} \
     --output-last-message "$report_file" "$prompt" </dev/null >"$log_file" 2>&1 || status=$?
 else
@@ -212,9 +318,15 @@ else
     (
       eval "$(ccr activate)"
       unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-      claude -p --strict-mcp-config --disable-slash-commands --no-session-persistence \
-        --tools "$tools" --allowedTools "$tools" --permission-mode acceptEdits \
-        "$prompt" </dev/null >"$report_file" 2>"$log_file"
+      claude_arguments=(-p --strict-mcp-config --disable-slash-commands --no-session-persistence
+        --tools "$tools" --allowedTools "$tools" --permission-mode acceptEdits)
+      if command -v jq >/dev/null 2>&1; then
+        claude "${claude_arguments[@]}" --output-format stream-json --verbose \
+          "$prompt" </dev/null >"$log_file" 2>&1
+        jq -R -r 'fromjson? | select(.type == "result") | .result // empty' "$log_file" >"$report_file"
+      else
+        claude "${claude_arguments[@]}" "$prompt" </dev/null >"$report_file" 2>"$log_file"
+      fi
     ) || status=$?
   else
     status=1
@@ -226,13 +338,16 @@ if [[ -s "$report_file" ]]; then
   report="$(cat "$report_file")"
 fi
 if (( status != 0 )) || [[ -z "${report//[[:space:]]/}" ]]; then
+  (( status != 0 )) || status=1
+  write_status failed "$status"
   message="$worker_id ($engine) failed on task $task_id with exit status $status. Log: $workspace_root/$log_file"
   squad send --task-id "$task_id" "$worker_id" "$manager_id" "$message" >/dev/null || true
   echo "$message" >&2
   tail -n 20 "$log_file" >&2 2>/dev/null || true
-  exit "$(( status == 0 ? 1 : status ))"
+  exit "$status"
 fi
 
+write_status completed 0
 squad task complete "$worker_id" "$task_id" --summary "$(printf '%s' "$report" | cut -c1-4000)" >/dev/null
 squad send --task-id "$task_id" "$worker_id" "$manager_id" \
   "$worker_id ($engine) completed task $task_id. Report: $workspace_root/$report_file" >/dev/null || true

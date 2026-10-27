@@ -48,6 +48,8 @@ export SQUAD_DEVKIT_PROJECT_ROOT="$temp_directory"
 export PATH="$test_bin:$PATH"
 export DEVKIT_TEST_LOG="$temp_directory/invocations"
 export SQUAD_DEVKIT_BACKEND=tmux
+export TERM_PROGRAM=test-terminal
+unset SQUAD_DEVKIT_GHOSTTY_TERMINAL
 
 dry_run="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run)"
 [[ "$dry_run" == *'manager:'* && "$dry_run" == *"Workers: $repo_root/scripts/squad-worker.sh"* ]] || fail
@@ -149,10 +151,13 @@ printf '<!-- squad-devkit template: old\nold manager role\n' >"$project_director
 printf 'my own dev role\n' >"$project_directory/.squad/roles/dev.md"
 cat >"$test_bin/claude" <<'EOF'
 #!/usr/bin/env bash
-printf 'here:%s:%s\n' "$PWD" "${*//$'\n'/\\n}" >>"$DEVKIT_TEST_LOG"
+printf 'here:%s:%s:%s\n' "$PWD" "${SQUAD_DEVKIT_GHOSTTY_TERMINAL:-none}" "${*//$'\n'/\\n}" >>"$DEVKIT_TEST_LOG"
 EOF
-(cd "$HOME" && "$repo_root/scripts/squad-devkit.sh" "$project_directory" --here 'check the deploy logs' 2>"$temp_directory/here-log")
-rg -Fq "here:$resolved_project_directory:" "$DEVKIT_TEST_LOG"
+printf '#!/usr/bin/env bash\necho GHOSTTY-7\n' >"$test_bin/osascript-id"
+chmod +x "$test_bin/osascript-id"
+(cd "$HOME" && TERM_PROGRAM=ghostty SQUAD_DEVKIT_OSASCRIPT="$test_bin/osascript-id" \
+  "$repo_root/scripts/squad-devkit.sh" "$project_directory" --here 'check the deploy logs' 2>"$temp_directory/here-log")
+rg -Fq "here:$resolved_project_directory:GHOSTTY-7:" "$DEVKIT_TEST_LOG"
 rg -q "^here:.*The human's objective is:.*check the deploy logs" "$DEVKIT_TEST_LOG"
 cmp -s "$repo_root/templates/devkit/manager-devkit.md" "$project_directory/.squad/roles/manager-devkit.md"
 [[ "$(cat "$project_directory/.squad/roles/dev.md")" == 'my own dev role' ]] || fail
@@ -176,4 +181,6 @@ manager_script="$(sed -n '3p' "$DEVKIT_OSASCRIPT_LOG")"
 [[ -x "$manager_script" ]] || fail
 rg -Fq 'manager-devkit' "$manager_script"
 rg -Fq 'No objective was supplied' "$manager_script"
+rg -Fq 'export SQUAD_DEVKIT_GHOSTTY_TERMINAL="$(osascript -e' "$manager_script"
+bash -n "$manager_script"
 echo 'PASS: name lookup, manager-only launch (here, tmux, Ghostty), session reuse, and role refresh'
