@@ -8,7 +8,7 @@ on run argv
 		set newWindow to new window with configuration surfaceConfiguration
 		set managerTerminal to focused terminal of selected tab of newWindow
 		try
-			perform action "set_surface_title:Claude · manager" on managerTerminal
+			perform action ("set_surface_title:" & item 3 of argv) on managerTerminal
 		end try
 		focus managerTerminal
 	end tell

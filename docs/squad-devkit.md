@@ -1,7 +1,8 @@
-# Local devkit: Claude manager with on-demand workers
+# Local devkit: one manager with on-demand workers
 
-`scripts/squad-devkit.sh` starts one Claude Code session as the project
-**manager**. The manager talks with you, researches, plans, and decides. When
+`scripts/squad-devkit.sh` starts one interactive session as the project
+**manager**: Claude Code by default, or another CLI you choose (see
+[Choosing the manager](#choosing-the-manager)). The manager talks with you, researches, plans, and decides. When
 work should be delegated, it starts **on-demand workers** with
 `scripts/squad-worker.sh`:
 
@@ -29,23 +30,57 @@ notified when each one finishes. The manager also chooses each worker's role
 - **Right-sized models.** The default Codex profile is `high`. The manager picks
   `medium` for mechanical work, `max` only for hard problems, and CCR for cheap
   tasks.
-- **No polling in the manager.** Background workers notify the manager when they
-  exit, so the manager never needs `squad receive --wait`.
+- **No polling in the manager.** A Claude Code manager is notified when a
+  background worker exits. Other managers block on one `squad receive --wait`
+  until a worker reports, instead of polling in a loop.
 
 ## Install
 
-macOS, with `squad`, `claude`, and `codex` installed. `ccr`
-(`@musistudio/claude-code-router`) is optional and is needed only for CCR
-workers. Ghostty and tmux are optional backends.
+You need macOS and `squad` (`brew install mco-org/tap/squad`). You also need at
+least one manager CLI and, for workers, `codex` and/or `ccr`
+(`@musistudio/claude-code-router`). Ghostty and tmux are optional backends.
 
 ```sh
-ln -s /absolute/path/to/squad/scripts/squad-devkit.sh ~/.local/bin/squad-devkit
-ln -s /absolute/path/to/squad/scripts/squad-worker.sh ~/.local/bin/squad-worker
+/absolute/path/to/squad/scripts/install-devkit.sh
 ```
+
+The installer links `squad-devkit` and `squad-worker` into `~/.local/bin` (set
+`SQUAD_DEVKIT_BIN_DIR` for another directory). It then picks the manager as
+described below and lists the worker engines it found.
 
 Codex profiles are files named `$CODEX_HOME/<profile>.config.toml`, for example
 `~/.codex/high.config.toml`. Workers use `high` unless told otherwise; set
 `SQUAD_WORKER_CODEX_PROFILE` to change the default.
+
+## Choosing the manager
+
+| CLI | Started as |
+|---|---|
+| `claude` (default) | `claude "<prompt>"` |
+| `codex` | `codex "<prompt>"` |
+| `agy` (Antigravity CLI) | `agy -i "<prompt>"` |
+| `gemini` | `gemini -i "<prompt>"` |
+| `grok` (Grok Build) | `grok "<prompt>"` |
+| `opencode` | `opencode --prompt "<prompt>"` |
+
+- If Claude Code is installed, it is the manager and nothing is asked.
+- Otherwise the first run of `install-devkit.sh` or `squad-devkit` lists the
+  installed CLIs and asks which one should manage. The answer is saved in
+  `~/.config/squad-devkit/config` (set `SQUAD_DEVKIT_CONFIG` for another path)
+  and reused from then on. If the saved CLI is later uninstalled, you are asked
+  again.
+- `squad-devkit --setup` chooses again at any time, including choosing another
+  CLI while Claude Code is installed.
+- `--manager CLI` or `SQUAD_DEVKIT_MANAGER=CLI` overrides the choice for one run.
+- Non-interactive runs never ask. Without Claude Code or a saved choice, they
+  use the first installed CLI from the table.
+
+A Claude Code manager starts workers with `run_in_background` and is notified
+when each one exits. Other managers start workers as detached shell jobs and
+wait with a single `squad receive <id> --wait`, because every worker sends the
+manager a squad message when it finishes or fails. The flags for `agy`,
+`gemini`, `grok`, and `opencode` come from their documentation and have not
+been tested by this repository.
 
 ## Run
 

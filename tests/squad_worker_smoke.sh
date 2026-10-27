@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# bash 3.2 (macOS) does not exit on a failed [[ ]] under set -e.
+fail() {
+  echo "Assertion failed at line ${BASH_LINENO[0]}" >&2
+  exit 1
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 temp_directory="$(mktemp -d /tmp/squad-worker-test.XXXXXX)"
 trap 'rm -rf "$temp_directory"' EXIT
@@ -60,34 +66,35 @@ grep -q 'The brief is empty' "$temp_directory/error"
 
 codex_output="$(cd src && printf 'Fix add() in calc.py\nFiles you own: calc.py\n' |
   "$worker" dev-1 --engine codex --mcp sentry --brief-file -)"
-[[ "$codex_output" == '[dev-1 · codex · task '* ]]
-[[ "$codex_output" == *'Fixed add(). Files: calc.py. Verification: ok.'* ]]
+[[ "$codex_output" == '[dev-1 · codex · task '* ]] || fail
+[[ "$codex_output" == *'Fixed add(). Files: calc.py. Verification: ok.'* ]] || fail
 codex_call="$(grep '^codex:' "$WORKER_TEST_LOG")"
-[[ "$codex_call" == *'exec --profile high --ephemeral --skip-git-repo-check --sandbox workspace-write'* ]]
-[[ "$codex_call" == *'-c mcp_servers.figma.enabled=false'* ]]
-[[ "$codex_call" != *'mcp_servers.sentry'* ]]
-[[ "$codex_call" == *'You are dev-1, a dev worker in a squad led by manager.'* ]]
-[[ "$codex_call" == *'Role: developer.'* && "$codex_call" != *'squad-devkit template'* ]]
-[[ "$codex_call" == *'## Task '*': Fix add() in calc.py'* ]]
+[[ "$codex_call" == *'exec --profile high --ephemeral --skip-git-repo-check --sandbox workspace-write'* ]] || fail
+[[ "$codex_call" == *'-c mcp_servers.figma.enabled=false'* ]] || fail
+[[ "$codex_call" != *'mcp_servers.sentry'* ]] || fail
+[[ "$codex_call" == *'You are dev-1, a dev worker in a squad led by manager.'* ]] || fail
+[[ "$codex_call" == *'Role: developer.'* && "$codex_call" != *'squad-devkit template'* ]] || fail
+[[ "$codex_call" == *'## Task '*': Fix add() in calc.py'* ]] || fail
 squad task list --status completed | grep -q 'assigned_to: dev-1'
-[[ "$(squad agents)" != *'dev-1 '* ]]
+[[ "$(squad agents)" != *'dev-1 '* ]] || fail
 ls .squad/workers/dev-1-*.md >/dev/null
+squad receive manager | grep -q 'dev-1 (codex) completed task .* Report: .*/.squad/workers/dev-1-'
 
 ccr_output="$("$worker" doc-1 --engine ccr --role writer --title 'Write README' \
   --brief 'Create README.md. Files you own: README.md')"
-[[ "$ccr_output" == '[doc-1 · ccr · task '*'Wrote README.md. Verification: re-read the file.'* ]]
+[[ "$ccr_output" == '[doc-1 · ccr · task '*'Wrote README.md. Verification: re-read the file.'* ]] || fail
 ccr_call="$(grep '^claude:' "$WORKER_TEST_LOG")"
-[[ "$ccr_call" == 'claude:http://127.0.0.1:3456:-p --strict-mcp-config --disable-slash-commands'* ]]
-[[ "$ccr_call" == *'--tools Read,Edit,Write,Glob,Grep --allowedTools Read,Edit,Write,Glob,Grep --permission-mode acceptEdits'* ]]
-[[ "$ccr_call" == *'## Task '*': Write README'* ]]
+[[ "$ccr_call" == 'claude:http://127.0.0.1:3456:-p --strict-mcp-config --disable-slash-commands'* ]] || fail
+[[ "$ccr_call" == *'--tools Read,Edit,Write,Glob,Grep --allowedTools Read,Edit,Write,Glob,Grep --permission-mode acceptEdits'* ]] || fail
+[[ "$ccr_call" == *'## Task '*': Write README'* ]] || fail
 squad task list --status completed | grep -q 'assigned_to: doc-1'
 
 status=0
 FAKE_CODEX_FAIL=1 "$worker" dev-2 --engine codex --profile medium --brief 'Break things' \
   >/dev/null 2>"$temp_directory/error" || status=$?
-[[ "$status" == 3 ]]
+[[ "$status" == 3 ]] || fail
 grep -q 'dev-2 (codex) failed on task .* with exit status 3' "$temp_directory/error"
 grep -q -- '--profile medium' "$WORKER_TEST_LOG"
 squad receive manager | grep -q 'dev-2 (codex) failed'
-[[ "$(squad agents)" != *'dev-2 '* ]]
+[[ "$(squad agents)" != *'dev-2 '* ]] || fail
 echo 'PASS: squad-worker codex/ccr runs, MCP filtering, task lifecycle, and failure reporting'

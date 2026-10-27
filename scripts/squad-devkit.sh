@@ -13,15 +13,19 @@ while [[ -L "$source_file" ]]; do
 done
 script_dir="$(cd "$(dirname "$source_file")" && pwd)"
 source "$script_dir/lib/squad-tmux-launcher-helpers.sh"
+source "$script_dir/lib/squad-devkit-agents.sh"
 
 usage() {
   cat <<'EOF'
 Usage: squad-devkit [project-name-or-directory] [objective] [--task objective]
-                    [--list] [--ghostty] [--tmux] [--dry-run] [--no-attach] [--no-prompt]
+                    [--manager CLI] [--setup] [--list] [--ghostty] [--tmux]
+                    [--dry-run] [--no-attach] [--no-prompt]
 
-Start a Claude manager for a project in the current terminal. The manager
-plans and starts on-demand Codex or CCR workers with squad-worker when work
-needs delegating; no worker runs, or costs tokens, while idle.
+Start a manager (Claude Code by default) for a project in the current terminal.
+The manager plans and starts on-demand Codex or CCR workers with squad-worker
+when work needs delegating; no worker runs, or costs tokens, while idle.
+If Claude Code is not installed, the first run asks which installed CLI
+(codex, agy, gemini, grok, opencode) should manage, and remembers the answer.
 Defaults to the git repository containing the current directory. Pass a project
 name to search ~/Workspace (up to 8 levels), or a directory to launch from anywhere. Existing
 directories take priority; duplicate names require an explicit path.
@@ -33,6 +37,9 @@ to skip the question in scripts.
 Pass an objective after the project, or with --task, to start planning immediately.
 Without an objective the manager opens an interactive chat and asks for one first.
 
+  --manager CLI Manager CLI for this run: claude, codex, agy, gemini, grok, or
+                opencode (or set SQUAD_DEVKIT_MANAGER)
+  --setup       Choose and save the default manager CLI, then exit
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
   --tmux        Run the manager in a tmux session; re-running attaches to it
                 (or set SQUAD_DEVKIT_BACKEND=here|ghostty|tmux)
@@ -60,6 +67,8 @@ if is_truthy "${SQUAD_DEVKIT_NO_PROMPT:-}"; then
 fi
 dry_run=0
 no_attach=0
+setup=0
+manager_client="${SQUAD_DEVKIT_MANAGER:-}"
 backend="${SQUAD_DEVKIT_BACKEND:-here}"
 while (( $# > 0 )); do
   case "$1" in
@@ -70,6 +79,16 @@ while (( $# > 0 )); do
     --no-attach) no_attach=1 ;;
     --no-prompt) no_prompt=1 ;;
     --list) list_projects=1 ;;
+    --setup) setup=1 ;;
+    --manager)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      manager_client="$2"
+      shift
+      ;;
+    --manager=*) manager_client="${1#*=}" ;;
     --task|--prompt)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
@@ -273,8 +292,21 @@ if (( list_projects == 1 )); then
   exit 0
 fi
 
+interactive=0
+if (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
+  interactive=1
+fi
+
+if (( setup == 1 )); then
+  manager_client="$(prompt_for_manager 'Choose the CLI that manages the squad (1 is the default):')"
+  save_manager "$manager_client"
+  printf 'Saved manager: %s (%s)\n' "$manager_client" "$(devkit_config_file)"
+  exit 0
+fi
+manager_client="$(resolve_manager "$manager_client" "$interactive")"
+
 if [[ -z "$project_directory" ]]; then
-  if (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
+  if (( interactive == 1 )); then
     project_directory="$(prompt_for_project)"
     printf 'Using project: %s\n' "$project_directory" >&2
   else
@@ -292,10 +324,15 @@ project_name="$(basename "$project_directory" | tr -cs '[:alnum:]' '-' | cut -c1
 project_hash="$(printf '%s' "$project_directory" | cksum | awk '{print $1}')"
 session_name="squad-devkit-${project_name}-${project_hash}"
 
-require_command claude
 require_command squad
-if ! command -v codex >/dev/null 2>&1 && ! command -v ccr >/dev/null 2>&1; then
-  echo "Note: neither codex nor ccr is installed; the manager cannot start workers." >&2
+worker_engines=()
+for engine in codex ccr; do
+  if command -v "$engine" >/dev/null 2>&1; then
+    worker_engines+=("$engine")
+  fi
+done
+if (( ${#worker_engines[@]} == 0 )); then
+  echo "Note: neither codex nor ccr is installed; the manager will do the work itself." >&2
 fi
 if [[ "$backend" == tmux ]]; then
   require_command tmux
@@ -305,12 +342,30 @@ elif [[ "$backend" == ghostty ]]; then
 fi
 
 worker_command="$script_dir/squad-worker.sh"
-manager_prompt="You are the Claude manager of this squad devkit, in an interactive session in this repository.
+join_command="squad join manager --role manager-devkit"
+client_flag="$(squad_client_flag "$manager_client")"
+if [[ -n "$client_flag" ]]; then
+  join_command+=" --client $client_flag"
+fi
+join_command+=" --protocol-version 2"
+if (( ${#worker_engines[@]} == 0 )); then
+  worker_line="3. No worker engine is installed, so do the work yourself instead of starting squad-worker."
+else
+  worker_line="3. squad-worker is: $worker_command
+   Installed worker engines: ${worker_engines[*]}"
+  if [[ "$manager_client" == claude ]]; then
+    worker_line+=$'\n'"   Start workers with run_in_background: true; you are notified when each one exits."
+  else
+    worker_line+=$'\n'"   Start each worker as a detached job: squad-worker ... >.squad/workers/<id>.out 2>&1 &
+   Each worker messages you when it finishes. Wait with one command, squad receive <your ID> --wait --timeout 900, instead of polling or sleeping."
+  fi
+fi
+manager_prompt="You are the $(manager_label "$manager_client") manager of this squad devkit, in an interactive session in this repository.
 
-1. Run: squad join manager --role manager-devkit --client claude --protocol-version 2
+1. Run: $join_command
    If it joins under another ID, pass --manager <that ID> to every squad-worker run.
 2. Follow the role instructions it prints (also in .squad/roles/manager-devkit.md).
-3. squad-worker is: $worker_command"
+$worker_line"
 if [[ -n "$objective" ]]; then
   manager_prompt+=$'\n\n'"The human's objective is:
 
@@ -320,10 +375,12 @@ Start researching and planning now. Do not ask for the objective again unless it
 else
   manager_prompt+=$'\n\n'"No objective was supplied. Greet the human briefly and wait for their instruction in this chat."
 fi
-manager_command="$(shell_join "$(command -v claude)" "$manager_prompt")"
+manager_command="$(manager_start_command "$manager_client" "$manager_prompt")"
+manager_title="$(manager_label "$manager_client")"
 
 if (( dry_run == 1 )); then
   printf 'Project: %s\nBackend: %s\nSession: %s\n' "$project_directory" "$backend" "$session_name"
+  printf 'Manager: %s\n' "$manager_client"
   printf 'Objective: %s\n' "${objective:-<ask in chat>}"
   printf 'Workers: %s\n' "$worker_command"
   printf 'manager: %s\n' "$manager_command"
@@ -366,8 +423,8 @@ if [[ "$backend" == ghostty ]]; then
     "$(shell_escape "$project_directory")" "$(shell_escape "$PATH")" "$manager_command" >"$manager_script"
   chmod +x "$manager_script"
   "$osascript_command" "$script_dir/lib/squad-devkit-ghostty.applescript" \
-    "$project_directory" "$manager_script"
-  printf 'Opened Ghostty window with the Claude manager for %s.\n' "$project_directory"
+    "$project_directory" "$manager_script" "$manager_title · manager"
+  printf 'Opened Ghostty window with the %s manager for %s.\n' "$manager_title" "$project_directory"
   exit 0
 fi
 
@@ -400,8 +457,8 @@ manager_pane="$(tmux new-session -d -P -F '#{pane_id}' -s "$session_name" -n squ
   "$(printf 'cd %s && exec env %s %s' "$(shell_escape "$project_directory")" \
     "$(shell_escape "PATH=$PATH")" "$manager_command")")"
 tmux set-window-option -t "$session_name:0" remain-on-exit on
-tmux select-pane -t "$manager_pane" -T 'Claude · manager'
+tmux select-pane -t "$manager_pane" -T "$manager_title · manager"
 
-printf 'Started %s for %s (Claude manager).\n' "$session_name" "$project_directory"
+printf 'Started %s for %s (%s manager).\n' "$session_name" "$project_directory" "$manager_title"
 printf 'Attach later: tmux attach -t %s\n' "$session_name"
 attach_session

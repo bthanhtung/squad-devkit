@@ -234,5 +234,7 @@ if (( status != 0 )) || [[ -z "${report//[[:space:]]/}" ]]; then
 fi
 
 squad task complete "$worker_id" "$task_id" --summary "$(printf '%s' "$report" | cut -c1-4000)" >/dev/null
+squad send --task-id "$task_id" "$worker_id" "$manager_id" \
+  "$worker_id ($engine) completed task $task_id. Report: $workspace_root/$report_file" >/dev/null || true
 printf '[%s · %s · task %s] report: %s\n\n%s\n' \
   "$worker_id" "$engine" "$task_id" "$workspace_root/$report_file" "$report"
