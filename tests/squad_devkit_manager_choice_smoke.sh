@@ -35,10 +35,10 @@ grep -q '2) agy' "$temp_directory/log"
 grep -q 'Enter a number from 1 to 2.' "$temp_directory/log"
 [[ "$choice" == *'Manager: agy'* ]] || fail
 [[ "$choice" == *"manager: $repo_root/scripts/lib/squad-devkit-manager.sh agy "* ]] || fail
-[[ "$choice" == *"cli: $test_bin/agy -i PROMPT"* ]] || fail
+[[ "$choice" == *"cli: $test_bin/agy -i INSTRUCTIONS"* ]] || fail
 [[ "$choice" == *'You already joined the squad as {{MANAGER_ID}}'* ]] || fail
 [[ "$choice" == *'squad receive {{MANAGER_ID}} --wait --timeout 900'* ]] || fail
-[[ "$choice" == *'You are the Antigravity CLI manager'* ]] || fail
+[[ "$choice" == *'You are the {{MANAGER_LABEL}} manager'* ]] || fail
 [[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=agy' ]] || fail
 
 saved="$(SQUAD_DEVKIT_FORCE_PROMPT=1 "$devkit" "$project_directory" --dry-run </dev/null 2>"$temp_directory/log")"
@@ -49,12 +49,12 @@ fake_cli claude
 [[ "$("$devkit" "$project_directory" --dry-run)" == *'Manager: agy'* ]] || fail
 override="$("$devkit" "$project_directory" --manager claude --dry-run)"
 [[ "$override" == *'Manager: claude'* ]] || fail
-[[ "$override" == *"cli: $test_bin/claude --permission-mode auto PROMPT"* ]] || fail
-[[ "$(SQUAD_DEVKIT_PERMISSION_MODE=default "$devkit" "$project_directory" --manager claude --dry-run)" == *"cli: $test_bin/claude PROMPT"* ]] || fail
+[[ "$override" == *"cli: $test_bin/claude --permission-mode auto --append-system-prompt INSTRUCTIONS"* ]] || fail
+[[ "$(SQUAD_DEVKIT_PERMISSION_MODE=default "$devkit" "$project_directory" --manager claude --dry-run)" == *"cli: $test_bin/claude --append-system-prompt INSTRUCTIONS"* ]] || fail
 [[ "$override" == *'run_in_background: true'* ]] || fail
 [[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=agy' ]] || fail
 codex_run="$(SQUAD_DEVKIT_MANAGER=codex "$devkit" "$project_directory" --dry-run)"
-[[ "$codex_run" == *"cli: $test_bin/codex PROMPT"* ]] || fail
+[[ "$codex_run" == *"cli: $test_bin/codex -c developer_instructions=\\'\\'\\'INSTRUCTIONS\\'\\'\\'"* ]] || fail
 if "$devkit" "$project_directory" --manager cursor --dry-run 2>"$temp_directory/log"; then
   echo 'Expected an unknown manager to fail' >&2
   exit 1
@@ -111,7 +111,7 @@ squad join manager-2 --role manager-devkit >/dev/null
 printf '%s\n' "$live_pid" >.squad/managers/manager-2.pid
 printf '999999\n' >.squad/managers/manager.pid
 "$wrapper" claude 'Hello {{MANAGER_ID}}.'
-grep -q '^manager|--permission-mode auto Hello manager\.\\n\\n## Your role (.squad/roles/manager-devkit.md)' "$MANAGER_TEST_LOG"
+grep -q '^manager|--permission-mode auto --append-system-prompt Hello manager\.\\n\\n## Your role (.squad/roles/manager-devkit.md)' "$MANAGER_TEST_LOG"
 grep -q 'You do not write code' "$MANAGER_TEST_LOG"
 [[ "$(grep -c 'squad-devkit template' "$MANAGER_TEST_LOG")" == 0 ]] || fail
 grep -q '^  manager-2 (role: manager-devkit)' "$MANAGER_TEST_LOG"
@@ -127,4 +127,59 @@ SQUAD_DEVKIT_STALE_MINUTES=-1 "$wrapper" claude 'Again as {{MANAGER_ID}}.'
 grep -q '^manager|' "$MANAGER_TEST_LOG"
 [[ "$(grep -c 'manager-2\|manager-9' "$MANAGER_TEST_LOG")" == 0 ]] || fail
 [[ -z "$(squad agents | grep manager || true)" ]] || fail
+: >"$MANAGER_TEST_LOG"
+"$wrapper" claude 'Rules for {{MANAGER_ID}}.' 'check prod logs'
+grep -q '^manager|--permission-mode auto --append-system-prompt Rules for manager\..* check prod logs$' "$MANAGER_TEST_LOG"
+cat >"$test_bin/codex" <<'EOF'
+#!/usr/bin/env bash
+printf 'codex-arg:%s\n' "$@" >>"$MANAGER_TEST_LOG"
+EOF
+chmod +x "$test_bin/codex"
+: >"$MANAGER_TEST_LOG"
+"$wrapper" codex $'Line one for {{MANAGER_ID}}.\nSay "hi".' 'check prod logs'
+[[ "$(sed -n '1p' "$MANAGER_TEST_LOG")" == 'codex-arg:-c' ]] || fail
+[[ "$(sed -n '2p' "$MANAGER_TEST_LOG")" == "codex-arg:developer_instructions='''Line one for manager." ]] || fail
+grep -qx 'Say "hi".' "$MANAGER_TEST_LOG"
+grep -qx 'codex-arg:check prod logs' "$MANAGER_TEST_LOG"
+# A Claude Code usage limit hands the session to the fallback manager (codex).
+cat >"$temp_directory/transcript.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"check prod logs for 26/10"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Plan written; starting logs-1."}]}}
+EOF
+cat >"$test_bin/claude" <<'EOF'
+#!/usr/bin/env bash
+settings=""
+while (( $# > 0 )); do
+  [[ "$1" == --settings ]] && settings="$2"
+  shift
+done
+if [[ -z "$settings" ]]; then
+  echo 'claude without settings' >>"$MANAGER_TEST_LOG"
+  exit 0
+fi
+cp "$settings" "$MANAGER_TEST_LOG.settings"
+hook="$(jq -r '.hooks.StopFailure[0].hooks[0].command' "$settings")"
+printf '{"error":"rate_limit","transcript_path":"%s"}' "$TRANSCRIPT" | eval "$hook"
+sleep 30
+echo 'claude was not stopped' >>"$MANAGER_TEST_LOG"
+EOF
+chmod +x "$test_bin/claude"
+: >"$MANAGER_TEST_LOG"
+TRANSCRIPT="$temp_directory/transcript.jsonl" SQUAD_DEVKIT_HANDOFF_DELAY=0.2 \
+  "$wrapper" claude 'You are the {{MANAGER_LABEL}} manager ({{MANAGER_ID}}).' 'check prod logs' 2>"$temp_directory/handoff-log"
+grep -q 'Handing over to Codex CLI as manager' "$temp_directory/handoff-log"
+[[ "$(grep -c 'claude was not stopped' "$MANAGER_TEST_LOG")" == 0 ]] || fail
+[[ "$(jq -r '.hooks.StopFailure[0].matcher' "$MANAGER_TEST_LOG.settings")" == 'rate_limit|billing_error' ]] || fail
+grep -q "^codex-arg:developer_instructions='''You are the Codex CLI manager (manager)" "$MANAGER_TEST_LOG"
+grep -q '^codex-arg:Claude Code, the previous manager of this squad, stopped because it hit a limit (rate_limit)' "$MANAGER_TEST_LOG"
+grep -q '^\*\*user\*\*: check prod logs for 26/10' .squad/managers/manager.handoff.md
+grep -q '^\*\*assistant\*\*: Plan written; starting logs-1.' .squad/managers/manager.handoff.md
+grep -q '^## Squad tasks' .squad/managers/manager.handoff.md
+[[ ! -e .squad/managers/manager.handoff.json && ! -e .squad/managers/manager.settings.json ]] || fail
+[[ -z "$(squad agents | grep manager || true)" ]] || fail
+: >"$MANAGER_TEST_LOG"
+TRANSCRIPT="$temp_directory/transcript.jsonl" SQUAD_DEVKIT_FALLBACK_MANAGER=none \
+  "$wrapper" claude 'No fallback.' 'check prod logs'
+[[ "$(grep -c '^codex-arg:' "$MANAGER_TEST_LOG")" == 0 ]] || fail
+grep -qx 'claude without settings' "$MANAGER_TEST_LOG"
 echo 'PASS: manager defaults to Claude Code, first-run choice is saved, overrides, setup, installer, and manager lifecycle'

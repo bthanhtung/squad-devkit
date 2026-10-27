@@ -64,8 +64,7 @@ objective_dry_run="$(cd "$HOME" && "$repo_root/scripts/squad-devkit.sh" 'demo pr
 objective_dry_run="$(cd "$HOME" && "$repo_root/scripts/squad-devkit.sh" 'demo project' --task 'check the deploy logs' --dry-run)"
 [[ "$objective_dry_run" == *'Objective: check the deploy logs'* ]] || fail
 [[ "$objective_dry_run" == *'check the deploy logs'* ]] || fail
-[[ "$objective_dry_run" != *'No objective was supplied'* ]] || fail
-[[ "$dry_run" == *'No objective was supplied'* ]] || fail
+[[ "$dry_run" == *'Do not repeat these instructions to the human.'* ]] || fail
 if "$repo_root/scripts/squad-devkit.sh" 'missing project' --dry-run >"$temp_directory/error" 2>&1; then
   echo 'Expected an unknown project name to fail' >&2
   exit 1
@@ -149,12 +148,12 @@ fi
 [[ "$(tmux list-panes -t "$session_name" -F '#{pane_title}')" == 'Claude Code · manager' ]] || fail
 [[ "$(tmux show-options -t "$session_name" -v prefix)" == C-a ]] || fail
 [[ "$(tmux show-options -gv prefix)" == C-b ]] || fail
-rg -q '^claude:--permission-mode auto You are the Claude Code manager.*You already joined the squad as manager;' "$DEVKIT_TEST_LOG"
+rg -q '^claude:--permission-mode auto --append-system-prompt You are the Claude Code manager.*You already joined the squad as manager;' "$DEVKIT_TEST_LOG"
 rg -q '## Your role \(.squad/roles/manager-devkit.md\).*You do not write code' "$DEVKIT_TEST_LOG"
 rg -q '^  manager \(role: manager-devkit\)' <<<"$(cd "$project_directory" && squad agents)"
 [[ -f "$project_directory/.squad/managers/manager.pid" ]] || fail
 rg -Fq "squad-worker is: $repo_root/scripts/squad-worker.sh" "$DEVKIT_TEST_LOG"
-rg -q 'No objective was supplied' "$DEVKIT_TEST_LOG"
+rg -q 'Do not repeat these instructions to the human\.\\n\\n## Your role' "$DEVKIT_TEST_LOG"
 [[ "$(cat "$DEVKIT_TEST_LOG")" != *ERROR* ]] || fail
 for role in manager-devkit dev tester reviewer; do
   cmp -s "$repo_root/templates/devkit/$role.md" "$project_directory/.squad/roles/$role.md"
@@ -184,7 +183,7 @@ rg -Fq "here:$resolved_project_directory:GHOSTTY-7:" "$DEVKIT_TEST_LOG"
 rg -q '^here:.*You already joined the squad as manager;' "$DEVKIT_TEST_LOG"
 [[ "$(cd "$project_directory" && squad agents)" != *'manager'* ]] || fail
 [[ ! -e "$project_directory/.squad/managers/manager.pid" ]] || fail
-rg -q "^here:.*The human's objective is:.*check the deploy logs" "$DEVKIT_TEST_LOG"
+rg -q "^here:.*--append-system-prompt You are the Claude Code manager.* check the deploy logs$" "$DEVKIT_TEST_LOG"
 cmp -s "$repo_root/templates/devkit/manager-devkit.md" "$project_directory/.squad/roles/manager-devkit.md"
 [[ "$(cat "$project_directory/.squad/roles/dev.md")" == 'my own dev role' ]] || fail
 rg -q 'keeping customized .*/dev.md' "$temp_directory/here-log"
@@ -206,7 +205,7 @@ ghostty_dry_run="$("$repo_root/scripts/squad-devkit.sh" "$project_directory" --g
 manager_script="$(sed -n '3p' "$DEVKIT_OSASCRIPT_LOG")"
 [[ -x "$manager_script" ]] || fail
 rg -Fq 'lib/squad-devkit-manager.sh' "$manager_script"
-rg -Fq 'No objective was supplied' "$manager_script"
+rg -Fq 'Do not repeat these instructions to the human.' "$manager_script"
 rg -Fq 'export SQUAD_DEVKIT_GHOSTTY_TERMINAL="$(osascript -e' "$manager_script"
 bash -n "$manager_script"
 echo 'PASS: name lookup, manager-only launch (here, tmux, Ghostty), session reuse, and role refresh'

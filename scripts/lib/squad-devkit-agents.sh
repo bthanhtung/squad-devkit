@@ -27,25 +27,46 @@ squad_client_flag() {
   esac
 }
 
-# Prints the interactive command that starts a manager with an initial prompt.
+# Prints the interactive command that starts a manager. The instructions go
+# to the system prompt where the CLI supports it (Claude Code, Codex), so the
+# chat shows only the human's message; other CLIs receive them as the first
+# message. The message may be empty. A fourth argument adds a Claude Code
+# settings file (used for the handoff hook).
 manager_start_command() {
   local client="$1"
-  local prompt="$2"
+  local instructions="$2"
+  local message="${3:-}"
   local binary
   binary="$(command -v "$client")"
   local permission_mode="${SQUAD_DEVKIT_PERMISSION_MODE-auto}"
+  local literal_quotes="'''"
+  local arguments=()
   case "$client" in
     claude)
       if [[ -n "$permission_mode" && "$permission_mode" != default ]]; then
-        shell_join "$binary" --permission-mode "$permission_mode" "$prompt"
-      else
-        shell_join "$binary" "$prompt"
+        arguments+=(--permission-mode "$permission_mode")
+      fi
+      arguments+=(--append-system-prompt "$instructions")
+      if [[ -n "${4:-}" ]]; then
+        arguments+=(--settings "$4")
       fi
       ;;
-    codex|grok) shell_join "$binary" "$prompt" ;;
-    agy|gemini) shell_join "$binary" -i "$prompt" ;;
-    opencode) shell_join "$binary" --prompt "$prompt" ;;
+    codex)
+      # The value is a TOML literal string, which cannot contain three quotes.
+      arguments+=(-c "developer_instructions=$literal_quotes${instructions//$literal_quotes/"' ' '"}$literal_quotes")
+      ;;
+    *)
+      message="$instructions${message:+$'\n\n'"The human's request: $message"}"
+      ;;
   esac
+  if [[ -n "$message" ]]; then
+    case "$client" in
+      agy|gemini) arguments+=(-i "$message") ;;
+      opencode) arguments+=(--prompt "$message") ;;
+      *) arguments+=("$message") ;;
+    esac
+  fi
+  shell_join "$binary" ${arguments[@]+"${arguments[@]}"}
 }
 
 installed_manager_clients() {

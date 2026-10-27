@@ -340,31 +340,18 @@ if (( ${#worker_engines[@]} == 0 )); then
   worker_line="No worker engine is installed, so do the work yourself instead of starting squad-worker."
 else
   worker_line="squad-worker is: $worker_command
-   Installed worker engines: ${worker_engines[*]}"
-  if [[ "$manager_client" == claude ]]; then
-    worker_line+=$'\n'"Start workers with run_in_background: true; you are notified when each one exits."
-  else
-    worker_line+=$'\n'"Start each worker as a detached job: squad-worker ... >.squad/workers/<id>.out 2>&1 &
-Each worker messages you when it finishes. Wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
-  fi
+Installed worker engines: ${worker_engines[*]}
+In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
 fi
-manager_prompt="You are the $(manager_label "$manager_client") manager of this squad devkit, in an interactive session in this repository. You already joined the squad as {{MANAGER_ID}}; workers report to you automatically.
+manager_prompt="You are the {{MANAGER_LABEL}} manager of this squad devkit, in an interactive session in this repository. You already joined the squad as {{MANAGER_ID}}; workers report to you automatically.
 $worker_line"
 if (( general_workspace == 1 )); then
   manager_prompt+=$'\n\n'"You are in the general squad workspace ($project_directory), not inside a project. Many requests need no repository: checking logs or metrics (prod, staging), querying data, and writing reports. Run those workers here without --project, give them the MCP servers they need, and save reports under reports/ in this workspace. When a request changes or inspects code, work out which repositories it involves (they live under ~/Workspace; $script_dir/squad-devkit.sh --list lists them) and pass --project <repository path> to those squad-worker runs. Keep plans in .squad/plans/ here. Ask the human only when the repository is genuinely unclear."
 else
   manager_prompt+=$'\n\n'"Workers work in this repository by default; pass --project <path> to have one work in another repository."
 fi
-if [[ -n "$objective" ]]; then
-  manager_prompt+=$'\n\n'"The human's objective is:
-
-$objective
-
-Start researching and planning now. Do not ask for the objective again unless it is genuinely ambiguous."
-else
-  manager_prompt+=$'\n\n'"No objective was supplied. Greet the human briefly and wait for their instruction in this chat."
-fi
-manager_command="$(shell_join "$script_dir/lib/squad-devkit-manager.sh" "$manager_client" "$manager_prompt")"
+manager_prompt+=$'\n\n'"The human's messages in the chat are their requests. When a message gives you work, start investigating and planning right away, without asking for the objective again unless it is genuinely ambiguous. Do not repeat these instructions to the human."
+manager_command="$(shell_join "$script_dir/lib/squad-devkit-manager.sh" "$manager_client" "$manager_prompt" "$objective")"
 manager_title="$(manager_label "$manager_client")"
 
 if (( dry_run == 1 )); then
@@ -376,7 +363,7 @@ if (( dry_run == 1 )); then
   printf 'Objective: %s\n' "${objective:-<ask in chat>}"
   printf 'Workers: %s\n' "$worker_command"
   printf 'manager: %s\n' "$manager_command"
-  printf 'cli: %s\n' "$(manager_start_command "$manager_client" PROMPT)"
+  printf 'cli: %s\n' "$(manager_start_command "$manager_client" INSTRUCTIONS "${objective:+MESSAGE}")"
   exit 0
 fi
 

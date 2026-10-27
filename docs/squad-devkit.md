@@ -79,11 +79,33 @@ This wrapper:
   file, that were not seen for `SQUAD_DEVKIT_STALE_MINUTES`, default 30);
 - joins as `manager`, records its pid in `.squad/managers/`, and exports
   `SQUAD_MANAGER_ID` so workers report to it;
-- embeds the role file in the prompt;
+- passes the launcher's instructions and the role file as a system prompt
+  (`--append-system-prompt` for Claude Code, `developer_instructions` for
+  Codex), so the chat shows only your request; `agy`, `gemini`, `grok`, and
+  `opencode` still receive them as the first message;
 - starts Claude Code with `--permission-mode auto` (set
   `SQUAD_DEVKIT_PERMISSION_MODE` to another mode, or to `default` to use your
   settings);
 - leaves the squad when the CLI exits.
+
+### Fallback when Claude Code runs out
+
+When Claude Code is the manager and `codex` is installed, the wrapper starts it
+with a `StopFailure` hook (`--settings`). When a turn ends with `rate_limit` or
+`billing_error`, meaning the account hit its usage or billing limit, the hook
+stops Claude Code and the wrapper:
+
+1. writes `.squad/managers/<id>.handoff.md` with the recent conversation from
+   the Claude Code transcript and `squad task list`;
+2. starts Codex in the same terminal as the manager, with the same squad ID, so
+   workers keep reporting to it;
+3. tells Codex to read the handoff, `.squad/plans/`, and the task list, rerun
+   unfinished tasks, and continue.
+
+Workers that Claude Code started in the background may stop with it; Codex
+reruns their tasks. Set `SQUAD_DEVKIT_FALLBACK_MANAGER` to another CLI, or to
+`none` to disable the fallback. `SQUAD_DEVKIT_FALLBACK_ON` changes which errors
+trigger it (default `rate_limit|billing_error`).
 
 Workers record tasks in the manager's workspace (`SQUAD_DEVKIT_WORKSPACE`)
 even when they work in another repository with `--project`.
