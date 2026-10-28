@@ -78,10 +78,12 @@ fn path_with_fake_binary(tmp: &TempDir, binary: &str) -> String {
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     create_fake_binary(&bin_dir, binary);
-    match std::env::var("PATH") {
-        Ok(existing) => format!("{}:{}", bin_dir.display(), existing),
-        Err(_) => bin_dir.display().to_string(),
+    // The PATH separator is ':' on Unix and ';' on Windows.
+    let mut paths = vec![bin_dir];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
     }
+    std::env::join_paths(paths).unwrap().into_string().unwrap()
 }
 
 #[test]

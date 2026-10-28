@@ -7,17 +7,23 @@ source "$script_dir/lib/squad-devkit-agents.sh"
 
 usage() {
   cat <<'EOF'
-Usage: install-devkit.sh [--manager CLI] [--no-prompt]
+Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud]
 
 Link squad-devkit, squad-worker, and squad-monitor into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
 and choose the manager CLI. Claude Code is the default when installed; without
 it, the installer asks which installed CLI should manage and saves the answer.
 Re-run it, or run squad-devkit --setup, to change the choice.
+
+If the claude-hud status line plugin is installed, the installer also turns on
+its weekly quota and usage-pace display (display.sevenDayThreshold = 0,
+display.usagePace = true) unless you already set those keys; --no-hud skips it.
+The manager's status line then shows the weekly quota next to the squad label.
 EOF
 }
 
 manager_client=""
 no_prompt=0
+configure_hud=1
 while (( $# > 0 )); do
   case "$1" in
     --manager)
@@ -30,6 +36,7 @@ while (( $# > 0 )); do
       ;;
     --manager=*) manager_client="${1#*=}" ;;
     --no-prompt) no_prompt=1 ;;
+    --no-hud) configure_hud=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -65,14 +72,26 @@ fi
 printf 'Manager: %s (%s)\n' "$manager_client" "$(manager_label "$manager_client")"
 
 worker_engines=()
-for engine in codex ccr; do
+for engine in claude codex grok agy ccr; do
   if command -v "$engine" >/dev/null 2>&1; then
     worker_engines+=("$engine")
   fi
 done
 if (( ${#worker_engines[@]} == 0 )); then
-  echo 'Workers: none (install codex or ccr; until then the manager does the work itself)'
+  echo 'Workers: none (install claude, codex, grok, agy, or ccr; until then the manager does the work itself)'
 else
-  printf 'Workers: %s\n' "${worker_engines[*]}"
+  printf 'Workers (most trusted first): %s\n' "${worker_engines[*]}"
+fi
+hud_config="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/claude-hud/config.json"
+if (( configure_hud == 1 )) && [[ -d "$(dirname "$hud_config")" ]] && command -v jq >/dev/null 2>&1; then
+  current="$(cat "$hud_config" 2>/dev/null || echo '{}')"
+  if updated="$(jq '.display = ({sevenDayThreshold: 0, usagePace: true} + (.display // {}))' <<<"$current" 2>/dev/null)"; then
+    if [[ "$(jq -c . <<<"$current" 2>/dev/null)" != "$(jq -c . <<<"$updated")" ]]; then
+      printf '%s\n' "$updated" >"$hud_config.tmp" && mv "$hud_config.tmp" "$hud_config"
+      echo "claude-hud: weekly quota and usage pace enabled ($hud_config)"
+    else
+      echo 'claude-hud: weekly quota display already configured'
+    fi
+  fi
 fi
 echo 'Start with: squad-devkit [project] [objective]'

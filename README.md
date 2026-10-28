@@ -1,174 +1,181 @@
-<p align="center">
-  <img src="./assets/squad-readme-hero.png" alt="squad multi-agent terminal collaboration through SQLite" />
-</p>
+<h1 align="center">squad-devkit</h1>
 
-<h1 align="center">squad</h1>
-
-<p align="center"><strong>Multi-AI-agent terminal collaboration via simple CLI commands.</strong></p>
+<p align="center"><strong>One manager agent. On-demand workers. Fewer tokens.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/mco-org/squad/stargazers"><img src="https://img.shields.io/github/stars/mco-org/squad?style=flat-square&color=f59e0b" alt="GitHub stars" /></a>
+  <a href="https://github.com/bthanhtung/squad-devkit/actions/workflows/ci.yml"><img src="https://github.com/bthanhtung/squad-devkit/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/bthanhtung/squad-devkit/releases"><img src="https://img.shields.io/github/v/release/bthanhtung/squad-devkit?style=flat-square" alt="Release" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/Rust-1.77%2B-orange?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.77+" />
-  <img src="https://img.shields.io/badge/Platforms-4%20supported-7c3aed?style=flat-square" alt="4 supported platforms" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-7c3aed?style=flat-square" alt="macOS and Linux" />
 </p>
 
-<p align="center">squad lets multiple AI CLI agents communicate through shell commands + SQLite.<br/>No daemon, no background processes — every command is a one-shot operation.</p>
-
-<p align="center">English | <a href="./README.zh-CN.md">简体中文</a></p>
-
-<table align="center">
-  <tr>
-    <td align="center"><a href="https://github.com/anthropics/claude-code"><img src="https://github.com/anthropics.png?size=96" alt="Claude Code" width="48" /></a></td>
-    <td align="center"><a href="https://github.com/google-gemini/gemini-cli"><img src="https://github.com/google-gemini.png?size=96" alt="Gemini CLI" width="48" /></a></td>
-    <td align="center"><a href="https://github.com/openai/codex"><img src="https://github.com/openai.png?size=96" alt="Codex CLI" width="48" /></a></td>
-    <td align="center"><a href="https://github.com/sst/opencode"><img src="https://raw.githubusercontent.com/sst/opencode/master/packages/console/app/src/asset/brand/opencode-logo-light-square.svg" alt="OpenCode" width="48" /></a></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Claude Code</strong></td>
-    <td align="center"><strong>Gemini CLI</strong></td>
-    <td align="center"><strong>Codex CLI</strong></td>
-    <td align="center"><strong>OpenCode</strong></td>
-  </tr>
-  <tr>
-    <td align="center"><code>claude</code></td>
-    <td align="center"><code>gemini</code></td>
-    <td align="center"><code>codex</code></td>
-    <td align="center"><code>opencode</code></td>
-  </tr>
-</table>
-
-> One slash command. Multiple agents collaborating in real-time.
->
-> Assign a manager, spin up workers, add an inspector — each in its own terminal, communicating through SQLite.
-
----
-
-## squad-devkit: one manager, on-demand workers
-
-This fork adds **squad-devkit**. You talk to one manager agent (Claude Code by
-default). The manager plans the work and starts **Codex** or **CCR** workers
-only when work needs delegating. Each worker gets its own live monitor pane.
-No worker runs, or spends tokens, while idle.
+squad-devkit turns one terminal into an engineering team. You talk to a single
+manager agent (Claude Code by default). The manager triages the request, plans
+it, gives each task to the most cost-effective worker that can do it well
+(Claude, Codex, Grok, Antigravity, or a cheap local model), verifies every
+result, and sends back anything that is wrong. Workers start only when there is
+work and stop when they are done, so idle agents cost nothing.
 
 ```
 ┌──────────────────────────────┬─────────────────────────────┐
 │ Claude Code · manager        │ dev-1 · codex (high)        │
 │                              │ ● RUNNING · 01:42           │
-│ > fix the flaky login test   │ Calls: 6 · failed: 1        │
-│                              ├─────────────────────────────┤
-│ Planning… starting dev-1     │ doc-1 · ccr                 │
-│ (codex) and doc-1 (ccr)      │ ✓ COMPLETED · 00:12         │
+│ > add rate limiting to the   │ Calls: 6 · failed: 0        │
+│   public API                 ├─────────────────────────────┤
+│                              │ review-1 · claude (sonnet)  │
+│ Plan: 3 tasks · dev-1 codex  │ ✓ COMPLETED · 00:58         │
+│ test-1 codex · review-1 ...  ├─────────────────────────────┤
+│ ─────────────────────────────│ docs-1 · ccr                │
+│ weekly 41% · squad saved 1.2M│ ✓ COMPLETED · 00:12         │
 └──────────────────────────────┴─────────────────────────────┘
 ```
 
-### 1. Install
+**Contents:** [Highlights](#highlights) · [Install](#install) ·
+[Usage](#usage) · [Workers](#workers) · [Monitor and savings](#monitor-and-savings) ·
+[Configuration](#configuration) · [Security](#security) ·
+[Contributing](#contributing) · [Credits](#credits) ·
+[squad CLI reference](#squad-cli-reference)
 
-Requirements: macOS, [`squad`](#install), one manager CLI, and at least one
-worker engine: `codex`, or `ccr` from
-[claude-code-router](https://github.com/musistudio/claude-code-router).
-`jq` (bundled with recent macOS) enables live metrics.
+## Highlights
+
+- **Plans like a senior team.** Every request is triaged (workstream, risk,
+  complexity, whether a human must decide) and planned from five perspectives:
+  principal engineer, engineering manager, technical lead, QA, and end user.
+- **Right worker for the job.** Workers are chosen by trust and cost:
+  `claude` > `codex` > `grok`, `agy` > `ccr`. Claude workers use the smallest
+  model that fits (haiku by default, sonnet or opus when needed).
+- **The manager owns the outcome.** Reports are checked against `git diff` and
+  re-run verification; defects go back to the same worker with `path:line`
+  detail, moving up a model or engine if a fix fails twice.
+- **Workers can push back.** A worker can question the manager or another
+  worker (`squad-ask`) when the brief is ambiguous or there is a better approach.
+- **Nothing hangs.** Workers have a time limit and stall detection; failures
+  report to the manager, which re-runs or reassigns the task.
+- **Live visibility.** Each worker opens its own monitor pane (Herdr, tmux, or
+  Ghostty). With claude-hud, the manager's status line shows your weekly quota
+  and the tokens the squad saved.
+- **Lean by design.** Instructions live in the system prompt, workers start with
+  MCP servers off, old run data is pruned automatically, and a Codex manager
+  takes over if Claude Code hits its usage limit.
+
+## Install
+
+Requirements: macOS or Linux, [`squad`](#squad-cli-reference), `jq`, one manager
+CLI (`claude`, `codex`, `agy`, `gemini`, `grok`, or `opencode`), and at least one
+worker engine (`claude`, `codex`, `grok`, `agy`, or `ccr` from
+[claude-code-router](https://github.com/musistudio/claude-code-router)).
+Herdr, tmux, or Ghostty enable monitor panes.
 
 ```bash
-brew install mco-org/tap/squad
+brew install mco-org/tap/squad jq
 git clone https://github.com/bthanhtung/squad-devkit.git
 squad-devkit/scripts/install-devkit.sh
 ```
 
 The installer links `squad-devkit`, `squad-worker`, and `squad-monitor` into
-`~/.local/bin` and picks the manager:
+`~/.local/bin`, picks the manager (Claude Code if installed, otherwise it asks
+which installed CLI to use), lists the worker engines it found, and, when
+claude-hud is installed, turns on its weekly-quota and usage-pace display.
+Run `squad-devkit --setup` to choose another manager later.
 
-- If **Claude Code** is installed, it is the manager and nothing is asked.
-- Otherwise the installer lists the CLIs it found (`codex`, `agy`, `gemini`,
-  `grok`, `opencode`) and asks which one should manage. The answer is saved in
-  `~/.config/squad-devkit/config`.
-- Run `squad-devkit --setup` to choose again, or pass `--manager codex` for one run.
-
-### 2. Start a manager
+## Usage
 
 ```bash
-squad-devkit                                 # from ~: general workspace; inside a repo: that repo
-squad-devkit "check prod logs 26/10-27/10 and write a report"   # no project needed
-squad-devkit my-project                      # finds the git repo by name under ~/Workspace
-squad-devkit my-project "fix the flaky login test"
-squad-devkit my-project --tmux               # or --ghostty for a new window
+squad-devkit                                          # from ~: general workspace; in a repo: that repo
+squad-devkit "check prod error logs since 18:00 and write a report"
+squad-devkit my-service "add rate limiting to the public API"
+squad-devkit my-service --tmux                        # or --ghostty for a new window
+squad-devkit --version
 ```
 
-The manager starts in the current terminal, in Claude Code's `auto` permission
-mode. It coordinates and does not write code itself:
+Describe the work in the chat. The manager investigates, writes a plan to
+`.squad/plans/`, starts workers in parallel, answers their questions, verifies
+their results, and reports back with evidence. From your home directory it runs
+in the general workspace `~/.squad-devkit`, where requests such as log checks
+and reports need no repository; for code changes it finds the repositories
+involved. In git repositories the launcher leaves the working tree clean.
 
-1. It investigates the code and writes a detailed plan to `.squad/plans/`.
-2. It sends each worker a complete brief: the files the worker owns, the exact
-   changes, the acceptance criteria, and the verification commands.
-3. It checks every report against `git diff` and reruns the verification.
-4. When something is wrong, it sends the same worker a fix brief listing each
-   defect, until every check passes.
-5. It reports to you with evidence.
+## Workers
 
-The launcher joins the squad for the manager and leaves when you exit. It also
-archives managers whose process has ended, so a project keeps one `manager`.
-Started from your home directory, the manager runs in the general workspace
-`~/.squad-devkit`. Requests such as log checks and reports need no project there.
-For code changes, the manager finds the repositories involved and runs workers
-in them with `--project`.
-
-### 3. Workers
-
-The manager runs workers for you. You can also run one yourself from the project:
+The manager runs workers for you; you can also run them yourself:
 
 ```bash
-squad-worker dev-1 --engine codex --role dev --brief-file - <<'BRIEF'
-Fix the off-by-one in src/pager.rs::page_count.
-Files you own: src/pager.rs, tests/pager_test.rs.
-Verify: cargo test pager
-BRIEF
-
-squad-worker doc-1 --engine ccr --brief "Document the --json flag in README.md. Files you own: README.md"
+squad-worker dev-1 --engine codex --role dev --brief-file brief.md
+squad-worker review-1 --engine claude --model sonnet --role reviewer --brief "Review git diff for src/api/"
+squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief "..."
+squad-worker --list                 # running workers
+squad-worker --stop dev-1           # or --stop all
 ```
 
-| Choice | Use it for |
-|---|---|
-| `--engine ccr` | Cheap local model, file tools only: docs, small exact edits, summaries |
-| `--engine codex --profile medium` | Mechanical edits and tests from a precise spec |
-| `--engine codex` (profile `high`) | Normal implementation that needs a shell, builds, or tests |
-| `--engine codex --profile max` | Only hard or ambiguous problems |
-| `--role dev\|tester\|reviewer\|…` | Role prompt from `.squad/roles/<role>.md` |
-| `--mcp NAME` | Enable one MCP server for this worker (all are off by default) |
-| `--project DIR` | Work in another repository (default: the manager's workspace) |
+| Engine | Trust | Use for |
+|---|---|---|
+| `claude` | highest | Work that must be right the first time; `haiku` by default, `sonnet` for complex or high-risk work, `opus` for the hardest |
+| `codex` | high | Normal implementation, debugging, and tests; the only engine with MCP access |
+| `grok`, `agy` | medium | Low-risk implementation or a second opinion (experimental) |
+| `ccr` | basic | Docs and small exact edits; cheap model, file tools only |
 
-A worker joins the squad and receives a structured task. It runs once without
-interaction, completes the task with its report, messages the manager, and
-leaves. Reports are saved in `.squad/workers/` and listed by `squad task list`.
+Roles: `dev`, `tester`, `reviewer`, `researcher`, or any name; a role with a file
+in `.squad/roles/` gets that prompt. Use `--project <path>` to work in another
+repository.
 
-### 4. Monitor
+## Monitor and savings
 
-Each worker opens a pane next to the manager in **Herdr**, **tmux**, or
-**Ghostty**. The first pane goes to the right of the manager, and later panes
-stack below it. Focus stays on the manager. Every second the pane shows:
+Each worker pane shows its state, elapsed time, calls, failures, changed files,
+tokens, and recent activity, then closes itself 60 seconds after the run ends.
+`squad-monitor --all` shows every run as a table in any terminal. With
+claude-hud, the manager's status line adds the squad label, for example
+`squad 2 running · saved 1.2M tok`: the tokens that workers on other engines
+processed instead of Claude during this session.
 
-- the state (running, completed, or failed) and the elapsed time
-- commands or tool calls, failures, and changed files
-- tokens (Codex reports them when the run ends; CCR does not report them)
-- recent activity and, at the end, the report
+## Configuration
 
-Press Enter to close a finished pane. Set `SQUAD_WORKER_PANE_HOLD=60` to
-close panes automatically, or `SQUAD_WORKER_PANES=0` to open none. In any
-other terminal, run `squad-monitor --all` for a table of every worker run.
+| Variable | Default | Purpose |
+|---|---|---|
+| `SQUAD_DEVKIT_MANAGER` | saved choice, else `claude` | Manager CLI for a run (`--manager`) |
+| `SQUAD_DEVKIT_PERMISSION_MODE` | `auto` | Claude Code permission mode for the manager |
+| `SQUAD_DEVKIT_FALLBACK_MANAGER` | `codex` | Manager that takes over when Claude Code hits a limit (`none` disables) |
+| `SQUAD_DEVKIT_RETENTION_DAYS` | `7` | Days to keep finished worker runs |
+| `SQUAD_DEVKIT_MAX_MB` | `200` | Size cap for `.squad/workers` |
+| `SQUAD_DEVKIT_STATUSLINE` | `1` | `0` turns off the squad status-line label |
+| `SQUAD_WORKER_CLAUDE_MODEL` | `haiku` | Default model for Claude workers |
+| `SQUAD_WORKER_CODEX_PROFILE` | `high` | Default Codex profile for workers |
+| `SQUAD_WORKER_TIMEOUT` / `SQUAD_WORKER_STALL` | `45` / `10` | Minutes before a run is stopped / counted as stuck |
+| `SQUAD_WORKER_PANE_HOLD` | `60` | Seconds a finished monitor pane stays open |
+| `SQUAD_DEVKIT_ROUTER_URL` | unset | Optional advisory triage router for `squad-route` |
 
-### Why it saves tokens
+`squad-devkit --clean` prunes old worker runs on demand and `--clean-all`
+removes every finished run. Full reference:
+[docs/squad-devkit.md](./docs/squad-devkit.md).
 
-- **No idle workers.** The previous always-on workers spent about 1M tokens
-  polling before they got any work.
-- **Small worker context.** Codex workers start with MCP servers off, so a
-  small task costs about 18k tokens instead of 52–98k.
-- **Right-sized models.** The manager picks CCR or a Codex profile for each task.
-- **No polling.** The manager waits for worker reports instead of polling.
+## Security
 
-Full reference: [docs/squad-devkit.md](./docs/squad-devkit.md).
+Codex workers run sandboxed to the project, Claude workers accept edits and run
+shell commands only inside Claude Code's sandbox, and ccr workers get file tools
+only. squad-devkit never stores credentials, and worker prompts forbid reading
+them from configuration files. See [SECURITY.md](./SECURITY.md) for details and
+how to report a vulnerability.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the
+development setup and the checks CI runs, and [CHANGELOG.md](./CHANGELOG.md)
+for release notes.
+
+## Credits
+
+squad-devkit is built by [TungDaDev](https://github.com/bthanhtung) on
+[squad](https://github.com/mco-org/squad) by mco-org, which provides the SQLite
+message bus, task records, and the `squad` CLI. Both are released under the
+[MIT License](./LICENSE).
 
 ---
 
-## Install
+## squad CLI reference
+
+The rest of this document is the reference for the underlying `squad` CLI,
+from the upstream project ([简体中文](./README.zh-CN.md)).
+
+### Install
 
 ```bash
 # Homebrew (macOS)
@@ -186,7 +193,7 @@ brew install mco-org/tap/squad
 cargo install --git https://github.com/mco-org/squad.git
 ```
 
-## Quick Start
+### Quick Start
 
 ```bash
 # Install /squad slash command for your AI tools
@@ -203,7 +210,7 @@ squad init
 
 That's it. Each agent joins, reads its role instructions, and enters a work loop that checks for messages. The manager breaks down your goal and assigns tasks to workers.
 
-## Optional tmux Launcher
+### Optional tmux Launcher
 
 For Unix-like environments that already use Claude Code, this repo also ships an optional helper script:
 
@@ -225,7 +232,7 @@ Requirements:
 
 This launcher is intentionally separate from the core Rust CLI. Treat it as optional automation for people who want a repeatable multi-terminal workflow.
 
-## Usage Flow
+### Usage Flow
 
 ```
 You (human)
@@ -245,7 +252,7 @@ You (human)
 
 Multiple agents with the same role get unique IDs automatically (`worker`, `worker-2`, `worker-3`).
 
-## Commands
+### Commands
 
 | Command | Description |
 |---------|-------------|
@@ -269,7 +276,7 @@ Multiple agents with the same role get unique IDs automatically (`worker`, `work
 | `squad setup --list` | List supported platforms and status |
 | `squad clean` | Clear all state |
 
-## Setup
+### Setup
 
 Install the `/squad` slash command for your AI tools:
 
@@ -292,7 +299,7 @@ Once installed, use `/squad <role>` (or `$squad <role>` in Codex) in any project
 
 `squad init` does more than create `.squad/`: it also appends `.squad/` to `.gitignore` and adds a short squad collaboration section to `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` when those files do not already contain one. Existing builtin role files stay untouched unless you run `squad init --refresh-roles`.
 
-## How It Works
+### How It Works
 
 Agents communicate through a shared SQLite database (`.squad/messages.db`). Each agent runs in its own terminal and uses CLI commands to send and receive messages.
 
@@ -322,7 +329,7 @@ Terminal 1 (manager)          Terminal 2 (worker)          Terminal 3 (worker-2)
 
 All messages flow through SQLite — no daemon, no sockets, no background processes.
 
-### Message Flow
+#### Message Flow
 
 Agents should prefer `squad task ...` when assignment state matters, and keep `squad send` / `squad receive` as the fallback path for freeform coordination. Agents use `squad receive --wait` to block until messages arrive:
 
@@ -338,7 +345,7 @@ Agent joins
 
 `squad receive <id>` (without `--wait`) checks once and returns immediately, useful for scripting or manual checks.
 
-### ID Auto-Suffix
+#### ID Auto-Suffix
 
 When multiple agents join with the same ID, squad automatically assigns unique IDs:
 
@@ -352,7 +359,7 @@ squad join worker --role worker --client opencode --protocol-version 2
 
 This is handled server-side (atomic `INSERT OR IGNORE`), so even simultaneous joins from different terminals are safe.
 
-## Agent Capability Metadata
+### Agent Capability Metadata
 
 `squad join` can optionally record agent capability metadata:
 
@@ -365,7 +372,7 @@ squad join worker --role worker --client codex --protocol-version 2
 - `squad agents --json` exposes `client_type_raw`, `protocol_version_raw`, `effective_client_type`, `effective_protocol_version`, `supports_task_commands`, and `supports_json_receive`.
 - In the current phase, `supports_task_commands` and `supports_json_receive` are both derived from the effective protocol version, with support enabled at protocol `>= 2`.
 
-## Role Templates
+### Role Templates
 
 Roles are `.md` files in `.squad/roles/` that define agent behavior. Three are built in:
 
@@ -382,7 +389,7 @@ squad join db-expert --role dba
 
 If the builtin role templates in `.squad/roles/` drift from the bundled defaults, run `squad init --refresh-roles` to refresh only `manager.md`, `worker.md`, and `inspector.md`. Custom role files are left untouched.
 
-## Team Templates
+### Team Templates
 
 Teams are YAML files in `.squad/teams/` that define which roles are needed:
 
@@ -404,7 +411,7 @@ View a team's setup instructions:
 squad team dev
 ```
 
-## Broadcast
+### Broadcast
 
 Send a message to all agents at once:
 
@@ -417,11 +424,11 @@ squad receive worker --json
 squad send manager @all "API contract changed, update your implementations"
 ```
 
-## Requirements
+### Requirements
 
 - Rust 1.77+ (for building)
 - macOS or Linux
 
-## License
+### License
 
 MIT

@@ -15,6 +15,8 @@ script_dir="$(cd "$(dirname "$source_file")" && pwd)"
 source "$script_dir/lib/squad-tmux-launcher-helpers.sh"
 source "$script_dir/lib/squad-devkit-agents.sh"
 
+devkit_version="1.0.0"
+
 usage() {
   cat <<'EOF'
 Usage: squad-devkit [project-name-or-directory] [objective] [--task objective]
@@ -45,9 +47,14 @@ Without an objective the manager opens an interactive chat and asks for one firs
                 (or set SQUAD_DEVKIT_BACKEND=here|ghostty|tmux)
   --task TEXT   Objective for the manager; supports spaces when quoted
   --list        List the git projects found on this machine and exit
+  --clean       Prune finished worker runs (logs, reports) in the project's squad
+                workspace older than SQUAD_DEVKIT_RETENTION_DAYS (7) or beyond
+                SQUAD_DEVKIT_MAX_MB (200), then exit; every launch does this too
+  --clean-all   Remove every finished worker run, then exit
   --no-prompt   Skip the first-run manager question (or set SQUAD_DEVKIT_NO_PROMPT)
   --dry-run     Show the manager command without changing the project
   --no-attach   tmux only: start the session in the background
+  --version     Print the squad-devkit version
 EOF
 }
 
@@ -62,6 +69,7 @@ project_directory=""
 objective=""
 no_prompt=0
 list_projects=0
+clean_only=0
 if is_truthy "${SQUAD_DEVKIT_NO_PROMPT:-}"; then
   no_prompt=1
 fi
@@ -79,6 +87,8 @@ while (( $# > 0 )); do
     --no-attach) no_attach=1 ;;
     --no-prompt) no_prompt=1 ;;
     --list) list_projects=1 ;;
+    --clean) clean_only=1 ;;
+    --clean-all) clean_only=2 ;;
     --setup) setup=1 ;;
     --manager)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
@@ -99,6 +109,7 @@ while (( $# > 0 )); do
       ;;
     --task=*|--prompt=*) objective="${1#*=}" ;;
     -h|--help) usage; exit 0 ;;
+    --version) printf 'squad-devkit %s\n' "$devkit_version"; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
       if [[ -n "$project_directory" ]]; then
@@ -176,6 +187,8 @@ find_project_matches() {
 
 resolve_project_reference() {
   local reference="$1"
+  # The user typed a literal tilde; expand it ourselves.
+  # shellcheck disable=SC2088
   if [[ "$reference" == "~" ]]; then
     reference="$HOME"
   elif [[ "$reference" == "~/"* ]]; then
@@ -320,13 +333,24 @@ session_name="squad-devkit-${project_name}-${project_hash}"
 
 require_command squad
 worker_engines=()
-for engine in codex ccr; do
+# Worker engines in trust order: claude > codex > grok, agy > ccr.
+for engine in claude codex grok agy ccr; do
   if command -v "$engine" >/dev/null 2>&1; then
     worker_engines+=("$engine")
   fi
 done
 if (( ${#worker_engines[@]} == 0 )); then
-  echo "Note: neither codex nor ccr is installed; the manager will do the work itself." >&2
+  echo "Note: no worker engine (claude, codex, grok, agy, ccr) is installed; the manager will do the work itself." >&2
+fi
+if (( clean_only > 0 )); then
+  if [[ -d "$project_directory/.squad" ]]; then
+    clean_arguments=()
+    (( clean_only == 2 )) && clean_arguments=(--all)
+    "$script_dir/lib/squad-devkit-clean.sh" "$project_directory" ${clean_arguments[@]+"${clean_arguments[@]}"}
+  else
+    echo "No squad workspace in $project_directory; nothing to clean." >&2
+  fi
+  exit 0
 fi
 if [[ "$backend" == tmux ]]; then
   require_command tmux
@@ -340,8 +364,11 @@ if (( ${#worker_engines[@]} == 0 )); then
   worker_line="No worker engine is installed, so do the work yourself instead of starting squad-worker."
 else
   worker_line="squad-worker is: $worker_command
-Installed worker engines: ${worker_engines[*]}
+Installed worker engines, most trusted first: ${worker_engines[*]}
 In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
+fi
+if [[ -n "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then
+  worker_line+=$'\n'"squad-route is configured: $script_dir/squad-route.sh \"<redacted digest>\""
 fi
 manager_prompt="You are the {{MANAGER_LABEL}} manager of this squad devkit, in an interactive session in this repository. You already joined the squad as {{MANAGER_ID}}; workers report to you automatically.
 $worker_line"
@@ -407,10 +434,11 @@ squad_init_project() {
 
 prepare_project() {
   squad_init_project
+  "$script_dir/lib/squad-devkit-clean.sh" "$project_directory" --quiet || true
   local role=""
   local source=""
   local destination=""
-  for role in manager-devkit dev tester reviewer; do
+  for role in manager-devkit dev tester reviewer researcher; do
     source="$script_dir/../templates/devkit/$role.md"
     destination="$project_directory/.squad/roles/$role.md"
     if [[ ! -e "$destination" ]]; then

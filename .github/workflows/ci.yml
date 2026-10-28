@@ -49,3 +49,52 @@ jobs:
         run: |
           bash tests/squad_tmux_launcher_helpers_test.sh
           bash tests/squad_tmux_launcher_smoke.sh
+
+  devkit:
+    name: Devkit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install tools
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq tmux jq ripgrep shellcheck
+          else
+            brew install tmux jq ripgrep shellcheck
+          fi
+
+      - name: shellcheck
+        run: |
+          shellcheck -S warning scripts/squad-devkit.sh scripts/squad-worker.sh \
+            scripts/squad-worker-monitor.sh scripts/squad-ask.sh scripts/squad-route.sh \
+            scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh
+
+      - name: Build squad
+        run: cargo build
+
+      - name: devkit smoke tests
+        run: |
+          export PATH="$PWD/target/debug:$PATH"
+          bash tests/squad_devkit_launcher_smoke.sh
+          bash tests/squad_devkit_manager_choice_smoke.sh
+          bash tests/squad_worker_smoke.sh
+          bash tests/squad_devkit_clean_smoke.sh

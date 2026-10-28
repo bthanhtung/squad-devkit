@@ -84,12 +84,37 @@ if [[ "$client" == claude ]]; then
   fi
 fi
 rm -f "$handoff_marker"
-if [[ -n "$fallback" ]]; then
-  settings_file="$pid_directory/$manager_id.settings.json"
-  hook_command="$(shell_join "$lib_dir/squad-devkit-handoff-hook.sh" "$PWD/$handoff_marker")"
-  jq -n --arg matcher "${SQUAD_DEVKIT_FALLBACK_ON:-rate_limit|billing_error}" --arg command "$hook_command" \
-    '{hooks: {StopFailure: [{matcher: $matcher, hooks: [{type: "command", command: $command}]}]}}' >"$settings_file" 2>/dev/null ||
-    settings_file=""
+
+# Session settings for Claude Code, passed with --settings and merged with the
+# user's own: the fallback hook, and a status line that adds the squad label
+# (running workers, tokens offloaded from Claude) to claude-hud's weekly quota
+# view, or shows it alone when no status line is configured.
+SQUAD_DEVKIT_SESSION_START="$(date +%s)"
+export SQUAD_DEVKIT_SESSION_START
+if [[ "$client" == claude ]] && command -v jq >/dev/null 2>&1; then
+  settings='{}'
+  if [[ -n "$fallback" ]]; then
+    hook_command="$(shell_join "$lib_dir/squad-devkit-handoff-hook.sh" "$PWD/$handoff_marker")"
+    settings="$(jq -c --arg matcher "${SQUAD_DEVKIT_FALLBACK_ON:-rate_limit|billing_error}" --arg command "$hook_command" \
+      '.hooks.StopFailure = [{matcher: $matcher, hooks: [{type: "command", command: $command}]}]' <<<"$settings")"
+  fi
+  if [[ "${SQUAD_DEVKIT_STATUSLINE:-1}" != 0 ]]; then
+    savings_command="$(shell_join "$lib_dir/../squad-worker-monitor.sh" --savings "$PWD")"
+    user_status_line="$(jq -r '.statusLine.command // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null || true)"
+    if [[ "$user_status_line" == *claude-hud* ]]; then
+      # claude-hud runs --extra-cmd only with this opt-in, set for this session.
+      export CLAUDE_HUD_ALLOW_EXTRA_CMD=1
+      settings="$(jq -c --arg command "$user_status_line --extra-cmd $(shell_join "$savings_command")" \
+        '.statusLine = {type: "command", command: $command}' <<<"$settings")"
+    elif [[ -z "$user_status_line" ]]; then
+      settings="$(jq -c --arg command "$savings_command --text" \
+        '.statusLine = {type: "command", command: $command}' <<<"$settings")"
+    fi
+  fi
+  if [[ "$settings" != '{}' ]]; then
+    settings_file="$pid_directory/$manager_id.settings.json"
+    printf '%s\n' "$settings" >"$settings_file"
+  fi
 fi
 
 status=0

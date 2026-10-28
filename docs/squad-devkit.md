@@ -6,11 +6,17 @@
 work should be delegated, it starts **on-demand workers** with
 `scripts/squad-worker.sh`:
 
-- **Codex** (`codex exec`, sandboxed to the workspace) for implementation, tests,
-  and anything that needs a shell.
-- **CCR** (Claude Code through claude-code-router, on the cheap model configured in
-  `~/.claude-code-router/config.json`) for docs, simple edits from an exact spec,
-  and summaries. CCR workers have file tools only, with no shell.
+- **Claude** (`claude -p`) for work that must be right the first time. Haiku by
+  default for well-specified tasks, sonnet for complex or high-risk changes,
+  opus for the hardest problems; fix rounds move up one model before moving to
+  another engine.
+- **Codex** (`codex exec`, sandboxed to the project) for implementation, tests,
+  debugging, and anything that needs a shell or MCP servers.
+- **Grok** and **Antigravity** (`grok -p`, `agy -p`, experimental) for low-risk
+  work or a second opinion.
+- **CCR** (Claude Code through claude-code-router, on the cheap model configured
+  in `~/.claude-code-router/config.json`) for docs and small exact edits. CCR
+  workers have file tools only, with no shell.
 
 A worker joins the squad, receives a structured task from the manager, runs once
 without interaction, completes the task with its report, and leaves. The manager
@@ -58,19 +64,27 @@ The manager coordinates and does not write code. Its role
 (`templates/devkit/manager-devkit.md`, installed as
 `.squad/roles/manager-devkit.md`) tells it to:
 
-1. Read the code it will change and the code that calls it.
-2. Write a plan to `.squad/plans/<name>.md` with the goal, findings
-   (`path:line`), decisions, tasks with disjoint file ownership, and acceptance
-   checks.
-3. Give each worker a complete brief: the goal, the files the worker owns, the
+1. Triage the request: workstream (code, debug, infra, security, docs,
+   research), risk, complexity, and whether a human must decide. With
+   `squad-route` configured, it also records the router's advisory answer.
+2. Read the code it will change and the code that calls it.
+3. Plan from five perspectives (principal engineer, engineering manager,
+   technical lead, QA, end user) and write `.squad/plans/<name>.md` with the
+   triage, goal, findings (`path:line`), decisions, tasks with disjoint file
+   ownership, and acceptance checks.
+4. Pick each worker by trust and cost: `claude` > `codex` > `grok`, `agy` >
+   `ccr`, matching the task's risk and complexity.
+5. Give each worker a complete brief: the goal, the files the worker owns, the
    exact changes, the steps, the acceptance criteria, the verification
    commands, and what is out of scope.
-4. Verify each report against `git diff` and rerun the verification.
-5. For each failed check, start a fix run with the same worker ID listing the
-   defects. After two failed rounds, raise the profile, split the task, or ask
-   you.
-6. Run the full acceptance checks, optionally add a reviewer worker, and report
-   to you with evidence.
+6. Keep one background inbox listener (`squad receive <id> --wait`) while
+   workers run, and answer their questions.
+7. Verify each report against `git diff` and rerun the verification.
+8. For each failed check, start a fix run with the same worker ID listing the
+   defects. After two failed rounds, move up the trust order, split the task,
+   or ask you.
+9. Stop workers that are no longer needed, run the full acceptance checks,
+   add a reviewer for high-risk changes, and report to you with evidence.
 
 The launcher runs the manager through `scripts/lib/squad-devkit-manager.sh`.
 This wrapper:
@@ -213,19 +227,41 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 
 | Option | Meaning |
 |---|---|
-| `--engine codex\|ccr` | Worker engine (required) |
+| `--engine claude\|codex\|grok\|agy\|ccr` | Worker engine (required) |
 | `--role ROLE` | Role prompt from `.squad/roles/ROLE.md` (default `dev`) |
 | `--brief TEXT`, `--brief-file FILE\|-` | Self-contained task description (required) |
 | `--title TITLE` | Task title (default: first line of the brief) |
 | `--profile NAME` | Codex profile (default `high`) |
+| `--model NAME` | Model for claude (default `haiku`; `sonnet`, `opus`), grok, or agy |
+| `--timeout MINUTES` | Stop the run after this long (default 45) |
 | `--mcp NAME`, `--all-mcp` | Codex: keep one or all MCP servers enabled |
 | `--project DIR` | Repository the worker works in (default: the manager's workspace) |
 | `--manager ID` | Manager agent ID (default `manager`) |
+| `--list` | Show running workers |
+| `--stop ID\|all` | Stop a running worker, which reports to the manager |
 
 The report is printed on stdout and saved to `.squad/workers/<id>-<time>.md`,
-with the engine log beside it. `squad task list` shows every task with its
-summary. If a worker fails, it sends the manager a message with the log path
-and exits non-zero.
+with the engine log and a `.status` file (state, pid, tokens) beside it.
+`squad task list` shows every task with its summary. A worker that fails, runs
+past its time limit, or produces no output for `SQUAD_WORKER_STALL` minutes
+(default 10) is stopped, tells the manager what happened, and exits non-zero,
+so the manager can rerun or reassign the task.
+
+### Questions between workers
+
+Workers with a shell (claude, codex, grok, agy) can talk to the squad while they
+run, through `scripts/squad-ask.sh`, whose exact command is in their prompt:
+
+```sh
+squad-ask --from dev-1 --workspace <ws> --to manager "Should the retry be per request or per batch?"
+squad-ask --from dev-1 --workspace <ws> --check                 # unread messages
+squad-ask --from dev-1 --workspace <ws> --reply test-1 "Use fixtures/v2."
+```
+
+`--to` waits up to five minutes (`--timeout`) for the answer; without one, the
+worker continues with its best judgment and states the assumption in its
+report. The manager keeps a background inbox listener while workers run, so
+questions reach it promptly.
 
 CCR workers use the tools in `SQUAD_WORKER_CCR_TOOLS` (default
 `Read,Edit,Write,Glob,Grep`). The worker starts the router if it isn't
@@ -236,6 +272,47 @@ stopped and then time out.
 Parallel workers share the repository, so the manager must give each worker
 files that no other running worker edits. Workers never commit. The manager asks
 you before commits, pushes, or destructive actions.
+
+## Optional advisory router
+
+`scripts/squad-route.sh` adapts typed-decision routing for the manager. With
+`SQUAD_DEVKIT_ROUTER_URL` set, the manager sends a short redacted digest of the
+task and receives the workstream, risk, complexity, whether a human must decide,
+and a confidence score. The answer is advisory (shadow mode): it is recorded in
+the plan, and it is accepted only at confidence 0.85 or higher, with no human
+decision needed and risk below high. It never authorizes destructive actions,
+security decisions, or deployments.
+
+| Variable | Meaning |
+|---|---|
+| `SQUAD_DEVKIT_ROUTER_URL` | Endpoint that accepts `{model, state, questions}` |
+| `SQUAD_DEVKIT_ROUTER_MODEL` | Model name sent in the request |
+| `SQUAD_DEVKIT_ROUTER_KEY_ENV` | Variable holding the bearer token (default `SQUAD_DEVKIT_ROUTER_KEY`) |
+| `SQUAD_DEVKIT_ROUTER_MIN_CONFIDENCE` | Acceptance threshold (default `0.85`) |
+
+## Status line and savings
+
+When Claude Code is the manager, the session gets a status line through
+`--settings`:
+
+- with [claude-hud](https://github.com/jarrodwatts/claude-hud), claude-hud's
+  line plus the squad label through `--extra-cmd`, so you see the weekly quota
+  next to the squad (the installer turns on `display.sevenDayThreshold = 0` and
+  `display.usagePace = true` unless you set them);
+- without a status line, the squad label alone;
+- with another custom status line, nothing changes.
+
+The label reads `squad 2 running · saved 1.2M tok`: the tokens that workers on
+other engines processed instead of Claude during this session, plus the tokens
+of any Claude workers. Set `SQUAD_DEVKIT_STATUSLINE=0` to turn it off.
+
+## Housekeeping
+
+Each launch prunes finished worker runs older than `SQUAD_DEVKIT_RETENTION_DAYS`
+(default 7) and then removes the oldest finished runs while `.squad/workers`
+exceeds `SQUAD_DEVKIT_MAX_MB` (default 200). Running workers, plans, and reports
+outside `.squad/workers` are never removed. `squad-devkit --clean` prunes on
+demand, and `squad-devkit --clean-all` removes every finished run.
 
 ## Watching workers
 
@@ -271,8 +348,9 @@ It shows commands (Codex) or tool calls and turns (CCR), failures, changed
 files, and recent activity. Codex reports token usage when the run finishes.
 claude-code-router does not report tokens, so CCR panes say so. When the run
 ends, the pane shows the final state and the start of the report, and closes
-when you press Enter. Set `SQUAD_WORKER_PANE_HOLD=<seconds>` to close it
-automatically, or `SQUAD_WORKER_PANES=0` to open no panes.
+60 seconds later. Set `SQUAD_WORKER_PANE_HOLD=<seconds>` to change that, or
+`SQUAD_WORKER_PANES=0` to open no panes. A run whose worker process ended
+without updating its status shows as LOST.
 
 `squad-monitor --all` shows one table of every run in `.squad/workers`
 (worker, engine, role, state, elapsed time, calls, tokens, task). It works in

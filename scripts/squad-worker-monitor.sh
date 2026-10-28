@@ -5,12 +5,16 @@ usage() {
   cat <<'EOF'
 Usage: squad-worker-monitor <status-file> [--once]
        squad-worker-monitor --all [directory] [--once]
+       squad-worker-monitor --savings [workspace] [--text]
 
 Show one squad-worker run live: state, elapsed time, commands or tool calls,
 failures, changed files, tokens, and recent activity. squad-worker opens this
 in a split pane next to the manager. With --all, show a table of every run in
 .squad/workers (or the given directory), refreshed every two seconds.
---once prints a single frame and exits.
+--once prints a single frame and exits. --savings prints a one-line status
+label as JSON for claude-hud --extra-cmd (plain text with --text): running
+workers and the tokens that workers on other engines processed instead of
+Claude (since SQUAD_DEVKIT_SESSION_START when set).
 
 Environment: SQUAD_WORKER_PANE_HOLD=N closes a finished run's pane after N
 seconds (default: wait for Enter).
@@ -21,9 +25,13 @@ status_file=""
 all=0
 all_directory=""
 once=0
+savings=0
+text=0
 while (( $# > 0 )); do
   case "$1" in
     --all) all=1 ;;
+    --savings) savings=1; all=1 ;;
+    --text) text=1 ;;
     --once) once=1 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -40,6 +48,28 @@ done
 
 status_get() {
   sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
+}
+
+# The recorded state, or "lost" when a run still marked running has no process.
+effective_state() {
+  local state pid
+  state="$(status_get "$1" state)"
+  pid="$(status_get "$1" pid)"
+  if [[ "$state" == running && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    state=lost
+  fi
+  printf '%s' "$state"
+}
+
+human_count() {
+  local value="${1:-0}"
+  if (( value >= 1000000 )); then
+    printf '%d.%dM' $(( value / 1000000 )) $(( value % 1000000 / 100000 ))
+  elif (( value >= 1000 )); then
+    printf '%dk' $(( value / 1000 ))
+  else
+    printf '%d' "$value"
+  fi
 }
 
 format_duration() {
@@ -134,23 +164,29 @@ render_run() {
   role="$(status_get "$file" role)"
   title="$(status_get "$file" title)"
   task="$(status_get "$file" task)"
-  state="$(status_get "$file" state)"
+  state="$(effective_state "$file")"
   log="$(status_get "$file" log)"
   report="$(status_get "$file" report)"
   exit_status="$(status_get "$file" exit)"
+  local model reason
+  model="$(status_get "$file" model)"
+  reason="$(status_get "$file" reason)"
   local summary metrics
   summary="$(summarise_log "$log")"
-  metrics="$(printf '%s\n' "$summary" | head -n 1)"
+  metrics="${summary%%$'\n'*}"
   local calls failures files tokens_in tokens_cached tokens_out turns
   IFS=$'\t' read -r calls failures files tokens_in tokens_cached tokens_out turns <<<"$metrics" || true
 
   local engine_label="$engine"
   [[ "$engine" == codex && -n "$profile" ]] && engine_label="codex ($profile)"
+  [[ "$engine" != codex && -n "$model" ]] && engine_label="$engine ($model)"
   local state_label
   case "$state" in
     running) state_label="● RUNNING" ;;
     completed) state_label="✓ COMPLETED" ;;
-    failed) state_label="✗ FAILED (exit ${exit_status:-?})" ;;
+    failed) state_label="✗ FAILED${reason:+: $reason} (exit ${exit_status:-?})" ;;
+    stopped) state_label="■ STOPPED${reason:+: $reason}" ;;
+    lost) state_label="? LOST: worker process ended without a report" ;;
     *) state_label="${state:-?}" ;;
   esac
   local call_label="Calls"
@@ -199,13 +235,15 @@ render_all() {
   printf '\033[1m%-12s %-14s %-10s %-13s %8s %8s %12s  %s\033[0m\n' \
     WORKER ENGINE ROLE STATE ELAPSED CALLS TOKENS TASK
   local file found=0
-  for file in $(ls -t "$directory"/*.status 2>/dev/null); do
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
     found=1
     local engine profile state metrics calls tokens_in tokens_out
     engine="$(status_get "$file" engine)"
     profile="$(status_get "$file" profile)"
-    state="$(status_get "$file" state)"
-    metrics="$(summarise_log "$(status_get "$file" log)" | head -n 1)"
+    state="$(effective_state "$file")"
+    metrics="$(summarise_log "$(status_get "$file" log)")"
+    metrics="${metrics%%$'\n'*}"
     IFS=$'\t' read -r calls _ _ tokens_in _ tokens_out _ <<<"$metrics" || true
     [[ "$engine" == codex && -n "$profile" ]] && engine="codex/$profile"
     local tokens="-"
@@ -214,10 +252,51 @@ render_all() {
       "$(status_get "$file" worker)" "$engine" "$(status_get "$file" role)" "$state" \
       "$(format_duration "$(elapsed_seconds "$file")")" "${calls:-0}" "$tokens" \
       "$(status_get "$file" title | cut -c1-$(( columns > 90 ? columns - 90 : 10 )))"
-  done
+  done < <(ls -t "$directory"/*.status 2>/dev/null)
   (( found == 1 )) || printf 'No worker runs in %s yet.\n' "$directory"
   return 0
 }
+
+# One status-line label: running workers and tokens offloaded from Claude.
+print_savings() {
+  local directory="$1/.squad/workers"
+  local since="${SQUAD_DEVKIT_SESSION_START:-0}"
+  local running=0 offloaded=0 claude_tokens=0 runs=0 file engine started total tokens_in tokens_out
+  for file in "$directory"/*.status; do
+    [[ -f "$file" ]] || continue
+    started="$(status_get "$file" started)"
+    (( ${started:-0} >= since )) || continue
+    runs=$(( runs + 1 ))
+    [[ "$(effective_state "$file")" == running ]] && running=$(( running + 1 ))
+    engine="$(status_get "$file" engine)"
+    tokens_in="$(status_get "$file" tokens_in)"
+    tokens_out="$(status_get "$file" tokens_out)"
+    total=$(( ${tokens_in:-0} + ${tokens_out:-0} ))
+    if [[ "$engine" == claude ]]; then
+      claude_tokens=$(( claude_tokens + total ))
+    else
+      offloaded=$(( offloaded + total ))
+    fi
+  done
+  local label="squad"
+  if (( runs == 0 )); then
+    label+=" idle"
+  else
+    (( running > 0 )) && label+=" ${running} running ·"
+    label+=" saved $(human_count "$offloaded") tok"
+    (( claude_tokens > 0 )) && label+=" · claude workers $(human_count "$claude_tokens")"
+  fi
+  if (( text == 1 )); then
+    printf '%s\n' "$label"
+  else
+    printf '{"label":"%s"}\n' "$label"
+  fi
+}
+
+if (( savings == 1 )); then
+  print_savings "${all_directory:-.}"
+  exit 0
+fi
 
 if (( all == 1 )); then
   directory="${all_directory:-.squad/workers}"
@@ -232,14 +311,14 @@ if [[ -z "$status_file" ]]; then
   usage >&2
   exit 2
 fi
-for attempt in $(seq 1 20); do
+for _ in $(seq 1 20); do
   [[ -f "$status_file" ]] && break
   sleep 0.25
 done
 while true; do
   render_run "$status_file"
   (( once == 1 )) && exit 0
-  [[ "$(status_get "$status_file" state)" == running ]] || break
+  [[ "$(effective_state "$status_file")" == running ]] || break
   sleep 1
 done
 if [[ -n "${SQUAD_WORKER_PANE_HOLD:-}" ]]; then

@@ -28,6 +28,9 @@ if [[ "$1 $2" == 'mcp list' ]]; then
   exit 0
 fi
 printf 'codex:%s\n' "${*//$'\n'/\\n}" >>"$WORKER_TEST_LOG"
+if [[ -n "${FAKE_CODEX_SLEEP:-}" ]]; then
+  sleep "$FAKE_CODEX_SLEEP"
+fi
 if [[ -n "${FAKE_CODEX_FAIL:-}" ]]; then
   echo 'model error' >&2
   exit 3
@@ -117,7 +120,7 @@ status=0
 FAKE_CODEX_FAIL=1 "$worker" dev-2 --engine codex --profile medium --brief 'Break things' \
   >/dev/null 2>"$temp_directory/error" || status=$?
 [[ "$status" == 3 ]] || fail
-grep -q 'dev-2 (codex) failed on task .* with exit status 3' "$temp_directory/error"
+grep -q 'dev-2 (codex) failed on task .* (exit status 3)' "$temp_directory/error"
 grep -q -- '--profile medium' "$WORKER_TEST_LOG"
 grep -q 'dev-2 (codex) failed' <<<"$(squad receive manager)"
 grep -qx 'state=failed' .squad/workers/dev-2-*.status
@@ -167,7 +170,7 @@ SQUAD_DEVKIT_GHOSTTY_TERMINAL=MANAGER-TERMINAL "$worker" ghost-2 --engine codex 
 pane_script="$(sed -n '5p' "$WORKER_OSASCRIPT_LOG")"
 [[ -x "$pane_script" ]] || fail
 grep -q 'squad-worker-monitor.sh .*ghost-1-.*\.status' "$pane_script"
-if grep -q 'SQUAD_WORKER_PANE_HOLD' "$pane_script"; then fail; fi
+grep -qx "export SQUAD_WORKER_PANE_HOLD=60" "$pane_script"
 [[ "$(sed -n '6p' "$WORKER_OSASCRIPT_LOG")" == 'ghost-1 · codex' ]] || fail
 [[ "$(sed -n '9p' "$WORKER_OSASCRIPT_LOG")" == pane-1 ]] || fail
 [[ "$(sed -n '12p' "$WORKER_OSASCRIPT_LOG")" == 'ghost-2 · codex' ]] || fail
@@ -218,4 +221,63 @@ worker_pane="$(tmux list-panes -t workers -F '#{pane_id} #{pane_title}' | awk '/
 tmux capture-pane -p -t "$worker_pane" | grep -q 'COMPLETED'
 grep -qx 'export SQUAD_WORKER_PANE_HOLD=60' .squad/workers/tmux-1-*.monitor.sh
 [[ "$(squad agents)" != *'dev-2 '* ]] || fail
-echo 'PASS: squad-worker codex/ccr runs, MCP filtering, task lifecycle, and failure reporting'
+# claude engine: model, auto permissions, workspace access, tokens from stream-json.
+"$worker" lead-1 --engine claude --brief 'High-stakes change. Files you own: core.py' >/dev/null
+claude_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$claude_call" == *'-p --model haiku --strict-mcp-config --disable-slash-commands --no-session-persistence --tools Read,Edit,Write,Glob,Grep,Bash --permission-mode acceptEdits --settings {"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}} --add-dir '*'--output-format stream-json --verbose'* ]] || fail
+[[ "$claude_call" == *'squad-ask.sh --from lead-1 --workspace '*'--to manager'* ]] || fail
+lead_status="$(ls .squad/workers/lead-1-*.status)"
+grep -qx 'model=haiku' "$lead_status"
+"$worker" lead-2 --engine claude --model opus --brief 'Hardest design. Files you own: design.md' >/dev/null
+grep -qx 'model=opus' .squad/workers/lead-2-*.status
+[[ "$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)" == *'-p --model opus '* ]] || fail
+grep -qx 'tokens_in=1200' "$lead_status"
+grep -qx 'tokens_out=80' "$lead_status"
+grep -qx 'state=completed' "$lead_status"
+[[ "$(grep -c 'cannot ask questions' "$WORKER_TEST_LOG")" -ge 1 ]] || fail
+
+# A run that stops producing output is stopped and reported instead of hanging.
+status=0
+FAKE_CODEX_SLEEP=20 SQUAD_WORKER_STALL_SECONDS=2 "$worker" slow-1 --engine codex --brief 'Hang' \
+  >/dev/null 2>"$temp_directory/error" || status=$?
+[[ "$status" == 124 ]] || fail
+grep -q 'slow-1 (codex) no output for 0m on task' "$temp_directory/error"
+grep -qx 'state=failed' .squad/workers/slow-1-*.status
+grep -q 'slow-1 (codex) no output' <<<"$(squad receive manager)"
+status=0
+FAKE_CODEX_SLEEP=20 SQUAD_WORKER_TIMEOUT_SECONDS=2 "$worker" slow-2 --engine codex --brief 'Too long' \
+  >/dev/null 2>"$temp_directory/error" || status=$?
+[[ "$status" == 124 ]] || fail
+grep -q 'slow-2 (codex) timed out' "$temp_directory/error"
+
+# --list and --stop let the manager see and stop running workers.
+FAKE_CODEX_SLEEP=30 SQUAD_WORKER_STALL_SECONDS=0 "$worker" long-1 --engine codex --brief 'Long task' \
+  >/dev/null 2>"$temp_directory/stop-error" &
+long_pid=$!
+for attempt in {1..20}; do
+  [[ "$("$worker" --list)" == *'long-1'* ]] && break
+  sleep 0.5
+done
+[[ "$("$worker" --list)" == *'long-1'*'codex'*'Long task'* ]] || fail
+[[ "$("$worker" --stop long-1)" == *'Stopping long-1'* ]] || fail
+status=0
+wait "$long_pid" || status=$?
+[[ "$status" != 0 ]] || fail
+grep -qx 'state=stopped' .squad/workers/long-1-*.status
+grep -qx 'reason=stopped by request' .squad/workers/long-1-*.status
+[[ "$("$worker" --list)" == 'No running workers.' ]] || fail
+[[ "$("$worker" --stop nobody)" == 'No running worker matches nobody.' ]] || fail
+
+# squad-ask: a worker asks the manager and gets the answer.
+squad join asker --role dev >/dev/null
+(sleep 1; squad send manager asker 'Use the v2 API.' >/dev/null) &
+answer="$("$repo_root/scripts/squad-ask.sh" --from asker --workspace "$PWD" --to manager --timeout 10 'Which API version?')"
+[[ "$answer" == *'Use the v2 API.'* ]] || fail
+grep -q 'QUESTION from asker' <<<"$(squad receive manager)"
+no_answer="$("$repo_root/scripts/squad-ask.sh" --from asker --workspace "$PWD" --to manager --timeout 1 'Still there?')"
+[[ "$no_answer" == *'No answer from manager within 1s'* ]] || fail
+squad send manager asker 'FYI' >/dev/null
+[[ "$("$repo_root/scripts/squad-ask.sh" --from asker --workspace "$PWD" --check)" == *'FYI'* ]] || fail
+[[ "$("$repo_root/scripts/squad-ask.sh" --from asker --workspace "$PWD" --reply manager 'Done.')" == 'Sent to manager.' ]] || fail
+squad leave asker >/dev/null
+echo 'PASS: squad-worker engines, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'

@@ -75,8 +75,7 @@ rm "$SQUAD_DEVKIT_CONFIG"
 noninteractive="$("$devkit" "$project_directory" --no-prompt --dry-run 2>"$temp_directory/log")"
 [[ "$noninteractive" == *'Manager: agy'* ]] || fail
 grep -q 'Claude Code is not installed; using agy as the manager.' "$temp_directory/log"
-grep -q 'neither codex nor ccr is installed' "$temp_directory/log"
-[[ "$noninteractive" == *'No worker engine is installed'* ]] || fail
+[[ "$noninteractive" == *'Installed worker engines, most trusted first: grok agy'* ]] || fail
 [[ ! -e "$SQUAD_DEVKIT_CONFIG" ]] || fail
 
 export SQUAD_DEVKIT_BIN_DIR="$temp_directory/bin-links"
@@ -84,13 +83,28 @@ install_output="$(printf '2\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts
 [[ "$(readlink "$SQUAD_DEVKIT_BIN_DIR/squad-devkit")" == "$repo_root/scripts/squad-devkit.sh" ]] || fail
 [[ "$(readlink "$SQUAD_DEVKIT_BIN_DIR/squad-worker")" == "$repo_root/scripts/squad-worker.sh" ]] || fail
 [[ "$install_output" == *'Manager: grok (Grok Build)'* ]] || fail
-[[ "$install_output" == *'Workers: none'* ]] || fail
+[[ "$install_output" == *'Workers (most trusted first): grok agy'* ]] || fail
 [[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=grok' ]] || fail
 fake_cli claude
 rm "$SQUAD_DEVKIT_CONFIG"
 install_output="$("$repo_root/scripts/install-devkit.sh" --no-prompt)"
 [[ "$install_output" == *'Manager: claude (Claude Code)'* ]] || fail
 [[ ! -e "$SQUAD_DEVKIT_CONFIG" ]] || fail
+[[ "$install_output" != *'claude-hud'* ]] || fail
+hud_config="$HOME/.claude/plugins/claude-hud/config.json"
+mkdir -p "$(dirname "$hud_config")"
+printf '{"display":{"sevenDayThreshold":50},"theme":"dark"}' >"$hud_config"
+install_output="$("$repo_root/scripts/install-devkit.sh" --no-prompt)"
+[[ "$install_output" == *'claude-hud: weekly quota and usage pace enabled'* ]] || fail
+[[ "$(jq -c '[.display.sevenDayThreshold, .display.usagePace, .theme]' "$hud_config")" == '[50,true,"dark"]' ]] || fail
+[[ "$("$repo_root/scripts/install-devkit.sh" --no-prompt)" == *'already configured'* ]] || fail
+rm "$hud_config"
+[[ "$("$repo_root/scripts/install-devkit.sh" --no-prompt --no-hud)" != *'claude-hud'* ]] || fail
+[[ ! -e "$hud_config" ]] || fail
+"$repo_root/scripts/install-devkit.sh" --no-prompt >/dev/null
+[[ "$(jq -c '.display' "$hud_config")" == '{"sevenDayThreshold":0,"usagePace":true}' ]] || fail
+[[ "$(readlink "$SQUAD_DEVKIT_BIN_DIR/squad-monitor")" == "$repo_root/scripts/squad-worker-monitor.sh" ]] || fail
+rm -rf "$HOME/.claude"
 # The manager wrapper archives dead managers, joins, embeds the role, and leaves on exit.
 wrapper="$repo_root/scripts/lib/squad-devkit-manager.sh"
 cat >"$test_bin/claude" <<'EOF'
@@ -153,12 +167,12 @@ while (( $# > 0 )); do
   [[ "$1" == --settings ]] && settings="$2"
   shift
 done
-if [[ -z "$settings" ]]; then
-  echo 'claude without settings' >>"$MANAGER_TEST_LOG"
+cp "$settings" "$MANAGER_TEST_LOG.settings"
+hook="$(jq -r '.hooks.StopFailure[0].hooks[0].command // empty' "$settings")"
+if [[ -z "$hook" ]]; then
+  echo 'claude without fallback hook' >>"$MANAGER_TEST_LOG"
   exit 0
 fi
-cp "$settings" "$MANAGER_TEST_LOG.settings"
-hook="$(jq -r '.hooks.StopFailure[0].hooks[0].command' "$settings")"
 printf '{"error":"rate_limit","transcript_path":"%s"}' "$TRANSCRIPT" | eval "$hook"
 sleep 30
 echo 'claude was not stopped' >>"$MANAGER_TEST_LOG"
@@ -181,5 +195,15 @@ grep -q '^## Squad tasks' .squad/managers/manager.handoff.md
 TRANSCRIPT="$temp_directory/transcript.jsonl" SQUAD_DEVKIT_FALLBACK_MANAGER=none \
   "$wrapper" claude 'No fallback.' 'check prod logs'
 [[ "$(grep -c '^codex-arg:' "$MANAGER_TEST_LOG")" == 0 ]] || fail
-grep -qx 'claude without settings' "$MANAGER_TEST_LOG"
+grep -qx 'claude without fallback hook' "$MANAGER_TEST_LOG"
+[[ "$(jq -r '.statusLine.command' "$MANAGER_TEST_LOG.settings")" == *'squad-worker-monitor.sh --savings '*' --text' ]] || fail
+mkdir -p "$HOME/.claude"
+printf '{"statusLine":{"type":"command","command":"node /x/claude-hud/statusline.mjs"}}' >"$HOME/.claude/settings.json"
+SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod logs'
+[[ "$(jq -r '.statusLine.command' "$MANAGER_TEST_LOG.settings")" == 'node /x/claude-hud/statusline.mjs --extra-cmd '*'squad-worker-monitor.sh'*'--savings'* ]] || fail
+printf '{"statusLine":{"type":"command","command":"my-own-statusline"}}' >"$HOME/.claude/settings.json"
+rm -f "$MANAGER_TEST_LOG.settings"
+SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod logs'
+[[ ! -e "$MANAGER_TEST_LOG.settings" ]] || fail
+rm "$HOME/.claude/settings.json"
 echo 'PASS: manager defaults to Claude Code, first-run choice is saved, overrides, setup, installer, and manager lifecycle'
