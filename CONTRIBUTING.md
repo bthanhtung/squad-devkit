@@ -46,6 +46,15 @@ model calls and need no accounts.
 - **Compatibility**: new options need a default that keeps existing behavior.
   Document user-visible changes in `CHANGELOG.md` and `docs/squad-devkit.md`.
 
+## Releasing
+
+1. Update `devkit_version` in `scripts/squad-devkit.sh` and add a
+   `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md`.
+2. Merge to `main` with CI green.
+3. Push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. The release
+   workflow checks both versions and publishes the GitHub release with the
+   changelog section as its notes.
+
 ## Reporting bugs and requesting features
 
 Open an issue with the command you ran, what you expected, what happened, and

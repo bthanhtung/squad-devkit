@@ -1,3 +1,7 @@
+> **说明 / Note:** 本文档是上游 [squad](https://github.com/mco-org/squad) CLI 的中文说明。
+> squad-devkit（一个 manager 与按需 worker）的文档请见 [README.md](./README.md)。
+> This page documents the upstream squad CLI; see [README.md](./README.md) for squad-devkit.
+
 <p align="center">
   <img src="./assets/squad-readme-hero.png" alt="squad multi-agent terminal collaboration through SQLite" />
 </p>
@@ -7,7 +11,6 @@
 <p align="center"><strong>多 AI 智能体终端协作 — 通过简单的 CLI 命令实现。</strong></p>
 
 <p align="center">
-  <a href="https://github.com/mco-org/squad/stargazers"><img src="https://img.shields.io/github/stars/mco-org/squad?style=flat-square&color=f59e0b" alt="GitHub stars" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/Rust-1.77%2B-orange?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.77+" />
   <img src="https://img.shields.io/badge/Platforms-4%20supported-7c3aed?style=flat-square" alt="4 supported platforms" />

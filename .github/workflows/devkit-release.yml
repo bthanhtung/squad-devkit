@@ -1,0 +1,41 @@
+name: Release squad-devkit
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version and changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          grep -q "^devkit_version=\"$version\"$" scripts/squad-devkit.sh ||
+            { echo "scripts/squad-devkit.sh does not declare version $version"; exit 1; }
+          grep -q "^## \[$version\]" CHANGELOG.md ||
+            { echo "CHANGELOG.md has no [$version] section"; exit 1; }
+
+      - name: Extract release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md >release-notes.md
+          test -s release-notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "squad-devkit $GITHUB_REF_NAME" \
+            --notes-file release-notes.md --verify-tag

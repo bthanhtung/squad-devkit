@@ -34,8 +34,14 @@ First public release of squad-devkit.
   takes over the session with a handoff of the recent conversation and tasks.
 - `squad-route`: optional advisory triage through a typed-decision router.
 - Housekeeping: automatic pruning of old worker runs, `--clean`, `--clean-all`.
-- Installer, documentation, contribution and security guides, and CI for the
-  devkit scripts (shellcheck and smoke tests on Linux and macOS).
+- Installer, documentation, demo, contribution and security guides, code of
+  conduct, issue and pull request templates, CI for the devkit scripts
+  (shellcheck and smoke tests on Linux and macOS), and a release workflow for
+  `v*` tags.
+
+### Changed
+- The upstream squad CLI release workflow now runs on `squad-v*` tags; the
+  upstream website and Homebrew formula are no longer part of this repository.
 
 ### Fixed
 - `cli_test` built `PATH` with `:` on Windows, which hid the fake binaries the

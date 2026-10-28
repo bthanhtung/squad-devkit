@@ -601,7 +601,7 @@ run_engine() {
   unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
   case "$engine" in
     ccr)
-      eval "$(ccr activate)"
+      eval "$(ccr activate 2>/dev/null)"
       "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1
       jq -R -r 'fromjson? | select(.type == "result") | .result // empty' "$absolute_log" >"$absolute_report"
       ;;

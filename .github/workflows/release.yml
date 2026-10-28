@@ -2,8 +2,9 @@ name: Release
 
 on:
   push:
+    # Releases of the squad CLI binaries; squad-devkit releases use v*.*.* tags.
     tags:
-      - "v*.*.*"
+      - "squad-v*.*.*"
 
 permissions:
   contents: write
@@ -28,14 +29,14 @@ jobs:
         id: tag
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG#v}"
+          VERSION="${TAG#squad-v}"
           echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Validate tag matches Cargo.toml version
         run: |
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          TAG_VERSION="${GITHUB_REF#refs/tags/squad-v}"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "ERROR: Tag version ($TAG_VERSION) does not match Cargo.toml ($CARGO_VERSION)"
             exit 1

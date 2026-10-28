@@ -30,9 +30,15 @@ work and stop when they are done, so idle agents cost nothing.
 └──────────────────────────────┴─────────────────────────────┘
 ```
 
+<p align="center">
+  <img src="./assets/squad-devkit-demo.gif" alt="A squad worker fixes a bug in its own git worktree; the change is then merged into the project" width="860" />
+</p>
+
+<p align="center"><sub>A real run: a ccr worker fixes <code>calc.py</code> in its own git worktree, then the change is merged.</sub></p>
+
 **Contents:** [Highlights](#highlights) · [Install](#install) ·
 [Usage](#usage) · [Workers](#workers) · [Monitor and savings](#monitor-and-savings) ·
-[Configuration](#configuration) · [Security](#security) ·
+[Configuration](#configuration) · [Project status](#project-status) · [Security](#security) ·
 [Contributing](#contributing) · [Credits](#credits) ·
 [squad CLI reference](#squad-cli-reference)
 
@@ -164,6 +170,25 @@ processed instead of Claude during this session.
 `squad-devkit --clean` prunes old worker runs on demand and `--clean-all`
 removes every finished run. Full reference:
 [docs/squad-devkit.md](./docs/squad-devkit.md).
+
+## Project status
+
+squad-devkit 1.0 runs daily on macOS with Claude Code as the manager and Codex
+and ccr workers. What has been verified end to end, and what is still
+experimental:
+
+| Area | Status |
+|---|---|
+| Claude Code manager, Codex and ccr workers, worktrees and merging | Verified in real runs |
+| Monitor panes in Herdr, tmux, and Ghostty | Verified in real runs |
+| Codex manager fallback when Claude Code hits a limit | Handoff verified with a simulated limit error |
+| Claude workers | File edits verified; shell commands rely on Claude Code's sandbox |
+| `grok` and `agy` workers; `agy`, `gemini`, `grok`, `opencode` managers | Experimental: built from each CLI's documentation, covered by tests with stand-in CLIs |
+| Panes in WezTerm, Kitty, iTerm2, Zellij; dashboard in Terminal.app and Linux desktops | Experimental: built from each terminal's documented API, covered by tests with stand-in commands |
+| Linux | Covered by CI (Ubuntu); real-world reports welcome |
+
+If you try an experimental path, please report what worked or failed in an
+[issue](https://github.com/bthanhtung/squad-devkit/issues/new/choose).
 
 ## Security
 
