@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Name the failing command, so CI logs show where a test stopped.
+trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # bash 3.2 (macOS) does not exit on a failed [[ ]] under set -e.
 fail() {
