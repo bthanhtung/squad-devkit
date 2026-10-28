@@ -27,7 +27,7 @@ Start a manager (Claude Code by default) for a project in the current terminal.
 The manager plans and starts on-demand Codex or CCR workers with squad-worker
 when work needs delegating; no worker runs, or costs tokens, while idle.
 If Claude Code is not installed, the first run asks which installed CLI
-(codex, agy, gemini, grok, opencode) should manage, and remembers the answer.
+(codex, agy, grok, opencode) should manage, and remembers the answer.
 Defaults to the git repository containing the current directory. Pass a project
 name to search ~/Workspace (up to 8 levels), or a directory to launch from anywhere. Existing
 directories take priority; duplicate names require an explicit path.
@@ -39,7 +39,7 @@ manager finds the repositories involved.
 Pass an objective after the project, or with --task, to start planning immediately.
 Without an objective the manager opens an interactive chat and asks for one first.
 
-  --manager CLI Manager CLI for this run: claude, codex, agy, gemini, grok, or
+  --manager CLI Manager CLI for this run: claude, codex, agy, grok, or
                 opencode (or set SQUAD_DEVKIT_MANAGER)
   --setup       Choose and save the default manager CLI, then exit
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
@@ -336,14 +336,14 @@ session_name="squad-devkit-${project_name}-${project_hash}"
 
 require_command squad
 worker_engines=()
-# Worker engines in trust order: claude > codex > grok, agy > ccr.
-for engine in claude codex grok agy ccr; do
+# Worker engines in trust order: claude > codex > opencode > grok, agy > ccr.
+for engine in claude codex opencode grok agy ccr; do
   if command -v "$engine" >/dev/null 2>&1; then
     worker_engines+=("$engine")
   fi
 done
 if (( ${#worker_engines[@]} == 0 && clean_only == 0 )); then
-  echo "Note: no worker engine (claude, codex, grok, agy, ccr) is installed; the manager will do the work itself." >&2
+  echo "Note: no worker engine (claude, codex, opencode, grok, agy, ccr) is installed; the manager will do the work itself." >&2
 fi
 if (( clean_only > 0 )); then
   if [[ -d "$project_directory/.squad" ]]; then

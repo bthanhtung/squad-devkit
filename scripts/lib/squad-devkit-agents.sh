@@ -2,14 +2,13 @@
 # Manager CLI selection shared by squad-devkit and install-devkit.
 # Expects shell_join from squad-tmux-launcher-helpers.sh.
 
-manager_clients=(claude codex agy gemini grok opencode)
+manager_clients=(claude codex agy grok opencode)
 
 manager_label() {
   case "$1" in
     claude) printf 'Claude Code' ;;
     codex) printf 'Codex CLI' ;;
     agy) printf 'Antigravity CLI' ;;
-    gemini) printf 'Gemini CLI' ;;
     grok) printf 'Grok Build' ;;
     opencode) printf 'OpenCode' ;;
     *) return 1 ;;
@@ -23,7 +22,7 @@ is_manager_client() {
 # The --client value squad join accepts for this CLI, if any.
 squad_client_flag() {
   case "$1" in
-    claude|codex|gemini|opencode) printf '%s' "$1" ;;
+    claude|codex|gemini|opencode|grok|agy|ccr) printf '%s' "$1" ;;
   esac
 }
 
@@ -61,7 +60,7 @@ manager_start_command() {
   esac
   if [[ -n "$message" ]]; then
     case "$client" in
-      agy|gemini) arguments+=(-i "$message") ;;
+      agy) arguments+=(-i "$message") ;;
       opencode) arguments+=(--prompt "$message") ;;
       *) arguments+=("$message") ;;
     esac
