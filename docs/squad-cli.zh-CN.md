@@ -1,9 +1,9 @@
 > **说明 / Note:** 本文档是上游 [squad](https://github.com/mco-org/squad) CLI 的中文说明。
-> squad-devkit（一个 manager 与按需 worker）的文档请见 [README.md](./README.md)。
-> This page documents the upstream squad CLI; see [README.md](./README.md) for squad-devkit.
+> squad-devkit（一个 manager 与按需 worker）的文档请见 [README.md](../README.md)。
+> This page documents the upstream squad CLI; see [README.md](../README.md) for squad-devkit.
 
 <p align="center">
-  <img src="./assets/squad-readme-hero.png" alt="squad multi-agent terminal collaboration through SQLite" />
+  <img src="../assets/squad-readme-hero.png" alt="squad multi-agent terminal collaboration through SQLite" />
 </p>
 
 <h1 align="center">squad</h1>

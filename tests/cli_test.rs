@@ -681,8 +681,8 @@ fn test_help_describes_leave_as_archive() {
 
 #[test]
 fn test_readmes_and_manager_role_describe_archive_semantics() {
-    let readme = std::fs::read_to_string("README.md").unwrap();
-    let readme_zh = std::fs::read_to_string("README.zh-CN.md").unwrap();
+    let readme = std::fs::read_to_string("docs/squad-cli.md").unwrap();
+    let readme_zh = std::fs::read_to_string("docs/squad-cli.zh-CN.md").unwrap();
     let manager_role = std::fs::read_to_string("src/roles/manager.md").unwrap();
 
     assert!(readme.contains("| `squad leave <id>` | Archive agent and preserve unread work |"));
@@ -781,8 +781,8 @@ fn test_help_describes_wait_as_debug_only() {
 
 #[test]
 fn test_readmes_describe_receive_timeout_debug_path() {
-    let readme = std::fs::read_to_string("README.md").unwrap();
-    let readme_zh = std::fs::read_to_string("README.zh-CN.md").unwrap();
+    let readme = std::fs::read_to_string("docs/squad-cli.md").unwrap();
+    let readme_zh = std::fs::read_to_string("docs/squad-cli.zh-CN.md").unwrap();
 
     assert!(readme.contains("| `squad receive <id> [--wait] [--timeout N] [--json]` |"));
     assert!(readme.contains("| `squad task create <from> <to> --title <title> [--body <body>]` |"));

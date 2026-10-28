@@ -4,6 +4,18 @@ All notable changes to squad-devkit are documented here. The `squad` CLI
 itself follows the upstream [mco-org/squad](https://github.com/mco-org/squad)
 releases.
 
+## [Unreleased]
+
+### Changed
+- README now covers squad-devkit only and adds Linux install steps and an FAQ;
+  the upstream `squad` CLI reference moved to `docs/squad-cli.md` (Chinese:
+  `docs/squad-cli.zh-CN.md`).
+- CONTRIBUTING lists exactly the checks CI runs.
+
+### Removed
+- Upstream planning notes (`docs/superpowers/`) and the Homebrew tap copy
+  (`docs/homebrew-tap/`).
+
 ## [1.0.1] - 2026-10-28
 
 ### Changed
