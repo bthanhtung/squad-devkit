@@ -301,7 +301,10 @@ if (( setup == 1 )); then
   printf 'Saved manager: %s (%s)\n' "$manager_client" "$(devkit_config_file)"
   exit 0
 fi
-manager_client="$(resolve_manager "$manager_client" "$interactive")"
+# Cleaning needs no manager, so it works where no manager CLI is installed.
+if (( clean_only == 0 )); then
+  manager_client="$(resolve_manager "$manager_client" "$interactive")"
+fi
 
 # Without a project argument, use the repository containing the current
 # directory. From the home directory, start in the general workspace instead:
@@ -339,7 +342,7 @@ for engine in claude codex grok agy ccr; do
     worker_engines+=("$engine")
   fi
 done
-if (( ${#worker_engines[@]} == 0 )); then
+if (( ${#worker_engines[@]} == 0 && clean_only == 0 )); then
   echo "Note: no worker engine (claude, codex, grok, agy, ccr) is installed; the manager will do the work itself." >&2
 fi
 if (( clean_only > 0 )); then
