@@ -94,4 +94,12 @@ if (( configure_hud == 1 )) && [[ -d "$(dirname "$hud_config")" ]] && command -v
     fi
   fi
 fi
-echo 'Start with: squad-devkit [project] [objective]'
+
+cat <<EOF
+
+Shell completions:
+  Bash: source "$script_dir/completions/squad-devkit.bash" (add to ~/.bashrc)
+  Zsh:  fpath=("$script_dir/completions" \$fpath); autoload -Uz compinit && compinit (add to ~/.zshrc)
+
+Start with: squad-devkit [project] [objective]
+EOF

@@ -208,5 +208,19 @@ printf '{"statusLine":{"type":"command","command":"my-own-statusline"}}' >"$HOME
 rm -f "$MANAGER_TEST_LOG.settings"
 SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod logs'
 [[ ! -e "$MANAGER_TEST_LOG.settings" ]] || fail
+bash -n "$repo_root/scripts/completions/squad-devkit.bash"
+# Source in subshell to test bash completion without errors
+(
+  source "$repo_root/scripts/completions/squad-devkit.bash"
+  COMP_WORDS=(squad-devkit --m)
+  COMP_CWORD=1
+  _squad_devkit
+  [[ "${COMPREPLY[*]}" == *"--manager"* ]] || fail
+  COMP_WORDS=(squad-devkit --manager "")
+  COMP_CWORD=2
+  _squad_devkit
+  [[ "${COMPREPLY[*]}" == *"claude"* && "${COMPREPLY[*]}" == *"codex"* ]] || fail
+)
+
 rm "$HOME/.claude/settings.json"
 echo 'PASS: manager defaults to Claude Code, first-run choice is saved, overrides, setup, installer, and manager lifecycle'

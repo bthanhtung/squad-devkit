@@ -143,6 +143,9 @@ even when they work in another repository with `--project`.
   again.
 - `squad-devkit --setup` chooses again at any time, including choosing another
   CLI while Claude Code is installed.
+- `squad-devkit --doctor` checks and diagnoses your environment: verifies core
+  tools (`squad`, `git`, `jq`, `curl`, `tmux`), displays manager and worker
+  CLIs, and inspects terminal multiplexer / monitor pane support.
 - `--manager CLI` or `SQUAD_DEVKIT_MANAGER=CLI` overrides the choice for one run.
 - Non-interactive runs never ask. Without Claude Code or a saved choice, they
   use the first installed CLI from the table.
@@ -161,6 +164,7 @@ squad-devkit                                  # from ~: general workspace; insid
 squad-devkit my-project                       # name lookup under ~/Workspace and other roots
 squad-devkit my-project 'fix the failing login test'
 squad-devkit my-project --task '-v flag is ignored'
+squad-devkit --doctor                         # diagnose tools, manager CLI, workers, and panes
 squad-devkit --list                           # discoverable git projects
 squad-devkit my-project --ghostty             # new Ghostty window instead of this terminal
 squad-devkit my-project --tmux [--no-attach]  # tmux session; re-running attaches
