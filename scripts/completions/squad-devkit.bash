@@ -22,13 +22,19 @@ _squad_devkit() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--manager --setup --doctor --list --ghostty --tmux --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
+  local opts="--manager --setup --workers --disable-workers --doctor --list --ghostty --tmux --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
   local managers="claude codex agy gemini grok opencode"
 
   case "$prev" in
     --manager)
       # shellcheck disable=SC2207
       COMPREPLY=( $(compgen -W "$managers" -- "$cur") )
+      return 0
+      ;;
+    --workers|--disable-workers)
+      local engines="claude codex grok agy ccr"
+      # shellcheck disable=SC2207
+      COMPREPLY=( $(compgen -W "$engines" -- "$cur") )
       return 0
       ;;
     --task|--prompt)

@@ -53,6 +53,8 @@ _squad_devkit() {
   _arguments -s -S \
     '--manager[Manager CLI]:manager:(claude codex agy gemini grok opencode)' \
     '--setup[Choose and save default manager CLI]' \
+    '--workers[Enable only these worker engines]:workers:' \
+    '--disable-workers[Exclude worker engines]:workers:' \
     '--doctor[Diagnose environment and tools]' \
     '--list[List git projects found on machine]' \
     '--ghostty[Run manager in a Ghostty window]' \

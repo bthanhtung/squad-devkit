@@ -20,7 +20,8 @@ devkit_version="1.0.1"
 usage() {
   cat <<'EOF'
 Usage: squad-devkit [project-name-or-directory] [objective] [--task objective]
-                    [--manager CLI] [--setup] [--doctor] [--list] [--ghostty] [--tmux]
+                    [--manager CLI] [--workers LIST]
+                    [--disable-workers LIST] [--setup] [--doctor] [--list] [--ghostty] [--tmux]
                     [--dry-run] [--no-attach] [--no-prompt]
 
 Start a manager (Claude Code by default) for a project in the current terminal.
@@ -42,6 +43,10 @@ Without an objective the manager opens an interactive chat and asks for one firs
   --manager CLI Manager CLI for this run: claude, codex, agy, gemini, grok, or
                 opencode (or set SQUAD_DEVKIT_MANAGER)
   --setup       Choose and save the default manager CLI, then exit
+  --workers LIST          Only enable these worker engines (comma list of claude,codex,grok,agy,ccr)
+                          (or SQUAD_DEVKIT_WORKERS, or workers= in the config file)
+  --disable-workers LIST  Exclude these worker engines
+                          (or SQUAD_DEVKIT_DISABLE_WORKERS, or disabled_workers=)
   --doctor      Diagnose environment: core tools, manager, worker engines, and multiplexer/panes
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
   --tmux        Run the manager in a tmux session; re-running attaches to it
@@ -79,6 +84,8 @@ no_attach=0
 setup=0
 doctor=0
 manager_client="${SQUAD_DEVKIT_MANAGER:-}"
+workers_opt="${SQUAD_DEVKIT_WORKERS:-}"
+disable_workers_opt="${SQUAD_DEVKIT_DISABLE_WORKERS:-}"
 backend="${SQUAD_DEVKIT_BACKEND:-here}"
 while (( $# > 0 )); do
   case "$1" in
@@ -102,6 +109,16 @@ while (( $# > 0 )); do
       shift
       ;;
     --manager=*) manager_client="${1#*=}" ;;
+    --workers|--disable-workers)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      if [[ "$1" == --workers ]]; then workers_opt="$2"; else disable_workers_opt="$2"; fi
+      shift
+      ;;
+    --workers=*) workers_opt="${1#*=}" ;;
+    --disable-workers=*) disable_workers_opt="${1#*=}" ;;
     --task|--prompt)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
@@ -317,6 +334,26 @@ get_tool_version() {
   printf '%s' "$ver"
 }
 
+# True when $2 is in the comma/space separated list $1.
+in_list() {
+  local item
+  for item in ${1//,/ }; do
+    [[ "$item" == "$2" ]] && return 0
+  done
+  return 1
+}
+
+# Worker enable/disable: CLI flag > env var > config file. An empty allow-list
+# means every engine is allowed; the disable list always wins.
+worker_enabled() {
+  local allow="$workers_opt" deny="$disable_workers_opt"
+  [[ -n "$allow" ]] || allow="$(devkit_config_get workers)"
+  [[ -n "$deny" ]] || deny="$(devkit_config_get disabled_workers)"
+  if [[ -n "$allow" ]] && ! in_list "$allow" "$1"; then return 1; fi
+  if [[ -n "$deny" ]] && in_list "$deny" "$1"; then return 1; fi
+  return 0
+}
+
 run_doctor() {
   local status=0
   local tool path ver
@@ -388,12 +425,17 @@ run_doctor() {
   local eng
   for eng in claude codex grok agy ccr; do
     if path="$(command -v "$eng" 2>/dev/null)"; then
-      engines_found=$((engines_found + 1))
       ver="$(get_tool_version "$eng")"
-      if [[ -n "$ver" ]]; then
-        printf '  [FOUND]   %-8s %s (%s)\n' "$eng" "$path" "$ver"
+      local state="[enabled]"
+      if worker_enabled "$eng"; then
+        engines_found=$((engines_found + 1))
       else
-        printf '  [FOUND]   %-8s %s\n' "$eng" "$path"
+        state="[disabled]"
+      fi
+      if [[ -n "$ver" ]]; then
+        printf '  [FOUND]   %-8s %s (%s) %s\n' "$eng" "$path" "$ver" "$state"
+      else
+        printf '  [FOUND]   %-8s %s %s\n' "$eng" "$path" "$state"
       fi
     else
       printf '  [-]       %-8s (not installed)\n' "$eng"
@@ -497,7 +539,7 @@ require_command squad
 worker_engines=()
 # Worker engines in trust order: claude > codex > grok, agy > ccr.
 for engine in claude codex grok agy ccr; do
-  if command -v "$engine" >/dev/null 2>&1; then
+  if command -v "$engine" >/dev/null 2>&1 && worker_enabled "$engine"; then
     worker_engines+=("$engine")
   fi
 done
