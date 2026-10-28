@@ -51,15 +51,15 @@ _squad_devkit_workers_unmerged() {
 
 _squad_devkit() {
   _arguments -s -S \
-    '--manager=[Manager CLI]:manager:(claude codex agy gemini grok opencode)' \
+    '--manager[Manager CLI]:manager:(claude codex agy gemini grok opencode)' \
     '--setup[Choose and save default manager CLI]' \
     '--doctor[Diagnose environment and tools]' \
     '--list[List git projects found on machine]' \
     '--ghostty[Run manager in a Ghostty window]' \
     '--tmux[Run manager in a tmux session]' \
     '--dry-run[Print manager command only]' \
-    '--task=[Objective for manager]:objective:' \
-    '--prompt=[Objective for manager]:objective:' \
+    '--task[Objective for manager]:objective:' \
+    '--prompt[Objective for manager]:objective:' \
     '--clean[Prune finished worker runs]' \
     '--clean-all[Prune all worker runs]' \
     '--no-attach[tmux: start session in background]' \
@@ -72,24 +72,24 @@ _squad_devkit() {
 
 _squad_worker() {
   _arguments -s -S \
-    '--engine=[Worker engine]:engine:(claude codex grok agy ccr)' \
-    '--role=[Role prompt]:role:(dev tester reviewer researcher manager-devkit)' \
-    '--title=[Task title]:title:' \
-    '--brief=[Task brief]:brief:' \
-    '--brief-file=[Read brief from file]:file:_files' \
-    '--project=[Project directory]:directory:_directories' \
-    '--profile=[Codex profile]:profile:(high medium max)' \
-    '--model=[Model name]:model:' \
-    '--mcp=[Keep MCP server enabled]:mcp:' \
+    '--engine[Worker engine]:engine:(claude codex grok agy ccr)' \
+    '--role[Role prompt]:role:(dev tester reviewer researcher manager-devkit)' \
+    '--title[Task title]:title:' \
+    '--brief[Task brief]:brief:' \
+    '--brief-file[Read brief from file]:file:_files' \
+    '--project[Project directory]:directory:_directories' \
+    '--profile[Codex profile]:profile:(high medium max)' \
+    '--model[Model name]:model:' \
+    '--mcp[Keep MCP server enabled]:mcp:' \
     '--all-mcp[Keep all MCP servers]' \
-    '--timeout=[Timeout in minutes]:timeout:' \
+    '--timeout[Timeout in minutes]:timeout:' \
     '--worktree[Work in isolated git worktree]' \
     '--no-worktree[Work directly in project]' \
-    '--manager=[Manager agent ID]:manager:' \
+    '--manager[Manager agent ID]:manager:' \
     '--list[Show running workers]' \
-    '--stop=[Stop a running worker]:worker:_squad_devkit_workers_running' \
-    '--merge=[Merge worker worktree]:worker:_squad_devkit_workers_unmerged' \
-    '--discard=[Discard worker worktree]:worker:_squad_devkit_workers_unmerged' \
+    '--stop[Stop a running worker]:worker:_squad_devkit_workers_running' \
+    '--merge[Merge worker worktree]:worker:_squad_devkit_workers_unmerged' \
+    '--discard[Discard worker worktree]:worker:_squad_devkit_workers_unmerged' \
     '(-h --help)'{-h,--help}'[Show usage]' \
     '1:worker id:'
 }
@@ -118,3 +118,4 @@ case "$service" in
     _squad_devkit "$@"
     ;;
 esac
+
