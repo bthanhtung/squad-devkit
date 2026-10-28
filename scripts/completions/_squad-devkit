@@ -1,0 +1,120 @@
+#compdef squad-devkit squad-devkit.sh squad-worker squad-worker.sh squad-monitor squad-worker-monitor.sh
+
+_squad_devkit_find_workspace() {
+  local dir="$PWD"
+  if [[ -n "${SQUAD_DEVKIT_WORKSPACE:-}" && -d "$SQUAD_DEVKIT_WORKSPACE/.squad" ]]; then
+    print -r -- "$SQUAD_DEVKIT_WORKSPACE"
+    return 0
+  fi
+  while [[ "$dir" != "/" && -n "$dir" ]]; do
+    if [[ -d "$dir/.squad" ]]; then
+      print -r -- "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+_squad_devkit_workers_running() {
+  local ws sf id st
+  local -a running_ids
+  running_ids=(all)
+  if ws="$(_squad_devkit_find_workspace)"; then
+    for sf in "$ws"/.squad/workers/*.status(N); do
+      st="$(sed -n 's/^state=//p' "$sf" 2>/dev/null | tail -n 1)"
+      if [[ "$st" == "running" ]]; then
+        id="$(sed -n 's/^worker=//p' "$sf" 2>/dev/null | tail -n 1)"
+        [[ -n "$id" ]] && running_ids+=("$id")
+      fi
+    done
+  fi
+  _describe -t running-workers 'running worker id' running_ids
+}
+
+_squad_devkit_workers_unmerged() {
+  local ws sf id wt seen=" "
+  local -a unmerged_ids
+  unmerged_ids=(all)
+  if ws="$(_squad_devkit_find_workspace)"; then
+    for sf in "$ws"/.squad/workers/*.status(N); do
+      wt="$(sed -n 's/^worktree=//p' "$sf" 2>/dev/null | tail -n 1)"
+      id="$(sed -n 's/^worker=//p' "$sf" 2>/dev/null | tail -n 1)"
+      if [[ -n "$wt" && -d "$wt" && "$seen" != *" $id "* ]]; then
+        seen+="$id "
+        unmerged_ids+=("$id")
+      fi
+    done
+  fi
+  _describe -t unmerged-worktrees 'unmerged worker id' unmerged_ids
+}
+
+_squad_devkit() {
+  _arguments -s -S \
+    '--manager=[Manager CLI]:manager:(claude codex agy gemini grok opencode)' \
+    '--setup[Choose and save default manager CLI]' \
+    '--doctor[Diagnose environment and tools]' \
+    '--list[List git projects found on machine]' \
+    '--ghostty[Run manager in a Ghostty window]' \
+    '--tmux[Run manager in a tmux session]' \
+    '--dry-run[Print manager command only]' \
+    '--task=[Objective for manager]:objective:' \
+    '--prompt=[Objective for manager]:objective:' \
+    '--clean[Prune finished worker runs]' \
+    '--clean-all[Prune all worker runs]' \
+    '--no-attach[tmux: start session in background]' \
+    '--no-prompt[Skip manager prompt]' \
+    '--version[Print version]' \
+    '(-h --help)'{-h,--help}'[Show usage]' \
+    '1:project or objective:_directories' \
+    '2:objective:_default'
+}
+
+_squad_worker() {
+  _arguments -s -S \
+    '--engine=[Worker engine]:engine:(claude codex grok agy ccr)' \
+    '--role=[Role prompt]:role:(dev tester reviewer researcher manager-devkit)' \
+    '--title=[Task title]:title:' \
+    '--brief=[Task brief]:brief:' \
+    '--brief-file=[Read brief from file]:file:_files' \
+    '--project=[Project directory]:directory:_directories' \
+    '--profile=[Codex profile]:profile:(high medium max)' \
+    '--model=[Model name]:model:' \
+    '--mcp=[Keep MCP server enabled]:mcp:' \
+    '--all-mcp[Keep all MCP servers]' \
+    '--timeout=[Timeout in minutes]:timeout:' \
+    '--worktree[Work in isolated git worktree]' \
+    '--no-worktree[Work directly in project]' \
+    '--manager=[Manager agent ID]:manager:' \
+    '--list[Show running workers]' \
+    '--stop=[Stop a running worker]:worker:_squad_devkit_workers_running' \
+    '--merge=[Merge worker worktree]:worker:_squad_devkit_workers_unmerged' \
+    '--discard=[Discard worker worktree]:worker:_squad_devkit_workers_unmerged' \
+    '(-h --help)'{-h,--help}'[Show usage]' \
+    '1:worker id:'
+}
+
+_squad_monitor() {
+  _arguments -s -S \
+    '--all[Show all worker runs in directory]:directory:_directories' \
+    '--savings[Print token savings]:workspace:_directories' \
+    '--text[Plain text output with --savings]' \
+    '--once[Print single frame and exit]' \
+    '(-h --help)'{-h,--help}'[Show usage]' \
+    '1:status file:_files'
+}
+
+case "$service" in
+  squad-devkit|squad-devkit.sh)
+    _squad_devkit "$@"
+    ;;
+  squad-worker|squad-worker.sh)
+    _squad_worker "$@"
+    ;;
+  squad-monitor|squad-worker-monitor.sh)
+    _squad_monitor "$@"
+    ;;
+  *)
+    _squad_devkit "$@"
+    ;;
+esac
