@@ -49,10 +49,14 @@ work and stop when they are done, so idle agents cost nothing.
   detail, moving up a model or engine if a fix fails twice.
 - **Workers can push back.** A worker can question the manager or another
   worker (`squad-ask`) when the brief is ambiguous or there is a better approach.
+- **Isolated by default.** In a git repository every editing worker gets its
+  own worktree and branch, so parallel workers never overwrite each other; the
+  manager reviews each diff and merges it with a three-way merge.
 - **Nothing hangs.** Workers have a time limit and stall detection; failures
   report to the manager, which re-runs or reassigns the task.
-- **Live visibility.** Each worker opens its own monitor pane (Herdr, tmux, or
-  Ghostty). With claude-hud, the manager's status line shows your weekly quota
+- **Live visibility.** Each worker opens a monitor pane beside the manager in
+  tmux, Herdr, Zellij, WezTerm, Kitty, iTerm2, or Ghostty; other terminals
+  (macOS Terminal.app, GNOME Terminal, Konsole, ...) get one live dashboard window. With claude-hud, the manager's status line shows your weekly quota
   and the tokens the squad saved.
 - **Lean by design.** Instructions live in the system prompt, workers start with
   MCP servers off, old run data is pruned automatically, and a Codex manager
@@ -64,7 +68,8 @@ Requirements: macOS or Linux, [`squad`](#squad-cli-reference), `jq`, one manager
 CLI (`claude`, `codex`, `agy`, `gemini`, `grok`, or `opencode`), and at least one
 worker engine (`claude`, `codex`, `grok`, `agy`, or `ccr` from
 [claude-code-router](https://github.com/musistudio/claude-code-router)).
-Herdr, tmux, or Ghostty enable monitor panes.
+Monitor panes work in tmux, Herdr, Zellij, WezTerm, Kitty, iTerm2, and Ghostty;
+any other terminal gets a dashboard window.
 
 ```bash
 brew install mco-org/tap/squad jq
@@ -103,7 +108,9 @@ The manager runs workers for you; you can also run them yourself:
 squad-worker dev-1 --engine codex --role dev --brief-file brief.md
 squad-worker review-1 --engine claude --model sonnet --role reviewer --brief "Review git diff for src/api/"
 squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief "..."
-squad-worker --list                 # running workers
+squad-worker --list                 # running workers and unmerged worktrees
+squad-worker --merge dev-1          # apply dev-1's worktree changes (uncommitted)
+squad-worker --discard dev-1        # or drop them
 squad-worker --stop dev-1           # or --stop all
 ```
 
@@ -118,10 +125,21 @@ Roles: `dev`, `tester`, `reviewer`, `researcher`, or any name; a role with a fil
 in `.squad/roles/` gets that prompt. Use `--project <path>` to work in another
 repository.
 
+In a git repository, editing workers run in their own worktree under
+`.squad/worktrees/` on branch `squad/<id>`, started from a snapshot of
+your working tree (including uncommitted and new files). Your files and index
+stay untouched until `--merge`, which applies the changes uncommitted with a
+three-way merge and leaves conflict markers if two workers changed the same
+lines. Reviewers and researchers read the project directly; `--no-worktree`
+does the same for any role.
+
 ## Monitor and savings
 
 Each worker pane shows its state, elapsed time, calls, failures, changed files,
 tokens, and recent activity, then closes itself 60 seconds after the run ends.
+In terminals without a split API (macOS Terminal.app, GNOME Terminal, Konsole,
+xterm), the first worker of a session opens one dashboard window with every run
+instead; over SSH, run `squad-monitor --all` or use `squad-devkit --tmux`.
 `squad-monitor --all` shows every run as a table in any terminal. With
 claude-hud, the manager's status line adds the squad label, for example
 `squad 2 running · saved 1.2M tok`: the tokens that workers on other engines

@@ -30,6 +30,9 @@ make_run old-done completed $(( now - 30 * 86400 ))
 make_run recent-done completed $(( now - 3600 ))
 make_run old-running running $(( now - 30 * 86400 )) "$$"
 make_run old-lost running $(( now - 30 * 86400 )) 999999
+make_run old-unmerged completed $(( now - 30 * 86400 ))
+mkdir -p "$temp_directory/worktree"
+printf 'worktree=%s\n' "$temp_directory/worktree" >>"$workers/old-unmerged.status"
 printf 'keep\n' >"$workspace/.squad/plans/plan.md"
 printf 'keep\n' >"$workspace/reports/report.html"
 
@@ -38,6 +41,7 @@ printf 'keep\n' >"$workspace/reports/report.html"
 [[ ! -e "$workers/old-lost.status" ]] || fail
 [[ -e "$workers/recent-done.status" && -e "$workers/recent-done.md" ]] || fail
 [[ -e "$workers/old-running.status" ]] || fail
+[[ -e "$workers/old-unmerged.status" ]] || fail
 [[ -e "$workspace/.squad/plans/plan.md" && -e "$workspace/reports/report.html" ]] || fail
 grep -q 'removed 2 finished worker run' "$temp_directory/log"
 
@@ -55,7 +59,10 @@ SQUAD_DEVKIT_MAX_MB=1 "$clean" "$workspace" --quiet 2>/dev/null
 [[ -e "$workers/old-running.status" ]] || fail
 
 "$clean" "$workspace" --all 2>"$temp_directory/log"
-[[ -z "$(ls "$workers"/*.status 2>/dev/null | grep -v old-running || true)" ]] || fail
+[[ -z "$(ls "$workers"/*.status 2>/dev/null | grep -v -e old-running -e old-unmerged || true)" ]] || fail
+rmdir "$temp_directory/worktree"
+"$clean" "$workspace" --all 2>/dev/null
+[[ ! -e "$workers/old-unmerged.status" ]] || fail
 [[ -e "$workers/old-running.status" ]] || fail
 grep -q 'removed' "$temp_directory/log"
 

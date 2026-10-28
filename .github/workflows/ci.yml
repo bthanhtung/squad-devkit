@@ -86,7 +86,7 @@ jobs:
         run: |
           shellcheck -S warning scripts/squad-devkit.sh scripts/squad-worker.sh \
             scripts/squad-worker-monitor.sh scripts/squad-ask.sh scripts/squad-route.sh \
-            scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh
+            scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh scripts/lib/squad-worktree.sh scripts/lib/squad-panes.sh
 
       - name: Build squad
         run: cargo build

@@ -20,9 +20,14 @@ First public release of squad-devkit.
   by choice), `codex`, `grok`, `agy`, or `ccr`
   with roles, `--project`, MCP filtering, time limits, stall detection,
   `--list`, and `--stop`.
+- Isolated git worktrees: in a git repository each editing worker works on its
+  own branch (`squad/<id>`) from a snapshot of the working tree; the manager
+  reviews the diff and runs `squad-worker --merge` (three-way, uncommitted) or
+  `--discard`.
 - `squad-ask`: workers question the manager or each other while they run.
-- Monitor panes for each worker in Herdr, tmux, or Ghostty, and
-  `squad-monitor --all` for a table of runs.
+- Monitor panes for each worker in tmux, Herdr, Zellij, WezTerm, Kitty, iTerm2,
+  or Ghostty; one dashboard window in other terminals (macOS Terminal.app,
+  GNOME Terminal, Konsole, xterm); `squad-monitor --all` for a table of runs.
 - Status line: claude-hud's weekly quota plus the squad label (running workers,
   tokens offloaded from Claude); the installer enables the weekly-quota display.
 - Fallback: when Claude Code hits its usage or billing limit, a Codex manager

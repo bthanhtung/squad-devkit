@@ -239,6 +239,9 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 | `--manager ID` | Manager agent ID (default `manager`) |
 | `--list` | Show running workers |
 | `--stop ID\|all` | Stop a running worker, which reports to the manager |
+| `--worktree`, `--no-worktree` | Force or skip the isolated git worktree |
+| `--merge ID` | Apply a worker's worktree changes (three-way, uncommitted) and remove it |
+| `--discard ID\|all` | Remove a worker's worktree and branch without applying them |
 
 The report is printed on stdout and saved to `.squad/workers/<id>-<time>.md`,
 with the engine log and a `.status` file (state, pid, tokens) beside it.
@@ -246,6 +249,32 @@ with the engine log and a `.status` file (state, pid, tokens) beside it.
 past its time limit, or produces no output for `SQUAD_WORKER_STALL` minutes
 (default 10) is stopped, tells the manager what happened, and exits non-zero,
 so the manager can rerun or reassign the task.
+
+### Worktrees
+
+In a git repository each editing worker runs in its own worktree,
+`<workspace>/.squad/worktrees/<repository>-<hash>/<id>` on branch `squad/<id>`,
+so parallel workers never overwrite each other. `.squad/` is listed in
+`.git/info/exclude`, so nothing shows up in `git status`. (Worktrees do not
+live inside `.git`, because agents treat files there as sensitive and refuse to
+edit them.)
+
+- **Start**: the worktree begins from a snapshot of your working tree, tracked
+  and untracked files minus ignored ones, taken with a temporary index so your
+  index and files are untouched. A fix round with the same worker ID continues
+  in the same worktree until it is merged or discarded.
+- **Finish**: the worker's changes are committed to `squad/<id>` and saved as
+  `.squad/workers/<id>-<time>.patch`; the report gives the review command
+  (`git -C <worktree> diff <base>`) and the merge command.
+- **Merge**: `squad-worker --merge <id>` applies the changes to the project
+  with a three-way merge through a temporary index, leaves them uncommitted,
+  and removes the worktree and branch. Conflicts keep standard markers in the
+  listed files and keep the worktree until `--discard`.
+- **Choose**: reviewers and researchers read the project directly;
+  `--worktree` forces isolation, `--no-worktree` edits in place, and
+  `SQUAD_WORKER_WORKTREE=0` turns isolation off.
+
+Housekeeping never removes runs whose worktree is still unmerged.
 
 ### Questions between workers
 
@@ -316,20 +345,33 @@ demand, and `squad-devkit --clean-all` removes every finished run.
 
 ## Watching workers
 
-Every worker opens its own monitor pane next to the manager while it runs:
+Every worker opens a live monitor next to the manager while it runs. The first
+worker opens to the manager's right, later workers stack below the previous one,
+and focus stays on the manager. squad-devkit uses the terminal the manager runs
+in (`scripts/lib/squad-panes.sh`), checked in this order:
 
-- **tmux** (`squad-devkit --tmux`, or a manager started inside tmux): the
-  manager stays on the left and worker panes stack on the right
-  (`main-vertical` layout). Focus stays on the manager.
-- **Herdr**: the worker splits the manager's Herdr pane (`HERDR_PANE_ID`): the
-  first worker goes to its right, later workers stack below the previous one,
-  and focus stays on the manager. Herdr takes priority over Ghostty, so this
-  also applies to Herdr running inside Ghostty.
-- **Ghostty** (`squad-devkit` in a Ghostty terminal, or `--ghostty`): the
-  launcher records the manager's terminal id. Splits follow the same layout,
-  and focus returns to the manager.
-- **Other terminals** (Terminal.app, iTerm2) get no automatic panes. Run
-  `squad-monitor --all` in a spare window instead, or use `--tmux`.
+| Terminal | Detected by | How the monitor opens |
+|---|---|---|
+| tmux | `TMUX_PANE` | `split-window`, `main-vertical` layout (`squad-devkit --tmux` works in any terminal) |
+| Herdr | `HERDR_PANE_ID` | `herdr pane split` |
+| Zellij | `ZELLIJ` | `zellij run --floating` (Zellij only splits the focused pane, so workers float; toggle them with Zellij's floating-pane key) |
+| WezTerm | `WEZTERM_PANE` | `wezterm cli split-pane`, then focus returns to the manager |
+| Kitty | `KITTY_WINDOW_ID` | `kitten @ launch --keep-focus` (needs `allow_remote_control yes`; best with the `splits` layout) |
+| iTerm2 | `ITERM_SESSION_ID` | AppleScript `split vertically/horizontally` |
+| Ghostty | terminal id recorded by `squad-devkit` | AppleScript `split` |
+| Anything else | | one dashboard window per manager session running `squad-monitor --all` |
+
+The dashboard covers terminals without a split API: macOS Terminal.app (opened
+with AppleScript), and on Linux desktops the first of `x-terminal-emulator`,
+`gnome-terminal`, `konsole`, `xfce4-terminal`, or `xterm`. It also catches a
+split that fails, such as Kitty without remote control. Over SSH or with no
+desktop, no window opens: run `squad-monitor --all` yourself, or start the
+manager with `squad-devkit --tmux`. `SQUAD_WORKER_PANES=0` turns monitors off
+and `SQUAD_WORKER_DASHBOARD=0` turns off only the dashboard window.
+
+tmux, Herdr, and Ghostty are tested end to end; the WezTerm, Kitty, iTerm2,
+Zellij, and dashboard paths follow each terminal's documented API and are
+covered by tests with stand-in commands.
 
 Each pane refreshes every second:
 

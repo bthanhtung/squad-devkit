@@ -3,7 +3,8 @@
 # runs (status, log, report, monitor script) older than the retention period,
 # then the oldest finished runs while .squad/workers exceeds the size limit,
 # plus old manager handoff notes and an oversized router log. Running workers,
-# plans, and anything outside .squad/ are never touched.
+# runs whose git worktree is not merged or discarded yet, plans, and anything
+# outside .squad/ are never touched.
 # Usage: squad-devkit-clean.sh <workspace> [--quiet] [--all]
 #   --all  remove every finished run regardless of age
 # Environment: SQUAD_DEVKIT_RETENTION_DAYS (default 7),
@@ -41,14 +42,17 @@ is_running() {
 
 remove_run() {
   local base="${1%.status}"
-  rm -f "$base.status" "$base.log" "$base.md" "$base.monitor.sh" "$base.out"
+  rm -f "$base.status" "$base.log" "$base.md" "$base.monitor.sh" "$base.out" "$base.patch"
   removed=$(( removed + 1 ))
 }
 
 finished_runs_oldest_first() {
   local file
   while IFS= read -r file; do
-    is_running "$file" || printf '%s\n' "$file"
+    is_running "$file" && continue
+    # Keep runs with an unmerged worktree: --merge and --discard need them.
+    [[ -n "$(status_value "$file" worktree)" && -d "$(status_value "$file" worktree)" ]] && continue
+    printf '%s\n' "$file"
   done < <(ls -tr "$workers"/*.status 2>/dev/null)
   return 0
 }

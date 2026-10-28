@@ -21,7 +21,7 @@ Run the same checks as CI:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all
-shellcheck -S warning scripts/*.sh scripts/lib/squad-devkit-*.sh
+shellcheck -S warning scripts/*.sh scripts/lib/squad-devkit-*.sh scripts/lib/squad-worktree.sh scripts/lib/squad-panes.sh
 bash tests/squad_devkit_launcher_smoke.sh
 bash tests/squad_devkit_manager_choice_smoke.sh
 bash tests/squad_worker_smoke.sh

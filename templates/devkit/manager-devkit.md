@@ -65,19 +65,22 @@ In Claude Code, use one Bash call per worker with `run_in_background: true`; you
 Workers may question you, and each other, when the brief is ambiguous or they see a better technical approach. While workers run, keep exactly one inbox listener in the background: `squad receive <your ID> --wait --timeout 3600` (in Claude Code with `run_in_background: true`). When it returns, answer each `QUESTION from <id>` with `squad send <your ID> <id> "ANSWER: ..."`, and treat a good challenge as a reason to improve the plan. Then start the listener again if workers are still running. Never poll or sleep in a loop.
 
 ## 7. Verify every result
+In a git repository each editing worker works in its own worktree (branch `squad/<id>`), so parallel workers cannot overwrite each other and the project stays untouched until you merge. Reviewers and researchers read the project directly; use `--no-worktree` when a task must edit in place.
+
 A report is a claim, not proof. For each finished worker:
-- Read its report and `git diff` for the files it owned. Check every acceptance criterion against the code.
-- Run the verification commands yourself.
+- Read its report and its diff (`git -C <worktree> diff <base>`, both given in the report). Check every acceptance criterion against the code.
+- Run the verification commands yourself, in the worktree.
 - Check that it touched only its own files, followed the existing patterns, and kept the security and quality bar.
+- When it passes, `squad-worker --merge <id>` applies the changes to the project (uncommitted, three-way) and removes the worktree. Merge one worker at a time and re-run the checks after each merge. On conflicts, the markers stay in the listed files: give their resolution to a worker with `--no-worktree`. `squad-worker --discard <id>` drops a worktree; `squad-worker --list` shows unmerged ones.
 
 ## 8. Fix what is wrong
-For each failed check, start a fix run with the same worker ID. The fix brief quotes the original acceptance criteria and lists each defect with `path:line`: what is wrong, what is expected instead, and the failing output. Fix only what is wrong; do not reassign work that passed. After two failed fix rounds on the same task, change approach: move up one model (haiku → sonnet → opus) or up the trust order, split the task, or ask the human with your analysis.
+For each failed check, start a fix run with the same worker ID; before merging, it continues in the same worktree. The fix brief quotes the original acceptance criteria and lists each defect with `path:line`: what is wrong, what is expected instead, and the failing output. Fix only what is wrong; do not reassign work that passed. After two failed fix rounds on the same task, change approach: move up one model (haiku → sonnet → opus) or up the trust order, split the task, or ask the human with your analysis.
 
 ## 9. Keep workers healthy and lean
 - `squad-worker --list` shows running workers; `squad-worker --stop <id>` stops one (`all` stops every one).
 - A worker that fails, times out, or stops producing output reports back to you instead of hanging. Read the message, then rerun the task, give it to another worker, or split it. Never leave a task pending.
 - Closed monitor panes do not matter: start new workers whenever new work arrives; each gets a new pane.
-- When a task, request, or session is done, make sure no worker is still running (`squad-worker --list`), and stop the inbox listener.
+- When a task, request, or session is done, make sure no worker is still running and no worktree is left unmerged (`squad-worker --list`), and stop the inbox listener.
 
 ## 10. Integrate and report
 When all tasks pass, run the full acceptance checks. For high-risk or large changes, also start a `reviewer` worker (claude for high risk) on the combined diff and act on real findings. Then report to the human: what changed (files), the evidence (commands and results), and remaining risks or follow-ups. Reports are kept in `.squad/workers/` and `squad task list`.

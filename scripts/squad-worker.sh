@@ -12,6 +12,8 @@ while [[ -L "$source_file" ]]; do
   fi
 done
 script_dir="$(cd "$(dirname "$source_file")" && pwd)"
+source "$script_dir/lib/squad-worktree.sh"
+source "$script_dir/lib/squad-panes.sh"
 
 usage() {
   cat <<'EOF'
@@ -21,6 +23,8 @@ Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FIL
                     [--timeout MINUTES] [--manager ID]
        squad-worker --list
        squad-worker --stop <worker-id|all>
+       squad-worker --merge <worker-id> [--project DIR]
+       squad-worker --discard <worker-id|all> [--project DIR]
 
 Run one on-demand worker for the squad manager, then exit. The worker joins the
 squad, receives a structured task from the manager, works non-interactively,
@@ -47,16 +51,22 @@ Options:
                      all others are disabled to keep the worker's context small
   --all-mcp          codex only: keep every configured MCP server
   --timeout MINUTES  Stop the run after this long (default 45)
+  --worktree         Work in an isolated git worktree (default in git repositories,
+                     except for the reviewer and researcher roles)
+  --no-worktree      Work directly in the project directory
   --manager ID       Manager agent ID that owns the task (default: manager)
   --list             Show worker runs that are still running
   --stop ID|all      Stop a running worker (or all of them); it reports to the manager
+  --merge ID         Apply a worker's worktree changes to the project (three-way;
+                     conflicts are left as markers) and remove the worktree
+  --discard ID|all   Remove a worker's worktree and branch without applying them
 
 Environment: SQUAD_WORKER_CODEX_PROFILE, SQUAD_WORKER_CLAUDE_MODEL,
 SQUAD_WORKER_CLAUDE_TOOLS, SQUAD_WORKER_CLAUDE_PERMISSION_MODE (default
 acceptEdits, shell sandboxed), SQUAD_WORKER_CCR_TOOLS, SQUAD_WORKER_TIMEOUT (minutes),
 SQUAD_WORKER_STALL (minutes without log output before a run counts as stuck,
 default 10), SQUAD_WORKER_PANES=0, SQUAD_WORKER_PANE_HOLD (seconds a finished
-monitor pane stays open, default 60).
+monitor pane stays open, default 60), SQUAD_WORKER_WORKTREE (auto, 1, or 0).
 EOF
 }
 
@@ -76,9 +86,10 @@ keep_mcp=()
 all_mcp=0
 action=run
 stop_target=""
+worktree_mode="${SQUAD_WORKER_WORKTREE:-auto}"
 while (( $# > 0 )); do
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--model|--mcp|--manager|--project|--timeout|--stop)
+    --engine|--role|--title|--brief|--brief-file|--profile|--model|--mcp|--manager|--project|--timeout|--stop|--merge|--discard)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -96,10 +107,14 @@ while (( $# > 0 )); do
         --project) project_directory="$2" ;;
         --timeout) timeout_minutes="$2" ;;
         --stop) action=stop; stop_target="$2" ;;
+        --merge) action=merge; stop_target="$2" ;;
+        --discard) action=discard; stop_target="$2" ;;
       esac
       shift
       ;;
     --all-mcp) all_mcp=1 ;;
+    --worktree) worktree_mode=1 ;;
+    --no-worktree) worktree_mode=0 ;;
     --list) action=list ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -150,9 +165,32 @@ running_status_files() {
   return 0
 }
 
+# The newest status file of a worker's runs that used a worktree.
+latest_status_with_worktree() {
+  local file
+  while IFS= read -r file; do
+    [[ -n "$(status_get "$file" worktree)" ]] && { printf '%s\n' "$file"; return 0; }
+  done < <(ls -t .squad/workers/"$1"-*.status 2>/dev/null)
+  return 0
+}
+
+# "  <id>  <worktree path>" for each worker worktree that still exists.
+unmerged_worktrees() {
+  local file id path seen=" "
+  while IFS= read -r file; do
+    id="$(status_get "$file" worker)"
+    path="$(status_get "$file" worktree)"
+    [[ -n "$path" && -d "$path" && "$seen" != *" $id "* ]] || continue
+    seen+="$id "
+    printf '  %s  %s\n' "$id" "$path"
+  done < <(ls -t .squad/workers/*.status 2>/dev/null)
+  return 0
+}
+
 if [[ "$action" == list || "$action" == stop ]]; then
   require_command squad
   workspace_root="$(find_workspace)"
+  export SQUAD_WORKTREE_WORKSPACE="$workspace_root"
   cd "$workspace_root"
   found=0
   while IFS= read -r file; do
@@ -180,7 +218,69 @@ if [[ "$action" == list || "$action" == stop ]]; then
       echo "No running worker matches $stop_target."
     fi
   fi
+  if [[ "$action" == list ]]; then
+    unmerged="$(unmerged_worktrees)"
+    if [[ -n "$unmerged" ]]; then
+      echo "Unmerged worktrees (squad-worker --merge <id> or --discard <id>):"
+      printf '%s\n' "$unmerged"
+    fi
+  fi
   exit 0
+fi
+
+if [[ "$action" == merge || "$action" == discard ]]; then
+  require_command git
+  workspace_root="$(find_workspace)"
+  export SQUAD_WORKTREE_WORKSPACE="$workspace_root"
+  cd "$workspace_root"
+  targets=()
+  if [[ "$stop_target" == all ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && targets+=("${line%% *}")
+    done < <(unmerged_worktrees | sed 's/^  //')
+  else
+    targets=("$stop_target")
+  fi
+  (( ${#targets[@]} > 0 )) || { echo "No unmerged worktrees."; exit 0; }
+  exit_status=0
+  for target in "${targets[@]}"; do
+    root=""
+    if [[ -n "$project_directory" ]]; then
+      root="$(worktree_repository_root "$project_directory" || true)"
+    else
+      status_path="$(latest_status_with_worktree "$target")"
+      [[ -n "$status_path" ]] && root="$(status_get "$status_path" repository)"
+    fi
+    home="$( [[ -n "$root" ]] && worktree_home "$root" 2>/dev/null || true)"
+    if [[ -z "$root" || -z "$home" || ! -d "$home/$target" ]]; then
+      echo "No worktree for $target${project_directory:+ in $project_directory}." >&2
+      exit_status=1
+      continue
+    fi
+    if [[ "$action" == discard ]]; then
+      worktree_remove "$root" "$target"
+      echo "Discarded $target's worktree and branch squad/$target."
+      continue
+    fi
+    worktree_commit "$home/$target" "$target: pending changes" >/dev/null 2>&1 || true
+    patch_file="$(mktemp)"
+    worktree_patch "$root" "$target" >"$patch_file"
+    if [[ ! -s "$patch_file" ]]; then
+      worktree_remove "$root" "$target"
+      echo "$target made no changes; removed its worktree."
+    elif apply_output="$(worktree_apply "$root" "$patch_file")"; then
+      worktree_remove "$root" "$target"
+      echo "Merged $target into $root ($(git apply --numstat "$patch_file" | wc -l | tr -d ' ') files, uncommitted). Worktree removed."
+    else
+      conflicted="$(printf '%s\n' "$apply_output" | sed -n "s/^Applied patch to '\(.*\)' with conflicts\.$/\1/p")"
+      echo "Merged $target into $root with conflicts; resolve the markers in:" >&2
+      printf '  %s\n' $conflicted >&2
+      echo "The worktree stays at $home/$target until you run squad-worker --discard $target." >&2
+      exit_status=1
+    fi
+    rm -f "$patch_file"
+  done
+  exit "$exit_status"
 fi
 
 if [[ -z "$worker_id" || -z "$engine" ]]; then
@@ -225,6 +325,7 @@ if [[ -n "$project_directory" ]]; then
   project_directory="$(cd "$project_directory" && pwd)"
 fi
 workspace_root="$(find_workspace)"
+export SQUAD_WORKTREE_WORKSPACE="$workspace_root"
 # squad commands run in the squad workspace; the engine runs in the project,
 # which defaults to the workspace itself.
 project_directory="${project_directory:-$workspace_root}"
@@ -268,6 +369,35 @@ on_stop() {
 }
 trap on_stop TERM INT
 
+# Isolated worktree: by default in git repositories, except for the read-only
+# reviewer and researcher roles. Fix rounds reuse an unmerged worktree.
+engine_directory="$project_directory"
+repository_root=""
+worktree_path=""
+worktree_base_commit=""
+use_worktree=0
+case "$worktree_mode" in
+  1) use_worktree=1 ;;
+  0) ;;
+  *) [[ "$role" != reviewer && "$role" != researcher ]] && use_worktree=1 ;;
+esac
+if (( use_worktree == 1 )); then
+  repository_root="$(worktree_repository_root "$project_directory" || true)"
+  if [[ -z "$repository_root" ]]; then
+    if [[ "$worktree_mode" == 1 ]]; then
+      echo "--worktree needs a git repository: $project_directory" >&2
+      exit 2
+    fi
+  elif worktree_path="$(worktree_create "$repository_root" "$worker_id")"; then
+    worktree_base_commit="$(worktree_base "$repository_root" "$worker_id")"
+    prefix="$(git -C "$project_directory" rev-parse --show-prefix)"
+    engine_directory="$worktree_path${prefix:+/${prefix%/}}"
+  else
+    echo "Could not create a worktree for $worker_id in $repository_root" >&2
+    exit 1
+  fi
+fi
+
 create_output="$(squad task create "$manager_id" "$worker_id" --title "$title" --body "$brief")"
 task_id="$(printf '%s\n' "$create_output" | sed -n 's/^Created task \([^ ]*\) for .*/\1/p')"
 if [[ -z "$task_id" ]]; then
@@ -295,7 +425,8 @@ $role_instructions
 }
 ## Task $task_id: $title
 
-Project directory: $project_directory
+Working directory: $engine_directory${worktree_path:+
+This is your own git worktree of $repository_root, isolated from other workers. The manager reviews and merges your changes, so do not commit, push, or switch branches.}
 
 $brief
 
@@ -323,6 +454,7 @@ fi
 tokens_in=""
 tokens_cached=""
 tokens_out=""
+patch_file=""
 
 write_status() {
   local state="$1"
@@ -338,76 +470,28 @@ write_status() {
     printf 'tokens_in=%s\ntokens_cached=%s\ntokens_out=%s\n' "$tokens_in" "$tokens_cached" "$tokens_out"
     printf 'project=%s\nlog=%s\nreport=%s\n' "$project_directory" \
       "$workspace_root/$log_file" "$workspace_root/$report_file"
+    printf 'repository=%s\nworktree=%s\nbase=%s\npatch=%s\n' "$repository_root" "$worktree_path" \
+      "$worktree_base_commit" "${patch_file:+$workspace_root/$patch_file}"
   } >"$status_file.tmp"
   mv "$status_file.tmp" "$status_file"
 }
 write_status running
 
-# Opens a live monitor pane for this run next to the manager: a tmux split when
-# the manager runs in tmux, a Herdr split inside Herdr, or a Ghostty split when
-# squad-devkit recorded the manager's Ghostty terminal. SQUAD_WORKER_PANES=0
-# disables it.
+# Live monitor for this run beside the manager (see lib/squad-panes.sh).
 open_monitor_pane() {
-  [[ "${SQUAD_WORKER_PANES:-1}" != 0 ]] || return 0
   local pane_script="$output_directory/$run_name.monitor.sh"
+  local dashboard_script="$output_directory/dashboard.sh"
   # Pane shells start from the terminal, not from this process, so pass settings explicitly.
   {
     printf '#!/bin/bash\n'
     printf 'export SQUAD_WORKER_PANE_HOLD=%q\n' "${SQUAD_WORKER_PANE_HOLD:-60}"
     printf 'exec %q %q\n' "$script_dir/squad-worker-monitor.sh" "$workspace_root/$status_file"
   } >"$pane_script"
-  chmod +x "$pane_script"
-  local title="$worker_id · $engine"
-  if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
-    local pane
-    pane="$(tmux split-window -d -h -P -F '#{pane_id}' -t "$TMUX_PANE" -c "$workspace_root" \
-      "$workspace_root/$pane_script" 2>/dev/null)" || return 0
-    tmux select-pane -t "$pane" -T "$title" 2>/dev/null || true
-    tmux select-layout -t "$TMUX_PANE" main-vertical 2>/dev/null || true
-    return 0
-  fi
-  local backend="" manager_pane=""
-  local osascript_command="${SQUAD_DEVKIT_OSASCRIPT:-osascript}"
-  if [[ -n "${HERDR_PANE_ID:-}" ]] && command -v herdr >/dev/null 2>&1; then
-    backend=herdr
-    manager_pane="$HERDR_PANE_ID"
-  elif [[ -n "${SQUAD_DEVKIT_GHOSTTY_TERMINAL:-}" ]] && command -v "$osascript_command" >/dev/null 2>&1; then
-    backend=ghostty
-    manager_pane="$SQUAD_DEVKIT_GHOSTTY_TERMINAL"
-  else
-    return 0
-  fi
-  # Serialise splits so parallel workers stack instead of splitting the same pane.
-  local lock="$output_directory/.pane.lock"
-  for _ in $(seq 1 40); do
-    mkdir "$lock" 2>/dev/null && break
-    sleep 0.25
-  done
-  local last_file="$output_directory/.$backend-${manager_pane//[^A-Za-z0-9_-]/_}.last"
-  local previous=""
-  [[ -f "$last_file" ]] && previous="$(cat "$last_file")"
-  local created=""
-  if [[ "$backend" == herdr ]]; then
-    # The first worker splits right of the manager; later ones stack below the previous worker.
-    local split_output=""
-    if [[ -n "$previous" ]]; then
-      split_output="$(herdr pane split "$previous" --direction down --cwd "$workspace_root" 2>/dev/null || true)"
-    fi
-    if [[ "$split_output" != *'"pane_id"'* ]]; then
-      split_output="$(herdr pane split "$manager_pane" --direction right --cwd "$workspace_root" 2>/dev/null || true)"
-    fi
-    created="$(printf '%s' "$split_output" | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p')"
-    if [[ -n "$created" ]]; then
-      herdr pane rename "$created" "$title" >/dev/null 2>&1 || true
-      herdr pane run "$created" "exec $(printf '%q' "$workspace_root/$pane_script")" >/dev/null 2>&1 || true
-    fi
-  else
-    created="$("$osascript_command" "$script_dir/lib/squad-worker-ghostty.applescript" \
-      "$manager_pane" "$previous" "$workspace_root" "$workspace_root/$pane_script" "$title" 2>/dev/null || true)"
-  fi
-  [[ -n "$created" ]] && printf '%s\n' "$created" >"$last_file"
-  rmdir "$lock" 2>/dev/null || true
-  return 0
+  printf '#!/bin/bash\nexec %q --all %q\n' "$script_dir/squad-worker-monitor.sh" \
+    "$workspace_root/$output_directory" >"$dashboard_script"
+  chmod +x "$pane_script" "$dashboard_script"
+  squad_open_monitor "$workspace_root/$pane_script" "$worker_id · $engine" "$workspace_root" \
+    "$workspace_root/$output_directory" "$workspace_root/$dashboard_script"
 }
 open_monitor_pane
 
@@ -478,8 +562,8 @@ case "$engine" in
       done <<<"$configured_servers"
     fi
     add_directory=()
-    [[ "$project_directory" != "$workspace_root" ]] && add_directory=(--add-dir "$workspace_root")
-    engine_command=(codex exec --json --cd "$project_directory" --profile "$profile" --ephemeral
+    [[ "$engine_directory" != "$workspace_root" ]] && add_directory=(--add-dir "$workspace_root")
+    engine_command=(codex exec --json --cd "$engine_directory" --profile "$profile" --ephemeral
       --skip-git-repo-check --sandbox workspace-write ${add_directory[@]+"${add_directory[@]}"}
       ${mcp_arguments[@]+"${mcp_arguments[@]}"} --output-last-message "$absolute_report" "$prompt")
     ;;
@@ -502,7 +586,7 @@ case "$engine" in
     ;;
   grok)
     streams_log=0
-    engine_command=(grok -p "$prompt" --always-approve --cwd "$project_directory")
+    engine_command=(grok -p "$prompt" --always-approve --cwd "$engine_directory")
     [[ -n "$model" ]] && engine_command+=(--model "$model")
     ;;
   agy)
@@ -513,7 +597,7 @@ case "$engine" in
 esac
 
 run_engine() {
-  cd "$project_directory"
+  cd "$engine_directory"
   unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
   case "$engine" in
     ccr)
@@ -588,6 +672,16 @@ if command -v jq >/dev/null 2>&1 && [[ -s "$log_file" ]]; then
   fi
 fi
 
+# Keep the worker's changes on its branch and as a patch for review and merge.
+worktree_note=""
+if [[ -n "$worktree_path" ]]; then
+  worktree_commit "$worktree_path" "$worker_id: $title" >/dev/null 2>&1 || true
+  patch_file="$output_directory/$run_name.patch"
+  worktree_patch "$repository_root" "$worker_id" >"$patch_file" 2>/dev/null || true
+  changed_files="$(git apply --numstat "$patch_file" 2>/dev/null | wc -l | tr -d ' ')"
+  worktree_note="Worktree: $changed_files changed file(s) in $worktree_path (branch squad/$worker_id). Review: git -C $worktree_path diff $worktree_base_commit. Merge: squad-worker --merge $worker_id. Discard: squad-worker --discard $worker_id."
+fi
+
 report=""
 if [[ -s "$report_file" ]]; then
   report="$(cat "$report_file")"
@@ -607,6 +701,7 @@ fi
 write_status completed 0
 squad task complete "$worker_id" "$task_id" --summary "$(printf '%s' "$report" | cut -c1-4000)" >/dev/null
 squad send --task-id "$task_id" "$worker_id" "$manager_id" \
-  "$worker_id ($engine) completed task $task_id. Report: $workspace_root/$report_file" >/dev/null || true
-printf '[%s · %s · task %s] report: %s\n\n%s\n' \
-  "$worker_id" "$engine" "$task_id" "$workspace_root/$report_file" "$report"
+  "$worker_id ($engine) completed task $task_id. Report: $workspace_root/$report_file${worktree_note:+ $worktree_note}" >/dev/null || true
+printf '[%s · %s · task %s] report: %s\n%s\n%s\n' \
+  "$worker_id" "$engine" "$task_id" "$workspace_root/$report_file" "${worktree_note:+$worktree_note
+}" "$report"

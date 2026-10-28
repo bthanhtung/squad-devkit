@@ -210,6 +210,11 @@ render_run() {
   printf '%s: %s · failed: %s · files changed: %s%s\n' \
     "$call_label" "${calls:-0}" "${failures:-0}" "${files:-0}" "${turns:+ · turns: $turns}"
   printf 'Tokens: %s\n' "$token_label"
+  local worktree
+  worktree="$(status_get "$file" worktree)"
+  if [[ -n "$worktree" ]]; then
+    printf 'Worktree: squad/%s%s\n' "$worker" "$( [[ "$state" == completed ]] && printf ' · merge: squad-worker --merge %s' "$worker")"
+  fi
   printf '%*s\n' "$columns" '' | tr ' ' '─'
   local body_rows=$(( rows - 8 ))
   (( body_rows < 3 )) && body_rows=3

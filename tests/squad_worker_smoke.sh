@@ -17,7 +17,9 @@ cleanup() {
   rm -rf "$temp_directory"
 }
 trap cleanup EXIT
-unset TMUX TMUX_PANE SQUAD_DEVKIT_GHOSTTY_TERMINAL HERDR_PANE_ID HERDR_ENV HERDR_SOCKET_PATH
+unset TMUX TMUX_PANE SQUAD_DEVKIT_GHOSTTY_TERMINAL HERDR_PANE_ID HERDR_ENV HERDR_SOCKET_PATH \
+  WEZTERM_PANE KITTY_WINDOW_ID ITERM_SESSION_ID ZELLIJ ZELLIJ_SESSION_NAME DISPLAY WAYLAND_DISPLAY
+export TERM_PROGRAM=test-terminal
 mkdir -p "$TMUX_TMPDIR"
 project_directory="$temp_directory/project"
 test_bin="$temp_directory/bin"
@@ -37,12 +39,17 @@ if [[ -n "${FAKE_CODEX_FAIL:-}" ]]; then
   echo 'model error' >&2
   exit 3
 fi
+work_directory=""
 while (( $# > 0 )); do
+  [[ "$1" == --cd ]] && work_directory="$2"
   if [[ "$1" == --output-last-message ]]; then
     printf 'Fixed add(). Files: calc.py. Verification: ok.\n' >"$2"
   fi
   shift
 done
+if [[ -n "${FAKE_CODEX_EDIT:-}" && -n "$work_directory" ]]; then
+  printf '%s\n' "${FAKE_CODEX_EDIT#*=}" >"$work_directory/${FAKE_CODEX_EDIT%%=*}"
+fi
 EOF
 cat >"$test_bin/ccr" <<'EOF'
 #!/usr/bin/env bash
@@ -144,7 +151,7 @@ resolved_other="$(cd "$other_project" && pwd)"
 (cd "$temp_directory" && SQUAD_DEVKIT_WORKSPACE="$project_directory" \
   "$worker" far-1 --engine codex --project "$other_project" --brief 'Work elsewhere' >/dev/null)
 grep -q "^codex:exec --json --cd $resolved_other --profile high" "$WORKER_TEST_LOG"
-grep -q "Project directory: $resolved_other" "$WORKER_TEST_LOG"
+grep -q "Working directory: $resolved_other" "$WORKER_TEST_LOG"
 grep -q 'assigned_to: far-1' <<<"$(squad task list --status completed)"
 ls .squad/workers/far-1-*.md >/dev/null
 [[ ! -e "$other_project/.squad" ]] || fail
@@ -282,4 +289,115 @@ squad send manager asker 'FYI' >/dev/null
 [[ "$("$repo_root/scripts/squad-ask.sh" --from asker --workspace "$PWD" --check)" == *'FYI'* ]] || fail
 [[ "$("$repo_root/scripts/squad-ask.sh" --from asker --workspace "$PWD" --reply manager 'Done.')" == 'Sent to manager.' ]] || fail
 squad leave asker >/dev/null
-echo 'PASS: squad-worker engines, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'
+# Worktrees: each worker edits its own git worktree; the project stays untouched
+# until the manager merges.
+repo="$temp_directory/repo"
+mkdir -p "$repo"
+git -C "$repo" init -q
+printf 'one\ntwo\nthree\n' >"$repo/app.txt"
+git -C "$repo" add -A
+git -C "$repo" -c user.name=t -c user.email=t@t commit -qm init
+printf 'one\ntwo (uncommitted)\nthree\n' >"$repo/app.txt"
+printf 'draft\n' >"$repo/notes.txt"
+repo_status="$(git -C "$repo" status --porcelain)"
+FAKE_CODEX_EDIT='feature.txt=from wt-1' "$worker" wt-1 --engine codex --project "$repo" \
+  --brief 'Add feature.txt' >"$temp_directory/wt-output"
+wt_path="$(ls -d "$PWD"/.squad/worktrees/repo-*/wt-1)"
+[[ -f "$wt_path/feature.txt" && ! -e "$repo/feature.txt" ]] || fail
+[[ "$(cat "$wt_path/app.txt")" == $'one\ntwo (uncommitted)\nthree' && -f "$wt_path/notes.txt" ]] || fail
+[[ "$(git -C "$repo" status --porcelain)" == "$repo_status" ]] || fail
+grep -q "codex:exec --json --cd $wt_path " "$WORKER_TEST_LOG"
+grep -q "This is your own git worktree of $(git -C "$repo" rev-parse --show-toplevel)" "$WORKER_TEST_LOG"
+grep -q 'Worktree: 1 changed file(s) in .*Merge: squad-worker --merge wt-1' "$temp_directory/wt-output"
+wt_status="$(ls .squad/workers/wt-1-*.status)"
+grep -q "^worktree=$wt_path$" "$wt_status"
+grep -q '^patch=.*wt-1-.*\.patch$' "$wt_status"
+[[ "$("$worker" --list)" == *'Unmerged worktrees'*'wt-1'* ]] || fail
+FAKE_CODEX_EDIT='feature.txt=from wt-1, fixed' "$worker" wt-1 --engine codex --project "$repo" \
+  --brief 'Fix feature.txt' >/dev/null
+[[ "$(cat "$wt_path/feature.txt")" == 'from wt-1, fixed' ]] || fail
+[[ "$("$worker" --merge wt-1)" == *'Merged wt-1 into '*'(1 files, uncommitted)'* ]] || fail
+[[ "$(cat "$repo/feature.txt")" == 'from wt-1, fixed' && ! -d "$wt_path" ]] || fail
+[[ "$(git -C "$repo" diff --cached --name-only)" == '' ]] || fail
+[[ -z "$(git -C "$repo" branch --list 'squad/*')" ]] || fail
+
+# Parallel edits to the same line merge with conflict markers.
+FAKE_CODEX_EDIT='app.txt=one
+two by wt-2
+three' "$worker" wt-2 --engine codex --project "$repo" --brief 'Edit line two' >/dev/null
+printf 'one\ntwo by human\nthree\n' >"$repo/app.txt"
+status=0
+"$worker" --merge wt-2 >/dev/null 2>"$temp_directory/merge-error" || status=$?
+[[ "$status" == 1 ]] || fail
+grep -q 'with conflicts; resolve the markers in:' "$temp_directory/merge-error"
+grep -q '^  app.txt$' "$temp_directory/merge-error"
+grep -q '^<<<<<<< ' "$repo/app.txt"
+[[ -d "$(dirname "$wt_path")/wt-2" ]] || fail
+[[ "$("$worker" --discard wt-2)" == *'Discarded wt-2'* ]] || fail
+[[ "$("$worker" --merge wt-2 2>&1 || true)" == *'No worktree for wt-2'* ]] || fail
+
+# Reviewers read the project directly; --no-worktree does the same for any role.
+"$worker" rev-1 --engine codex --role reviewer --project "$repo" --brief 'Review app.txt' >/dev/null
+grep -q "codex:exec --json --cd $(cd "$repo" && pwd) " "$WORKER_TEST_LOG"
+[[ -z "$(grep '^worktree=' .squad/workers/rev-1-*.status | cut -d= -f2)" ]] || fail
+"$worker" plain-1 --engine codex --no-worktree --project "$repo" --brief 'In place' >/dev/null
+[[ -z "$(grep '^worktree=' .squad/workers/plain-1-*.status | cut -d= -f2)" ]] || fail
+status=0
+"$worker" nogit-1 --engine codex --worktree --project "$other_project" --brief 'x' >/dev/null 2>"$temp_directory/error" || status=$?
+[[ "$status" == 2 ]] && grep -q -- '--worktree needs a git repository' "$temp_directory/error" || fail
+# Other terminals: split APIs where they exist, otherwise one dashboard window.
+export PANES_LOG="$temp_directory/panes"
+for tool in wezterm kitten zellij x-terminal-emulator; do
+  cat >"$test_bin/$tool" <<EOF
+#!/usr/bin/env bash
+printf '$tool %s\n' "\$*" >>"\$PANES_LOG"
+[[ -n "\${FAKE_PANE_FAIL:-}" ]] && exit 1
+[[ "$tool" == wezterm && "\$2" == split-pane ]] && echo 7\$(grep -c split-pane "\$PANES_LOG")
+[[ "$tool" == kitten ]] && echo 9\$(grep -c 'kitten @ launch' "\$PANES_LOG")
+exit 0
+EOF
+  chmod +x "$test_bin/$tool"
+done
+WEZTERM_PANE=3 "$worker" wez-1 --engine codex --no-worktree --brief 'WezTerm pane' >/dev/null
+WEZTERM_PANE=3 "$worker" wez-2 --engine codex --no-worktree --brief 'WezTerm stacked' >/dev/null
+grep -q '^wezterm cli split-pane --pane-id 3 --right --percent 40 --cwd .* -- .*wez-1-.*\.monitor\.sh$' "$PANES_LOG"
+grep -q '^wezterm cli activate-pane --pane-id 3$' "$PANES_LOG"
+grep -q '^wezterm cli split-pane --pane-id 71 --bottom --cwd .* -- .*wez-2-.*\.monitor\.sh$' "$PANES_LOG"
+KITTY_WINDOW_ID=5 "$worker" kit-1 --engine codex --no-worktree --brief 'Kitty pane' >/dev/null
+KITTY_WINDOW_ID=5 "$worker" kit-2 --engine codex --no-worktree --brief 'Kitty stacked' >/dev/null
+grep -q '^kitten @ launch --keep-focus --match id:5 --location=vsplit --title kit-1 · codex --cwd ' "$PANES_LOG"
+grep -q '^kitten @ launch --keep-focus --match id:91 --location=hsplit --title kit-2 · codex ' "$PANES_LOG"
+ZELLIJ=0 ZELLIJ_SESSION_NAME=main "$worker" zel-1 --engine codex --no-worktree --brief 'Zellij pane' >/dev/null
+grep -q '^zellij run --floating --close-on-exit --name zel-1 · codex --cwd .* -- .*zel-1-.*\.monitor\.sh$' "$PANES_LOG"
+cat >"$test_bin/osascript" <<'EOF'
+#!/usr/bin/env bash
+printf 'osascript %s\n' "$*" >>"$PANES_LOG"
+[[ "$1" == *iterm.applescript ]] && echo "ITERM-NEW"
+exit 0
+EOF
+chmod +x "$test_bin/osascript"
+ITERM_SESSION_ID=w0t0p0:MANAGER-UUID "$worker" it-1 --engine codex --no-worktree --brief 'iTerm pane' >/dev/null
+ITERM_SESSION_ID=w0t0p0:MANAGER-UUID "$worker" it-2 --engine codex --no-worktree --brief 'iTerm stacked' >/dev/null
+grep -q '^osascript .*squad-worker-iterm.applescript MANAGER-UUID  .*it-1-.*monitor.sh it-1 · codex$' "$PANES_LOG"
+grep -q '^osascript .*squad-worker-iterm.applescript MANAGER-UUID ITERM-NEW .*it-2-.*monitor.sh it-2 · codex$' "$PANES_LOG"
+# Terminal.app has no split API: one dashboard window per manager session.
+: >"$PANES_LOG"
+TERM_PROGRAM=Apple_Terminal SQUAD_DEVKIT_MANAGER_WRAPPER_PID=4242 "$worker" app-1 --engine codex --no-worktree --brief 'Terminal.app' >/dev/null
+TERM_PROGRAM=Apple_Terminal SQUAD_DEVKIT_MANAGER_WRAPPER_PID=4242 "$worker" app-2 --engine codex --no-worktree --brief 'Terminal.app again' >/dev/null
+[[ "$(grep -c 'tell application "Terminal" to do script' "$PANES_LOG")" == 1 ]] || fail
+grep -q 'do script "exec .*dashboard.sh"' "$PANES_LOG"
+grep -q 'squad-worker-monitor.sh --all ' .squad/workers/dashboard.sh
+# Kitty without remote control, and Linux desktops, fall back to the dashboard.
+: >"$PANES_LOG"
+rm -f .squad/workers/.dashboard-*
+KITTY_WINDOW_ID=5 FAKE_PANE_FAIL=1 DISPLAY=:0 SQUAD_DEVKIT_MANAGER_WRAPPER_PID=4343 \
+  "$worker" kit-3 --engine codex --no-worktree --brief 'No remote control' >/dev/null
+grep -q '^kitten @ launch' "$PANES_LOG"
+for _ in 1 2 3 4 5; do grep -q '^x-terminal-emulator -e .*dashboard.sh$' "$PANES_LOG" && break; sleep 0.2; done
+grep -q '^x-terminal-emulator -e .*dashboard.sh$' "$PANES_LOG"
+: >"$PANES_LOG"
+SQUAD_WORKER_DASHBOARD=0 DISPLAY=:0 SQUAD_DEVKIT_MANAGER_WRAPPER_PID=4444 \
+  "$worker" none-1 --engine codex --no-worktree --brief 'No dashboard' >/dev/null
+[[ ! -s "$PANES_LOG" ]] || fail
+rm "$test_bin/wezterm" "$test_bin/kitten" "$test_bin/zellij" "$test_bin/x-terminal-emulator"
+echo 'PASS: squad-worker engines, worktrees, panes in every terminal, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'
