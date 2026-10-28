@@ -532,7 +532,8 @@ run_engine() {
 
 file_age() {
   local modified
-  modified="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0)"
+  # GNU stat first: on Linux, BSD-style `stat -f` succeeds with other output.
+  modified="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)"
   printf '%d' $(( $(date +%s) - modified ))
 }
 

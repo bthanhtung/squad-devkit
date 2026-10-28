@@ -167,8 +167,9 @@ while (( $# > 0 )); do
   [[ "$1" == --settings ]] && settings="$2"
   shift
 done
-cp "$settings" "$MANAGER_TEST_LOG.settings"
-hook="$(jq -r '.hooks.StopFailure[0].hooks[0].command // empty' "$settings")"
+[[ -n "$settings" ]] && cp "$settings" "$MANAGER_TEST_LOG.settings"
+hook=""
+[[ -n "$settings" ]] && hook="$(jq -r '.hooks.StopFailure[0].hooks[0].command // empty' "$settings")"
 if [[ -z "$hook" ]]; then
   echo 'claude without fallback hook' >>"$MANAGER_TEST_LOG"
   exit 0
