@@ -16,20 +16,6 @@ it, gives each task to the most cost-effective worker that can do it well
 result, and sends back anything that is wrong. Workers start only when there is
 work and stop when they are done, so idle agents cost nothing.
 
-```
-┌──────────────────────────────┬─────────────────────────────┐
-│ Claude Code · manager        │ dev-1 · codex (high)        │
-│                              │ ● RUNNING · 01:42           │
-│ > add rate limiting to the   │ Calls: 6 · failed: 0        │
-│   public API                 ├─────────────────────────────┤
-│                              │ review-1 · claude (sonnet)  │
-│ Plan: 3 tasks · dev-1 codex  │ ✓ COMPLETED · 00:58         │
-│ test-1 codex · review-1 ...  ├─────────────────────────────┤
-│ ─────────────────────────────│ docs-1 · ccr                │
-│ weekly 41% · squad saved 1.2M│ ✓ COMPLETED · 00:12         │
-└──────────────────────────────┴─────────────────────────────┘
-```
-
 <p align="center">
   <img src="./assets/squad-devkit-demo.gif" alt="Three squad workers run in parallel, each in its own git worktree with a live monitor pane; their changes are then merged and the tests pass" width="860" />
 </p>
