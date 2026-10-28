@@ -31,10 +31,10 @@ work and stop when they are done, so idle agents cost nothing.
 ```
 
 <p align="center">
-  <img src="./assets/squad-devkit-demo.gif" alt="A squad worker fixes a bug in its own git worktree; the change is then merged into the project" width="860" />
+  <img src="./assets/squad-devkit-demo.gif" alt="Three squad workers run in parallel, each in its own git worktree with a live monitor pane; their changes are then merged and the tests pass" width="860" />
 </p>
 
-<p align="center"><sub>A real run: a ccr worker fixes <code>calc.py</code> in its own git worktree, then the change is merged.</sub></p>
+<p align="center"><sub>A real run in tmux: three Claude haiku workers fix a bug, write tests, and update docs in parallel, each in its own git worktree, then everything is merged and the tests pass.</sub></p>
 
 **Contents:** [Highlights](#highlights) · [Install](#install) ·
 [Usage](#usage) · [Workers](#workers) · [Monitor and savings](#monitor-and-savings) ·
