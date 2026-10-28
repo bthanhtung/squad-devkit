@@ -153,97 +153,180 @@ summarise_log() {
   ' "$log" 2>/dev/null || { printf '\t\t\t\t\t\t\n'; tail -n 40 "$log"; }
 }
 
-render_run() {
+# Styles only when writing to a terminal.
+if [[ -t 1 ]] && (( once == 0 )); then
+  bold=$'\033[1m' dim=$'\033[2m' green=$'\033[32m' red=$'\033[31m'
+  yellow=$'\033[33m' cyan=$'\033[36m' reset=$'\033[0m' clear_line=$'\r\033[2K'
+else
+  bold='' dim='' green='' red='' yellow='' cyan='' reset='' clear_line=''
+fi
+
+terminal_columns() {
+  local columns="${COLUMNS:-}"
+  [[ -n "$columns" ]] || columns="$(tput cols 2>/dev/null || echo 100)"
+  (( columns > 20 )) || columns=100
+  printf '%d' "$columns"
+}
+
+# Pure bash, so it works without a UTF-8 locale (tr would reject the multibyte rule character).
+rule() {
+  local line
+  printf -v line '%*s' "$(terminal_columns)" ''
+  printf '%s%s%s\n' "$dim" "${line// /─}" "$reset"
+}
+
+file_size() {
+  wc -c <"$1" 2>/dev/null | tr -d ' ' || echo 0
+}
+
+# Prints one activity line, coloured by its marker and cut to the pane width.
+print_activity() {
+  local line="$1" width color=""
+  width=$(( $(terminal_columns) - 1 ))
+  case "$line" in
+    "✓ "*) color="$green" ;;
+    "✗ "*) color="$red" ;;
+    "! "*) color="$yellow" ;;
+    "⚙ "*|"→ "*|"✎ "*) color="$cyan" ;;
+  esac
+  printf '%s%s%s\n' "$color" "${line:0:$width}" "$reset"
+}
+
+count_label() {
+  local count="${1:-0}" singular="$2" plural="$3"
+  if [[ "$count" == 1 ]]; then
+    printf '%s %s' "$count" "$singular"
+  else
+    printf '%s %s' "$count" "$plural"
+  fi
+}
+
+# "calls · failed · files · turns · tokens" for the status and summary lines.
+metrics_label() {
+  local engine="$1" state="$2" calls="$3" failures="$4" files="$5" turns="$6"
+  local tokens_in="$7" tokens_cached="$8" tokens_out="$9" label call_word="call" call_words="calls"
+  [[ "$engine" == ccr ]] && call_word="tool call" && call_words="tool calls"
+  label="$(count_label "${calls:-0}" "$call_word" "$call_words") · ${failures:-0} failed · $(count_label "${files:-0}" "file changed" "files changed")"
+  [[ -n "$turns" ]] && label+=" · $(count_label "$turns" turn turns)"
+  if [[ -n "$tokens_in$tokens_out" && "${tokens_in:-0}${tokens_out:-0}" != 00 ]]; then
+    label+=" · tokens in $(format_count "${tokens_in:-0}")"
+    [[ -n "$tokens_cached" && "$tokens_cached" != 0 ]] && label+=" (cached $(format_count "$tokens_cached"))"
+    label+=" · out $(format_count "${tokens_out:-0}")"
+  elif [[ "$state" != running && "$engine" == ccr ]]; then
+    label+=" · tokens n/a (router)"
+  fi
+  printf '%s' "$label"
+}
+
+state_label() {
+  local state="$1" reason="$2" exit_status="$3"
+  case "$state" in
+    running) printf '%s● RUNNING%s' "$yellow" "$reset" ;;
+    completed) printf '%s✓ COMPLETED%s' "$green" "$reset" ;;
+    failed) printf '%s✗ FAILED%s%s (exit %s)' "$red" "$reset" "${reason:+: $reason}" "${exit_status:-?}" ;;
+    stopped) printf '%s■ STOPPED%s%s' "$yellow" "$reset" "${reason:+: $reason}" ;;
+    lost) printf '%s? LOST%s: the worker process ended without a report' "$red" "$reset" ;;
+    *) printf '%s' "${state:-?}" ;;
+  esac
+}
+
+# Follows one run without redrawing the screen: the header prints once,
+# activity is appended as it happens, and only the last line (the status) is
+# rewritten in place. A finished run gets a summary, the merge hint, and the
+# start of the report.
+watch_run() {
   local file="$1"
-  local rows="${LINES:-$(tput lines 2>/dev/null || echo 30)}"
-  local columns="${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}"
-  local worker engine profile role title task state log report exit_status
+  local worker engine profile model role title task log report worktree engine_label
   worker="$(status_get "$file" worker)"
   engine="$(status_get "$file" engine)"
   profile="$(status_get "$file" profile)"
+  model="$(status_get "$file" model)"
   role="$(status_get "$file" role)"
   title="$(status_get "$file" title)"
   task="$(status_get "$file" task)"
-  state="$(effective_state "$file")"
   log="$(status_get "$file" log)"
   report="$(status_get "$file" report)"
-  exit_status="$(status_get "$file" exit)"
-  local model reason
-  model="$(status_get "$file" model)"
-  reason="$(status_get "$file" reason)"
-  local summary metrics
-  summary="$(summarise_log "$log")"
-  metrics="${summary%%$'\n'*}"
-  local calls failures files tokens_in tokens_cached tokens_out turns
-  IFS=$'\t' read -r calls failures files tokens_in tokens_cached tokens_out turns <<<"$metrics" || true
-
-  local engine_label="$engine"
+  worktree="$(status_get "$file" worktree)"
+  engine_label="$engine"
   [[ "$engine" == codex && -n "$profile" ]] && engine_label="codex ($profile)"
   [[ "$engine" != codex && -n "$model" ]] && engine_label="$engine ($model)"
-  local state_label
-  case "$state" in
-    running) state_label="● RUNNING" ;;
-    completed) state_label="✓ COMPLETED" ;;
-    failed) state_label="✗ FAILED${reason:+: $reason} (exit ${exit_status:-?})" ;;
-    stopped) state_label="■ STOPPED${reason:+: $reason}" ;;
-    lost) state_label="? LOST: worker process ended without a report" ;;
-    *) state_label="${state:-?}" ;;
-  esac
-  local call_label="Calls"
-  [[ "$engine" == ccr ]] && call_label="Tool calls"
-  local token_label="pending"
-  if [[ -n "$tokens_in$tokens_out" ]]; then
-    token_label="in $(format_count "${tokens_in:-0}")"
-    [[ -n "$tokens_cached" && "$tokens_cached" != 0 ]] && token_label+=" (cached $(format_count "$tokens_cached"))"
-    token_label+=" · out $(format_count "${tokens_out:-0}")"
-  elif [[ "$state" != running ]]; then
-    token_label="n/a"
-  fi
-  if [[ "$engine" == ccr && "${tokens_in:-0}" == 0 && "${tokens_out:-0}" == 0 && "$state" != running ]]; then
-    token_label="not reported by the router"
-  fi
 
-  printf '\033[H\033[2J'
-  printf '\033[1m%s\033[0m · %s · role %s · %s · %s\n' \
-    "$worker" "$engine_label" "${role:-dev}" "$state_label" "$(format_duration "$(elapsed_seconds "$file")")"
-  printf 'Task: %s\n' "$(printf '%s' "$title" | cut -c1-$((columns - 6)))"
-  printf '%s: %s · failed: %s · files changed: %s%s\n' \
-    "$call_label" "${calls:-0}" "${failures:-0}" "${files:-0}" "${turns:+ · turns: $turns}"
-  printf 'Tokens: %s\n' "$token_label"
-  local worktree
-  worktree="$(status_get "$file" worktree)"
-  if [[ -n "$worktree" ]]; then
-    printf 'Worktree: squad/%s%s\n' "$worker" "$( [[ "$state" == completed ]] && printf ' · merge: squad-worker --merge %s' "$worker")"
-  fi
-  printf '%*s\n' "$columns" '' | tr ' ' '─'
-  local body_rows=$(( rows - 8 ))
-  (( body_rows < 3 )) && body_rows=3
-  if [[ "$state" == running ]]; then
-    printf '%s\n' "$summary" | tail -n +2 | tail -n "$body_rows" | cut -c1-"$columns"
-  else
-    printf '%s\n' "$summary" | tail -n +2 | tail -n $(( body_rows / 2 )) | cut -c1-"$columns"
-    printf '%*s\n' "$columns" '' | tr ' ' '─'
-    if [[ -s "$report" ]]; then
-      head -n $(( body_rows / 2 - 1 )) "$report" | cut -c1-"$columns"
-    else
-      printf 'No report. Log: %s\n' "$log"
+  printf '%s%s%s · %s · role %s\n' "$bold" "$worker" "$reset" "$engine_label" "${role:-dev}"
+  printf '%sTask:%s %s\n' "$dim" "$reset" "${title:0:$(( $(terminal_columns) - 7 ))}"
+  [[ -n "$worktree" ]] && printf '%sBranch:%s squad/%s (isolated worktree)\n' "$dim" "$reset" "$worker"
+  rule
+
+  local printed=0 last_size=-1 size summary="" running_command="" state
+  local calls="" failures="" files="" tokens_in="" tokens_cached="" tokens_out="" turns=""
+  local status_shown=0 line index
+  while true; do
+    state="$(effective_state "$file")"
+    size="$(file_size "$log")"
+    if [[ "$size" != "$last_size" || "$state" != running ]]; then
+      last_size="$size"
+      summary="$(summarise_log "$log")"
+      IFS=$'\t' read -r calls failures files tokens_in tokens_cached tokens_out turns <<<"${summary%%$'\n'*}" || true
+      running_command=""
+      index=0
+      while IFS= read -r line; do
+        index=$(( index + 1 ))
+        (( index == 1 )) && continue
+        if [[ "$line" == "… running: "* ]]; then
+          running_command="${line#… running: }"
+          continue
+        fi
+        if (( index - 1 > printed )); then
+          (( status_shown == 1 )) && printf '%s' "$clear_line" && status_shown=0
+          print_activity "$line"
+          printed=$(( index - 1 ))
+        fi
+      done <<<"$summary"
     fi
+    if [[ "$state" != running ]] || (( once == 1 )); then
+      break
+    fi
+    local status_text
+    status_text="● RUNNING $(format_duration "$(elapsed_seconds "$file")") · $(metrics_label "$engine" running \
+      "$calls" "$failures" "$files" "$turns" "$tokens_in" "$tokens_cached" "$tokens_out")"
+    [[ -n "$running_command" ]] && status_text+=" · … $running_command"
+    status_text="${status_text:0:$(( $(terminal_columns) - 1 ))}"
+    printf '%s%s%s%s' "$clear_line" "$yellow" "$status_text" "$reset"
+    status_shown=1
+    sleep 1
+  done
+  (( status_shown == 1 )) && printf '%s' "$clear_line"
+
+  rule
+  printf '%s in %s · %s\n' "$(state_label "$state" "$(status_get "$file" reason)" "$(status_get "$file" exit)")" \
+    "$(format_duration "$(elapsed_seconds "$file")")" \
+    "$(metrics_label "$engine" "$state" "$calls" "$failures" "$files" "$turns" "$tokens_in" "$tokens_cached" "$tokens_out")"
+  if [[ "$state" == running ]]; then
+    return 0
   fi
-  [[ -n "$task" ]] && printf '\033[2mtask %s\033[0m\n' "$task"
+  if [[ "$state" == completed && -n "$worktree" && -d "$worktree" ]]; then
+    printf '%sMerge:%s squad-worker --merge %s %s(or --discard %s)%s\n' "$dim" "$reset" "$worker" "$dim" "$worker" "$reset"
+  fi
+  if [[ -s "$report" ]]; then
+    rule
+    head -n "${SQUAD_MONITOR_REPORT_LINES:-15}" "$report"
+  elif [[ "$state" != completed ]]; then
+    printf '%sLog:%s %s\n' "$dim" "$reset" "$log"
+  fi
+  [[ -n "$task" ]] && printf '%stask %s%s\n' "$dim" "$task" "$reset"
   return 0
 }
 
+# Redraws the table in place (cursor home, clear each line) inside a
+# synchronized update, so the dashboard never flashes.
 render_all() {
-  local directory="$1"
-  local columns="${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}"
-  printf '\033[H\033[2J'
-  printf '\033[1m%-12s %-14s %-10s %-13s %8s %8s %12s  %s\033[0m\n' \
-    WORKER ENGINE ROLE STATE ELAPSED CALLS TOKENS TASK
-  local file found=0
+  local directory="$1" columns frame="" file found=0
+  columns="$(terminal_columns)"
+  frame+="$(printf '%s%-12s %-14s %-10s %-13s %8s %8s %12s  %s%s' "$bold" \
+    WORKER ENGINE ROLE STATE ELAPSED CALLS TOKENS TASK "$reset")"$'\n'
   while IFS= read -r file; do
     [[ -n "$file" ]] || continue
     found=1
-    local engine profile state metrics calls tokens_in tokens_out
+    local engine profile state metrics calls tokens_in tokens_out tokens="-"
     engine="$(status_get "$file" engine)"
     profile="$(status_get "$file" profile)"
     state="$(effective_state "$file")"
@@ -251,15 +334,18 @@ render_all() {
     metrics="${metrics%%$'\n'*}"
     IFS=$'\t' read -r calls _ _ tokens_in _ tokens_out _ <<<"$metrics" || true
     [[ "$engine" == codex && -n "$profile" ]] && engine="codex/$profile"
-    local tokens="-"
     [[ -n "$tokens_in$tokens_out" ]] && tokens="$(format_count $(( ${tokens_in:-0} + ${tokens_out:-0} )))"
-    printf '%-12s %-14s %-10s %-13s %8s %8s %12s  %s\n' \
+    frame+="$(printf '%-12s %-14s %-10s %-13s %8s %8s %12s  %s' \
       "$(status_get "$file" worker)" "$engine" "$(status_get "$file" role)" "$state" \
       "$(format_duration "$(elapsed_seconds "$file")")" "${calls:-0}" "$tokens" \
-      "$(status_get "$file" title | cut -c1-$(( columns > 90 ? columns - 90 : 10 )))"
+      "$(status_get "$file" title | cut -c1-$(( columns > 90 ? columns - 90 : 10 )))")"$'\n'
   done < <(ls -t "$directory"/*.status 2>/dev/null)
-  (( found == 1 )) || printf 'No worker runs in %s yet.\n' "$directory"
-  return 0
+  (( found == 1 )) || frame+="No worker runs in $directory yet."$'\n'
+  if (( once == 1 )) || [[ ! -t 1 ]]; then
+    printf '%s' "$frame"
+    return 0
+  fi
+  printf '\033[?2026h\033[H%s\033[J\033[?2026l' "${frame//$'\n'/$'\033[K\n'}"
 }
 
 # One status-line label: running workers and tokens offloaded from Claude.
@@ -305,6 +391,11 @@ fi
 
 if (( all == 1 )); then
   directory="${all_directory:-.squad/workers}"
+  if (( once == 0 )) && [[ -t 1 ]]; then
+    printf '\033[?25l\033[2J'
+    trap 'printf "\033[?25h"' EXIT
+    trap 'exit 0' INT TERM
+  fi
   while true; do
     render_all "$directory"
     (( once == 1 )) && exit 0
@@ -320,15 +411,21 @@ for _ in $(seq 1 20); do
   [[ -f "$status_file" ]] && break
   sleep 0.25
 done
-while true; do
-  render_run "$status_file"
-  (( once == 1 )) && exit 0
-  [[ "$(effective_state "$status_file")" == running ]] || break
-  sleep 1
-done
-if [[ -n "${SQUAD_WORKER_PANE_HOLD:-}" ]]; then
-  sleep "$SQUAD_WORKER_PANE_HOLD"
+# Start from a clean pane (some terminals echo the command that opened it);
+# this is the only full clear, so nothing flickers afterwards.
+if (( once == 0 )) && [[ -t 1 ]]; then
+  printf '\033[H\033[2J'
+fi
+watch_run "$status_file"
+(( once == 1 )) && exit 0
+hold="${SQUAD_WORKER_PANE_HOLD:-}"
+if [[ "$hold" =~ ^[0-9]+$ ]]; then
+  for (( remaining = hold; remaining > 0; remaining-- )); do
+    printf '%s%sClosing in %ds · press Enter to close now%s' "$clear_line" "$dim" "$remaining" "$reset"
+    read -r -t 1 _ 2>/dev/null && break
+  done
+  printf '%s' "$clear_line"
 else
-  printf '\nPress Enter to close this pane.'
+  printf '\n%sPress Enter to close this pane.%s' "$dim" "$reset"
   read -r _ || true
 fi

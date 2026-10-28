@@ -4,6 +4,21 @@ All notable changes to squad-devkit are documented here. The `squad` CLI
 itself follows the upstream [mco-org/squad](https://github.com/mco-org/squad)
 releases.
 
+## [1.0.1] - 2026-10-28
+
+### Changed
+- Worker monitor panes no longer redraw the whole screen every second, which
+  made them flicker. The header prints once, events are appended as they
+  happen (coloured by kind), and only the status line is rewritten in place.
+  A finished run shows a one-line summary, the merge command, and the report,
+  then counts down before closing (Enter closes it at once).
+- `squad-monitor --all` redraws its table in place with synchronized output
+  and a hidden cursor.
+
+### Fixed
+- The monitor no longer stops after the task line when the terminal has no
+  UTF-8 locale (for example over SSH or in CI).
+
 ## [1.0.0] - 2026-10-28
 
 First public release of squad-devkit.

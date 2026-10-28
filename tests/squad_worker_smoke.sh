@@ -107,6 +107,7 @@ grep -qx 'title=Fix add() in calc.py' "$dev_one_status"
 monitor_frame="$("$repo_root/scripts/squad-worker-monitor.sh" "$dev_one_status" --once)"
 [[ "$monitor_frame" == *'dev-1'*'codex (high)'*'COMPLETED'* ]] || fail
 [[ "$monitor_frame" == *'Fixed add(). Files: calc.py. Verification: ok.'* ]] || fail
+[[ "$monitor_frame" == *'dev-1 · codex (high) · role dev'*'Task: Fix add() in calc.py'* ]] || fail
 [[ "$("$repo_root/scripts/squad-worker-monitor.sh" --all --once)" == *'dev-1'*'codex/high'*'completed'* ]] || fail
 [[ ! -e .squad/workers/.pane.lock ]] || fail
 grep -q 'dev-1 (codex) completed task .* Report: .*/.squad/workers/dev-1-' <<<"$(squad receive manager)"
@@ -120,8 +121,8 @@ ccr_call="$(grep '^claude:' "$WORKER_TEST_LOG")"
 [[ "$ccr_call" == *'## Task '*': Write README'* ]] || fail
 [[ "$ccr_call" == *'--output-format stream-json --verbose'* ]] || fail
 ccr_frame="$("$repo_root/scripts/squad-worker-monitor.sh" "$(ls .squad/workers/doc-1-*.status)" --once)"
-[[ "$ccr_frame" == *'Tool calls: 1'*'files changed: 1'*'turns: 2'* ]] || fail
-[[ "$ccr_frame" == *'Tokens: in 1,200 · out 80'* ]] || fail
+[[ "$ccr_frame" == *'✓ COMPLETED in '*' · 1 tool call · 0 failed · 1 file changed · 2 turns · tokens in 1,200 · out 80'* ]] || fail
+[[ "$ccr_frame" != *$'\033'* ]] || fail
 [[ "$ccr_frame" == *'→ Write README.md'* ]] || fail
 grep -q 'assigned_to: doc-1' <<<"$(squad task list --status completed)"
 
@@ -400,4 +401,29 @@ SQUAD_WORKER_DASHBOARD=0 DISPLAY=:0 SQUAD_DEVKIT_MANAGER_WRAPPER_PID=4444 \
   "$worker" none-1 --engine codex --no-worktree --brief 'No dashboard' >/dev/null
 [[ ! -s "$PANES_LOG" ]] || fail
 rm "$test_bin/wezterm" "$test_bin/kitten" "$test_bin/zellij" "$test_bin/x-terminal-emulator"
-echo 'PASS: squad-worker engines, worktrees, panes in every terminal, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'
+# The live monitor never clears the screen: it appends activity and rewrites
+# only its status line, so panes do not flicker.
+flicker="$temp_directory/flicker"
+mkdir -p "$flicker"
+: >"$flicker/run.log"
+printf 'worker=live-1\nengine=codex\nprofile=high\nrole=dev\ntitle=Live run\ntask=t-live\nstate=running\npid=%s\nstarted=%s\nlog=%s\nreport=%s\n' \
+  "$$" "$(date +%s)" "$flicker/run.log" "$flicker/run.md" >"$flicker/run.status"
+(
+  sleep 1.2
+  echo '{"type":"item.completed","item":{"id":"1","type":"command_execution","command":"make test","exit_code":0}}' >>"$flicker/run.log"
+  sleep 1.2
+  printf 'All good.\n' >"$flicker/run.md"
+  printf 'state=completed\nfinished=%s\n' "$(date +%s)" >>"$flicker/run.status"
+) &
+monitor_command="SQUAD_WORKER_PANE_HOLD=1 COLUMNS=80 $repo_root/scripts/squad-worker-monitor.sh $flicker/run.status"
+if script --version >/dev/null 2>&1; then
+  script -q -c "$monitor_command" "$flicker/tty" </dev/null >/dev/null 2>&1
+else
+  script -q "$flicker/tty" bash -c "$monitor_command" </dev/null >/dev/null 2>&1
+fi
+wait
+# Exactly one clear, at start-up; after that only the status line is rewritten.
+[[ "$(LC_ALL=C grep -o "$(printf '\033\\[2J')" "$flicker/tty" | wc -l | tr -d ' ')" == 1 ]] || fail
+visible="$(LC_ALL=C sed -e "s/$(printf '\033')\\[[0-9;?]*[A-Za-z]//g" "$flicker/tty")"
+[[ "$visible" == *'● RUNNING '*'✓ make test'*'✓ COMPLETED in '*'1 call · 0 failed'*'All good.'* ]] || fail
+echo 'PASS: squad-worker engines, worktrees, panes in every terminal, flicker-free monitor, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'

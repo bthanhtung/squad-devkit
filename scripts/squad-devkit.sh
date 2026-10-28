@@ -15,7 +15,7 @@ script_dir="$(cd "$(dirname "$source_file")" && pwd)"
 source "$script_dir/lib/squad-tmux-launcher-helpers.sh"
 source "$script_dir/lib/squad-devkit-agents.sh"
 
-devkit_version="1.0.0"
+devkit_version="1.0.1"
 
 usage() {
   cat <<'EOF'

@@ -373,30 +373,37 @@ tmux, Herdr, and Ghostty are tested end to end; the WezTerm, Kitty, iTerm2,
 Zellij, and dashboard paths follow each terminal's documented API and are
 covered by tests with stand-in commands.
 
-Each pane refreshes every second:
+A pane never redraws the whole screen, so it does not flicker. The header
+prints once, each event is appended as it happens, and only the bottom status
+line is rewritten in place:
 
 ```
-dev-1 · codex (high) · role dev · ● RUNNING · 01:42
+dev-1 · codex (high) · role dev
 Task: Fix the off-by-one in src/pager.rs::page_count
-Calls: 6 · failed: 1 · files changed: 2
-Tokens: pending
+Branch: squad/dev-1 (isolated worktree)
 ──────────────────────────────────────────────
 ✗ cargo test pager  (exit 101)
 ✎ src/pager.rs
-… running: cargo test pager
+✓ cargo test pager
+● RUNNING 01:42 · 3 calls · 1 failed · 1 file changed · … cargo clippy
 ```
 
-It shows commands (Codex) or tool calls and turns (CCR), failures, changed
-files, and recent activity. Codex reports token usage when the run finishes.
-claude-code-router does not report tokens, so CCR panes say so. When the run
-ends, the pane shows the final state and the start of the report, and closes
-60 seconds later. Set `SQUAD_WORKER_PANE_HOLD=<seconds>` to change that, or
+Events are coloured by kind: commands that pass (✓) or fail (✗), file changes
+(✎), tool and MCP calls (→, ⚙), and the worker's messages (»). The status line
+shows elapsed time, calls, failures, changed files, turns, and the command in
+progress. When the run ends, the pane prints a summary
+(`✓ COMPLETED in 01:58 · 4 calls · 1 failed · 1 file changed · tokens in 39,760 (cached 7,424) · out 106`),
+the merge command for worktree runs, and the start of the report, then counts
+down and closes 60 seconds later (Enter closes it at once). Codex reports
+tokens when the run finishes; claude-code-router does not report them. Set
+`SQUAD_WORKER_PANE_HOLD=<seconds>` to change the delay, or
 `SQUAD_WORKER_PANES=0` to open no panes. A run whose worker process ended
 without updating its status shows as LOST.
 
 `squad-monitor --all` shows one table of every run in `.squad/workers`
-(worker, engine, role, state, elapsed time, calls, tokens, task). It works in
-any terminal. Each run keeps `<id>-<time>.status`, `.log` (JSON events), and
+(worker, engine, role, state, elapsed time, calls, tokens, task), redrawn in
+place every two seconds with synchronized output, so it does not flicker
+either. It works in any terminal. Each run keeps `<id>-<time>.status`, `.log` (JSON events), and
 `.md` (report) in that directory.
 
 ## Upgrading from the four-pane setup

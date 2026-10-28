@@ -141,8 +141,10 @@ does the same for any role.
 
 ## Monitor and savings
 
-Each worker pane shows its state, elapsed time, calls, failures, changed files,
-tokens, and recent activity, then closes itself 60 seconds after the run ends.
+Each worker pane streams its activity (commands, file changes, tool calls,
+messages) under a single live status line, without redrawing the screen, so it
+never flickers. When the run ends it shows a summary, the merge command, and the
+report, then closes itself 60 seconds later.
 In terminals without a split API (macOS Terminal.app, GNOME Terminal, Konsole,
 xterm), the first worker of a session opens one dashboard window with every run
 instead; over SSH, run `squad-monitor --all` or use `squad-devkit --tmux`.
