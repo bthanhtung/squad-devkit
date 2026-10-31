@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/bthanhtung/squad-devkit/actions/workflows/ci.yml"><img src="https://github.com/bthanhtung/squad-devkit/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/bthanhtung/squad-devkit/releases"><img src="https://img.shields.io/github/v/release/bthanhtung/squad-devkit?style=flat-square" alt="Release" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="License: MIT" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-22c55e?style=flat-square" alt="License: GPL-3.0" /></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-7c3aed?style=flat-square" alt="macOS and Linux" />
 </p>
 
@@ -25,7 +25,7 @@ work and stop when they are done, so idle agents cost nothing.
 **Contents:** [Highlights](#highlights) · [Install](#install) ·
 [Usage](#usage) · [Workers](#workers) · [Monitor and savings](#monitor-and-savings) ·
 [Configuration](#configuration) · [Project status](#project-status) · [Security](#security) ·
-[FAQ](#faq) · [Contributing](#contributing) · [Credits](#credits) ·
+[FAQ](#faq) · [Contributing](#contributing) · [Credits](#credits) · [License](#license) ·
 [squad CLI reference](./docs/squad-cli.md)
 
 ## Highlights
@@ -236,6 +236,14 @@ for release notes.
 
 squad-devkit is built by [TungDaDev](https://github.com/bthanhtung) on
 [squad](https://github.com/mco-org/squad) by mco-org, which provides the SQLite
-message bus, task records, and the `squad` CLI. Both are released under the
-[MIT License](./LICENSE).
+message bus, task records, and the `squad` CLI.
+
+## License
+
+squad-devkit is released under the [GNU General Public License v3.0](./LICENSE).
+You may use, study, share, and modify it; if you distribute a modified version,
+it must stay under GPL-3.0 with its source available.
+
+The code that comes from the upstream squad CLI keeps its original MIT license
+and copyright notice, in [LICENSES/MIT-squad.txt](./LICENSES/MIT-squad.txt).
 

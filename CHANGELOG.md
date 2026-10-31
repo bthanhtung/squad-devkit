@@ -7,6 +7,8 @@ releases.
 ## [Unreleased]
 
 ### Changed
+- squad-devkit is now licensed under GPL-3.0. Code from the upstream `squad`
+  CLI keeps its MIT license, kept in `LICENSES/MIT-squad.txt`.
 - README now covers squad-devkit only and adds Linux install steps and an FAQ;
   the upstream `squad` CLI reference moved to `docs/squad-cli.md` (Chinese:
   `docs/squad-cli.zh-CN.md`).
