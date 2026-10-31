@@ -1761,6 +1761,9 @@ fn test_cli_docs_join_usage_lists_every_client() {
         .find(|l| l.contains("`squad join <id>"))
         .expect("docs/squad-cli.md documents squad join");
     for client in ALL_CLIENTS {
-        assert!(line.contains(client), "docs/squad-cli.md join usage lacks {client}");
+        assert!(
+            line.contains(client),
+            "docs/squad-cli.md join usage lacks {client}"
+        );
     }
 }
