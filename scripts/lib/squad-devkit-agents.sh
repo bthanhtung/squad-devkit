@@ -23,7 +23,7 @@ is_manager_client() {
 # The --client value squad join accepts for this CLI, if any.
 squad_client_flag() {
   case "$1" in
-    claude|codex|gemini|opencode) printf '%s' "$1" ;;
+    claude|codex|gemini|opencode|grok|agy|ccr) printf '%s' "$1" ;;
   esac
 }
 

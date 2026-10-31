@@ -13,6 +13,11 @@ struct JoinOptions {
     protocol_version: Option<i64>,
 }
 
+/// Clients accepted by `squad join --client`.
+const VALID_CLIENTS: [&str; 7] = [
+    "claude", "codex", "gemini", "opencode", "grok", "agy", "ccr",
+];
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".to_string());
@@ -22,7 +27,7 @@ fn main() -> Result<()> {
         "join" => {
             let id = args.next().unwrap_or_default();
             if id.is_empty() {
-                bail!("Usage: squad join <id> [--role <role>] [--client <claude|gemini|codex|opencode>] [--protocol-version <n>]");
+                bail!("Usage: squad join <id> [--role <role>] [--client <claude|codex|gemini|opencode|grok|agy|ccr>] [--protocol-version <n>]");
             }
             let options = parse_join_args(&id, args.collect())?;
             cmd_join(&id, &options)
@@ -155,9 +160,7 @@ fn parse_join_args(id: &str, args: Vec<String>) -> Result<JoinOptions> {
                     bail!("--client requires a value");
                 }
                 match value.as_str() {
-                    "claude" | "gemini" | "codex" | "opencode" => {
-                        options.client_type = Some(value.clone())
-                    }
+                    v if VALID_CLIENTS.contains(&v) => options.client_type = Some(value.clone()),
                     _ => bail!("invalid --client value: {value}"),
                 }
                 i += 2;
@@ -1276,7 +1279,7 @@ const HELP_TEXT: &str = r#"squad — Multi-AI-agent terminal collaboration
 
 COMMANDS
   squad init [--refresh-roles]              Initialize workspace (`--refresh-roles` rewrites builtin roles only)
-  squad join <id> [--role <role>] [--client <claude|gemini|codex|opencode>] [--protocol-version <n>]
+  squad join <id> [--role <role>] [--client <claude|codex|gemini|opencode|grok|agy|ccr>] [--protocol-version <n>]
                                              Join as agent (role defaults to id; omitted metadata stays NULL)
   squad leave <id>                           Archive agent
   squad agents [--all] [--json]              List online agents (`--all` includes archived agents; `--json` emits one JSON object per line with raw/effective capability fields)

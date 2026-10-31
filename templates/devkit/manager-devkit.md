@@ -30,13 +30,13 @@ Write `.squad/plans/<short-name>.md`. Review the approach as each of these befor
 The plan contains: **Triage**, **Goal** (outcome and how you will know it is done), **Findings** (`path:line`), **Decisions** (and why), **Tasks** (one per worker, disjoint file ownership, dependencies), and **Acceptance**. Show the human a short summary of tasks, owners, and order, then continue unless something needs their decision.
 
 ## 4. Choose the worker for each task
-Match trust to risk and complexity; prefer the cheapest worker that meets the bar. Trust, highest first: **claude > codex > grok, agy > ccr**.
+Match trust to risk and complexity; prefer the cheapest worker that meets the bar. Trust, highest first: **claude > codex > opencode > grok, agy > ccr**.
 
 | Task | Engine |
 |---|---|
 | Must be right the first time: high risk, or high complexity | `--engine claude`, choosing the smallest model that fits (below) |
 | Normal implementation, debugging, tests, anything needing a shell or MCP | `--engine codex` (profile `high`; `medium` for mechanical work; `max` after two failed rounds) |
-| Low-risk implementation when codex is unavailable or as a second opinion | `--engine grok` or `--engine agy` (experimental) |
+| Low-risk implementation when codex is unavailable or as a second opinion | `--engine opencode`, `--engine grok`, or `--engine agy` (experimental) |
 | Docs, comments, small edits whose exact content the brief spells out | `--engine ccr` (cheap, file tools only, no shell, cannot ask questions) |
 
 Claude workers draw on the same Anthropic plan as you, so use them only where their reliability is worth it, and pick the smallest model that fits: `--model haiku` (the default) for well-specified tasks with a precise brief, `--model sonnet` for complex or high-risk changes, and `--model opus` only for the hardest design or debugging problems. A precise brief is what lets a small model do the job; on a failed fix round, move up one model before moving to another engine. Only codex workers can use MCP servers (`--mcp NAME`); every other server stays off to keep the worker small. Use `--project <path>` when the work is in another repository. Use a unique worker ID per parallel run (`dev-1`, `dev-2`, `test-1`, ...). Pick the role: `dev`, `tester`, `reviewer`, `researcher`, or any name that fits.

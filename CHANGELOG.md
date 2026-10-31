@@ -7,10 +7,28 @@ releases.
 ## [Unreleased]
 
 ### Changed
+- squad-devkit is now licensed under GPL-3.0. Code from the upstream `squad`
+  CLI keeps its MIT license, kept in `LICENSES/MIT-squad.txt`.
 - README now covers squad-devkit only and adds Linux install steps and an FAQ;
   the upstream `squad` CLI reference moved to `docs/squad-cli.md` (Chinese:
   `docs/squad-cli.zh-CN.md`).
 - CONTRIBUTING lists exactly the checks CI runs.
+- `squad-worker --diff <id>` prints a worker's worktree changes without merging.
+
+### Added
+- `opencode` worker engine (experimental), between codex and grok in the trust order.
+- `squad-devkit --doctor` checks the core tools, manager and worker CLIs, and
+  monitor pane support.
+- `--workers` / `--disable-workers` (or `SQUAD_DEVKIT_WORKERS`,
+  `SQUAD_DEVKIT_DISABLE_WORKERS`, `workers=` / `disabled_workers=` in the config)
+  choose which worker engines the manager may use.
+- Bash and zsh completions in `scripts/completions/`.
+
+### Fixed
+- `squad join --client` accepts `grok`, `agy`, and `ccr`; workers now record
+  their own engine as `client_type` (previously `codex`/`claude`).
+- The stall watchdog also covers engines that print their report on stdout
+  (`grok`, `agy`), so a silent run no longer waits for the full timeout.
 
 ### Removed
 - Upstream planning notes (`docs/superpowers/`) and the Homebrew tap copy

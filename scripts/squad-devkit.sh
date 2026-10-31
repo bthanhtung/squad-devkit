@@ -43,7 +43,7 @@ Without an objective the manager opens an interactive chat and asks for one firs
   --manager CLI Manager CLI for this run: claude, codex, agy, gemini, grok, or
                 opencode (or set SQUAD_DEVKIT_MANAGER)
   --setup       Choose and save the default manager CLI, then exit
-  --workers LIST          Only enable these worker engines (comma list of claude,codex,grok,agy,ccr)
+  --workers LIST          Only enable these worker engines (comma list of claude,codex,opencode,grok,agy,ccr)
                           (or SQUAD_DEVKIT_WORKERS, or workers= in the config file)
   --disable-workers LIST  Exclude these worker engines
                           (or SQUAD_DEVKIT_DISABLE_WORKERS, or disabled_workers=)
@@ -423,7 +423,7 @@ run_doctor() {
   printf 'Worker Engines:\n'
   local engines_found=0
   local eng
-  for eng in claude codex grok agy ccr; do
+  for eng in claude codex opencode grok agy ccr; do
     if path="$(command -v "$eng" 2>/dev/null)"; then
       ver="$(get_tool_version "$eng")"
       local state="[enabled]"
@@ -537,14 +537,14 @@ session_name="squad-devkit-${project_name}-${project_hash}"
 
 require_command squad
 worker_engines=()
-# Worker engines in trust order: claude > codex > grok, agy > ccr.
-for engine in claude codex grok agy ccr; do
+# Worker engines in trust order: claude > codex > opencode > grok, agy > ccr.
+for engine in claude codex opencode grok agy ccr; do
   if command -v "$engine" >/dev/null 2>&1 && worker_enabled "$engine"; then
     worker_engines+=("$engine")
   fi
 done
 if (( ${#worker_engines[@]} == 0 && clean_only == 0 )); then
-  echo "Note: no worker engine (claude, codex, grok, agy, ccr) is installed; the manager will do the work itself." >&2
+  echo "Note: no worker engine (claude, codex, opencode, grok, agy, ccr) is installed; the manager will do the work itself." >&2
 fi
 if (( clean_only > 0 )); then
   if [[ -d "$project_directory/.squad" ]]; then

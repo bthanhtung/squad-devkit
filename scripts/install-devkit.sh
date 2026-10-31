@@ -72,13 +72,13 @@ fi
 printf 'Manager: %s (%s)\n' "$manager_client" "$(manager_label "$manager_client")"
 
 worker_engines=()
-for engine in claude codex grok agy ccr; do
+for engine in claude codex opencode grok agy ccr; do
   if command -v "$engine" >/dev/null 2>&1; then
     worker_engines+=("$engine")
   fi
 done
 if (( ${#worker_engines[@]} == 0 )); then
-  echo 'Workers: none (install claude, codex, grok, agy, or ccr; until then the manager does the work itself)'
+  echo 'Workers: none (install claude, codex, opencode, grok, agy, or ccr; until then the manager does the work itself)'
 else
   printf 'Workers (most trusted first): %s\n' "${worker_engines[*]}"
 fi

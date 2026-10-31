@@ -74,7 +74,7 @@ _squad_devkit() {
 
 _squad_worker() {
   _arguments -s -S \
-    '--engine[Worker engine]:engine:(claude codex grok agy ccr)' \
+    '--engine[Worker engine]:engine:(claude codex opencode grok agy ccr)' \
     '--role[Role prompt]:role:(dev tester reviewer researcher manager-devkit)' \
     '--title[Task title]:title:' \
     '--brief[Task brief]:brief:' \

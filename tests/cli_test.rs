@@ -1628,3 +1628,142 @@ fn test_doctor_reports_clean_state_and_help_mentions_command() {
         .success()
         .stdout(predicate::str::contains("squad doctor"));
 }
+
+const ALL_CLIENTS: [&str; 7] = [
+    "claude", "codex", "gemini", "opencode", "grok", "agy", "ccr",
+];
+
+fn client_type_of(dir: &std::path::Path, id: &str) -> Option<String> {
+    let conn = Connection::open(dir.join(".squad").join("messages.db")).unwrap();
+    conn.query_row(
+        "SELECT client_type FROM agents WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn test_join_accepts_every_supported_client() {
+    let tmp = TempDir::new().unwrap();
+    squad(tmp.path()).arg("init").assert().success();
+    for client in ALL_CLIENTS {
+        let id = format!("w-{client}");
+        squad(tmp.path())
+            .args(["join", &id, "--client", client, "--protocol-version", "2"])
+            .assert()
+            .success();
+        assert_eq!(client_type_of(tmp.path(), &id).as_deref(), Some(client));
+    }
+}
+
+#[test]
+fn test_join_rejects_unknown_or_miscased_client_without_creating_agent() {
+    let tmp = TempDir::new().unwrap();
+    squad(tmp.path()).arg("init").assert().success();
+    for bad in ["bogus", "AGY", "Claude", "", "agy "] {
+        squad(tmp.path())
+            .args(["join", "bad", "--client", bad])
+            .assert()
+            .failure()
+            .stderr(
+                predicate::str::contains("invalid --client value")
+                    .or(predicate::str::contains("--client requires a value")),
+            );
+    }
+    let conn = Connection::open(tmp.path().join(".squad").join("messages.db")).unwrap();
+    // The agents table is created lazily, so none yet also means no agent.
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agents WHERE id LIKE 'bad%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_join_without_client_leaves_client_type_null() {
+    let tmp = TempDir::new().unwrap();
+    squad(tmp.path()).arg("init").assert().success();
+    squad(tmp.path()).args(["join", "plain"]).assert().success();
+    assert_eq!(client_type_of(tmp.path(), "plain"), None);
+}
+
+#[test]
+fn test_join_same_id_keeps_each_clients_type() {
+    let tmp = TempDir::new().unwrap();
+    squad(tmp.path()).arg("init").assert().success();
+    squad(tmp.path())
+        .args(["join", "dup", "--client", "grok"])
+        .assert()
+        .success();
+    let out = squad(tmp.path())
+        .args(["join", "dup", "--client", "agy"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let second = text
+        .split_whitespace()
+        .skip_while(|w| *w != "as")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    assert_ne!(second, "dup");
+    assert_eq!(client_type_of(tmp.path(), "dup").as_deref(), Some("grok"));
+    assert_eq!(client_type_of(tmp.path(), &second).as_deref(), Some("agy"));
+}
+
+#[test]
+fn test_join_usage_lists_every_client() {
+    let tmp = TempDir::new().unwrap();
+    let out = squad(tmp.path()).arg("join").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for client in ALL_CLIENTS {
+        assert!(stderr.contains(client), "usage lacks {client}: {stderr}");
+    }
+}
+
+#[test]
+fn test_agents_json_reports_new_clients() {
+    let tmp = TempDir::new().unwrap();
+    squad(tmp.path()).arg("init").assert().success();
+    for client in ["grok", "agy", "ccr"] {
+        squad(tmp.path())
+            .args([
+                "join",
+                client,
+                "--client",
+                client,
+                "--protocol-version",
+                "2",
+            ])
+            .assert()
+            .success();
+    }
+    let out = squad(tmp.path())
+        .args(["agents", "--json"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    for client in ["grok", "agy", "ccr"] {
+        assert!(text.contains(&format!("\"{client}\"")), "{text}");
+    }
+}
+
+#[test]
+fn test_cli_docs_join_usage_lists_every_client() {
+    let docs =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/squad-cli.md")).unwrap();
+    let line = docs
+        .lines()
+        .find(|l| l.contains("`squad join <id>"))
+        .expect("docs/squad-cli.md documents squad join");
+    for client in ALL_CLIENTS {
+        assert!(
+            line.contains(client),
+            "docs/squad-cli.md join usage lacks {client}"
+        );
+    }
+}

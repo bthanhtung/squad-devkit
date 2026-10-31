@@ -84,7 +84,7 @@ Multiple agents with the same role get unique IDs automatically (`worker`, `work
 | Command | Description |
 |---------|-------------|
 | `squad init [--refresh-roles]` | Initialize workspace, create `.squad/`, add `.squad/` to `.gitignore`, and append squad guidance to `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` if missing. `--refresh-roles` rewrites only builtin `manager`/`worker`/`inspector` files under `.squad/roles/`. |
-| `squad join <id> [--role <role>] [--client <claude\|gemini\|codex\|opencode>] [--protocol-version <n>]` | Join as agent (auto-suffixes if ID is taken; omitted capability metadata stays `NULL`) |
+| `squad join <id> [--role <role>] [--client <claude\|codex\|gemini\|opencode\|grok\|agy\|ccr>] [--protocol-version <n>]` | Join as agent (auto-suffixes if ID is taken; omitted capability metadata stays `NULL`) |
 | `squad leave <id>` | Archive agent and preserve unread work |
 | `squad agents [--all] [--json]` | List online agents (`--json` emits one JSON object per line including raw/effective capability fields and protocol-derived support booleans) |
 | `squad send [--task-id <id>] [--reply-to <message-id>] <from> <to> <message>` | Send a note (`@all` to broadcast, or `squad send [flags] --file <path-or-> <from> <to>` to read from file/stdin) |

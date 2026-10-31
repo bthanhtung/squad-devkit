@@ -68,9 +68,23 @@ cat >"$test_bin/curl" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+cat >"$test_bin/grok" <<'EOF'
+#!/usr/bin/env bash
+# Stand-in non-streaming engine: the report goes to stdout.
+echo $$ > "$WORKER_TEST_LOG.pid"
+printf 'grok:%s\n' "${*//$'\n'/\\n}" >> "$WORKER_TEST_LOG"
+if [[ -n "${FAKE_PLAIN_BEATS:-}" ]]; then
+  for _ in $(seq "$FAKE_PLAIN_BEATS"); do echo 'progress'; sleep 1; done
+fi
+if [[ -n "${FAKE_PLAIN_SLEEP:-}" ]]; then sleep "$FAKE_PLAIN_SLEEP"; fi
+echo 'Done. Files: none. Verification: ok.'
+EOF
+sed 's/^printf .grok:/printf '"'"'agy:/' "$test_bin/grok" >"$test_bin/agy"
+sed 's/^printf .grok:/printf '"'"'gemini:/' "$test_bin/grok" >"$test_bin/gemini"
+sed 's/^printf .grok:/printf '"'"'opencode:/' "$test_bin/grok" >"$test_bin/opencode"
 chmod +x "$test_bin"/*
 export HOME="$temp_directory/home"
-export PATH="$test_bin:$PATH"
+export PATH="$repo_root/target/debug:$test_bin:$PATH"
 export WORKER_TEST_LOG="$temp_directory/invocations"
 
 cd "$project_directory"
@@ -317,6 +331,23 @@ grep -q '^patch=.*wt-1-.*\.patch$' "$wt_status"
 FAKE_CODEX_EDIT='feature.txt=from wt-1, fixed' "$worker" wt-1 --engine codex --project "$repo" \
   --brief 'Fix feature.txt' >/dev/null
 [[ "$(cat "$wt_path/feature.txt")" == 'from wt-1, fixed' ]] || fail
+# --diff previews a worktree without consuming it.
+diff_one="$("$worker" --diff wt-1)"
+[[ "$diff_one" == *'+++ b/feature.txt'*'+from wt-1, fixed'* ]] || fail
+[[ "$("$worker" --diff wt-1)" == "$diff_one" ]] || fail
+[[ -d "$wt_path" && "$(git -C "$repo" status --porcelain)" == "$repo_status" ]] || fail
+status=0
+"$worker" --diff nobody >"$temp_directory/diff-out" 2>"$temp_directory/diff-error" || status=$?
+[[ "$status" == 1 && ! -s "$temp_directory/diff-out" ]] || fail
+grep -q 'No worktree for nobody' "$temp_directory/diff-error"
+for bad in '../x' 'a b' '..' 'all'; do
+  status=0
+  "$worker" --diff "$bad" >/dev/null 2>&1 || status=$?
+  [[ "$status" != 0 ]] || fail
+done
+status=0
+"$worker" --diff >/dev/null 2>&1 || status=$?
+[[ "$status" == 2 ]] || fail
 [[ "$("$worker" --merge wt-1)" == *'Merged wt-1 into '*'(1 files, uncommitted)'* ]] || fail
 [[ "$(cat "$repo/feature.txt")" == 'from wt-1, fixed' && ! -d "$wt_path" ]] || fail
 [[ "$(git -C "$repo" diff --cached --name-only)" == '' ]] || fail
@@ -426,4 +457,41 @@ wait
 [[ "$(LC_ALL=C grep -o "$(printf '\033\\[2J')" "$flicker/tty" | wc -l | tr -d ' ')" == 1 ]] || fail
 visible="$(LC_ALL=C sed -e "s/$(printf '\033')\\[[0-9;?]*[A-Za-z]//g" "$flicker/tty")"
 [[ "$visible" == *'● RUNNING '*'✓ make test'*'✓ COMPLETED in '*'1 call · 0 failed'*'All good.'* ]] || fail
+
+# After a merge the worktree is gone, so --diff reports it.
+[[ "$("$worker" --diff wt-1 2>&1 || true)" == *'No worktree for wt-1'* ]] || fail
+
+# Every engine joins the squad under its own client type.
+for engine in grok agy ccr claude codex opencode; do
+  "$worker" "cl-$engine" --engine "$engine" --no-worktree --brief "Client $engine" >/dev/null 2>&1 || true
+  [[ "$(sqlite3 .squad/messages.db "SELECT client_type FROM agents WHERE id LIKE 'cl-$engine%'" | head -n 1)" == "$engine" ]] || fail
+done
+[[ "$("$worker" w --engine gemini --brief x 2>&1 || true)" == *'Unknown engine'* ]] || fail
+[[ "$("$worker" w --engine bogus --brief x 2>&1 || true)" == *'Unknown engine'* ]] || fail
+
+# The stall watchdog also covers engines that print the report on stdout.
+for engine in grok agy; do
+  status=0
+  FAKE_PLAIN_SLEEP=31 SQUAD_WORKER_STALL_SECONDS=2 "$worker" "stall-$engine" --engine "$engine" --no-worktree \
+    --brief 'Silent' >/dev/null 2>"$temp_directory/error" || status=$?
+  [[ "$status" == 124 ]] || fail
+  grep -q "stall-$engine ($engine) no output" "$temp_directory/error"
+  grep -qx 'state=failed' .squad/workers/stall-$engine-*.status
+  sleep 1
+  ! kill -0 "$(cat "$WORKER_TEST_LOG.pid")" 2>/dev/null || fail
+done
+# Steady output keeps a non-streaming engine alive past the stall limit.
+FAKE_PLAIN_BEATS=5 SQUAD_WORKER_STALL_SECONDS=3 "$worker" beat-1 --engine agy --no-worktree \
+  --brief 'Chatty' >/dev/null 2>&1
+grep -qx 'state=completed' .squad/workers/beat-1-*.status
+# SQUAD_WORKER_STALL_SECONDS=0 disables the watchdog.
+FAKE_PLAIN_SLEEP=4 SQUAD_WORKER_STALL_SECONDS=0 "$worker" nostall-1 --engine grok --no-worktree \
+  --brief 'Quiet' >/dev/null 2>&1
+grep -qx 'state=completed' .squad/workers/nostall-1-*.status
+# The overall timeout still wins.
+status=0
+FAKE_PLAIN_SLEEP=30 SQUAD_WORKER_TIMEOUT_SECONDS=2 "$worker" to-1 --engine grok --no-worktree \
+  --brief 'Too long' >/dev/null 2>"$temp_directory/error" || status=$?
+[[ "$status" == 124 ]] || fail
+grep -q 'to-1 (grok) timed out' "$temp_directory/error"
 echo 'PASS: squad-worker engines, worktrees, panes in every terminal, flicker-free monitor, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'
