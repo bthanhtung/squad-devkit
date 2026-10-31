@@ -13,6 +13,16 @@ releases.
   the upstream `squad` CLI reference moved to `docs/squad-cli.md` (Chinese:
   `docs/squad-cli.zh-CN.md`).
 - CONTRIBUTING lists exactly the checks CI runs.
+- `squad-worker --diff <id>` prints a worker's worktree changes without merging.
+
+### Added
+- `opencode` worker engine (experimental), between codex and grok in the trust order.
+
+### Fixed
+- `squad join --client` accepts `grok`, `agy`, and `ccr`; workers now record
+  their own engine as `client_type` (previously `codex`/`claude`).
+- The stall watchdog also covers engines that print their report on stdout
+  (`grok`, `agy`), so a silent run no longer waits for the full timeout.
 
 ### Removed
 - Upstream planning notes (`docs/superpowers/`) and the Homebrew tap copy

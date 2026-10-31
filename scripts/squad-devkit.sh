@@ -336,14 +336,14 @@ session_name="squad-devkit-${project_name}-${project_hash}"
 
 require_command squad
 worker_engines=()
-# Worker engines in trust order: claude > codex > grok, agy > ccr.
-for engine in claude codex grok agy ccr; do
+# Worker engines in trust order: claude > codex > opencode > grok, agy > ccr.
+for engine in claude codex opencode grok agy ccr; do
   if command -v "$engine" >/dev/null 2>&1; then
     worker_engines+=("$engine")
   fi
 done
 if (( ${#worker_engines[@]} == 0 && clean_only == 0 )); then
-  echo "Note: no worker engine (claude, codex, grok, agy, ccr) is installed; the manager will do the work itself." >&2
+  echo "Note: no worker engine (claude, codex, opencode, grok, agy, ccr) is installed; the manager will do the work itself." >&2
 fi
 if (( clean_only > 0 )); then
   if [[ -d "$project_directory/.squad" ]]; then

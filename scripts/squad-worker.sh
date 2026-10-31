@@ -24,6 +24,7 @@ Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FIL
        squad-worker --list
        squad-worker --stop <worker-id|all>
        squad-worker --merge <worker-id> [--project DIR]
+       squad-worker --diff <worker-id> [--project DIR]
        squad-worker --discard <worker-id|all> [--project DIR]
 
 Run one on-demand worker for the squad manager, then exit. The worker joins the
@@ -36,6 +37,7 @@ Engines, most trusted first:
   claude   Claude Code (your Anthropic plan; --model haiku by default,
            sonnet for complex or high-risk work, opus for the hardest)
   codex    codex exec, sandboxed to the project (--profile, default: high)
+  opencode OpenCode headless (experimental)
   grok     Grok Build headless (experimental)
   agy      Antigravity CLI headless (experimental)
   ccr      Claude Code through claude-code-router: cheap model, file tools only
@@ -46,7 +48,7 @@ Options:
   --brief-file -     Read the brief from stdin
   --project DIR      Directory the worker works in (default: the squad workspace)
   --profile NAME     codex profile (default: high)
-  --model NAME       Model for claude, grok, or agy
+  --model NAME       Model for claude, opencode, grok, or agy
   --mcp NAME         codex only: keep this MCP server enabled (repeatable);
                      all others are disabled to keep the worker's context small
   --all-mcp          codex only: keep every configured MCP server
@@ -59,6 +61,7 @@ Options:
   --stop ID|all      Stop a running worker (or all of them); it reports to the manager
   --merge ID         Apply a worker's worktree changes to the project (three-way;
                      conflicts are left as markers) and remove the worktree
+  --diff ID          Print a worker's worktree changes as a patch (changes are kept)
   --discard ID|all   Remove a worker's worktree and branch without applying them
 
 Environment: SQUAD_WORKER_CODEX_PROFILE, SQUAD_WORKER_CLAUDE_MODEL,
@@ -89,7 +92,7 @@ stop_target=""
 worktree_mode="${SQUAD_WORKER_WORKTREE:-auto}"
 while (( $# > 0 )); do
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--model|--mcp|--manager|--project|--timeout|--stop|--merge|--discard)
+    --engine|--role|--title|--brief|--brief-file|--profile|--model|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -109,6 +112,7 @@ while (( $# > 0 )); do
         --stop) action=stop; stop_target="$2" ;;
         --merge) action=merge; stop_target="$2" ;;
         --discard) action=discard; stop_target="$2" ;;
+        --diff) action="diff"; stop_target="$2" ;;
       esac
       shift
       ;;
@@ -228,13 +232,18 @@ if [[ "$action" == list || "$action" == stop ]]; then
   exit 0
 fi
 
-if [[ "$action" == merge || "$action" == discard ]]; then
+if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
   require_command git
   workspace_root="$(find_workspace)"
   export SQUAD_WORKTREE_WORKSPACE="$workspace_root"
   cd "$workspace_root"
   targets=()
-  if [[ "$stop_target" == all ]]; then
+  if [[ "$action" == diff ]] &&
+    { [[ ! "$stop_target" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$stop_target" == . || "$stop_target" == .. ]]; }; then
+    echo "Invalid worker ID for --diff: $stop_target" >&2
+    exit 2
+  fi
+  if [[ "$stop_target" == all && "$action" != diff ]]; then
     while IFS= read -r line; do
       [[ -n "$line" ]] && targets+=("${line%% *}")
     done < <(unmerged_worktrees | sed 's/^  //')
@@ -255,6 +264,11 @@ if [[ "$action" == merge || "$action" == discard ]]; then
     if [[ -z "$root" || -z "$home" || ! -d "$home/$target" ]]; then
       echo "No worktree for $target${project_directory:+ in $project_directory}." >&2
       exit_status=1
+      continue
+    fi
+    if [[ "$action" == diff ]]; then
+      worktree_commit "$home/$target" "$target: pending changes" >/dev/null 2>&1 || true
+      worktree_patch "$root" "$target" || exit_status=1
       continue
     fi
     if [[ "$action" == discard ]]; then
@@ -288,8 +302,8 @@ if [[ -z "$worker_id" || -z "$engine" ]]; then
   exit 2
 fi
 case "$engine" in
-  claude|codex|grok|agy|ccr) ;;
-  *) echo "Unknown engine: $engine (use claude, codex, grok, agy, or ccr)" >&2; exit 2 ;;
+  claude|codex|opencode|grok|agy|ccr) ;;
+  *) echo "Unknown engine: $engine (use claude, codex, opencode, grok, agy, or ccr)" >&2; exit 2 ;;
 esac
 if [[ ! "$timeout_minutes" =~ ^[0-9]+$ || ! "$stall_minutes" =~ ^[0-9]+$ ]]; then
   echo "--timeout and SQUAD_WORKER_STALL take whole minutes" >&2
@@ -331,8 +345,7 @@ export SQUAD_WORKTREE_WORKSPACE="$workspace_root"
 project_directory="${project_directory:-$workspace_root}"
 cd "$workspace_root"
 
-client=codex
-[[ "$engine" == claude || "$engine" == ccr ]] && client=claude
+client="$engine"
 join_output="$(squad join "$worker_id" --role "$role" --client "$client" --protocol-version 2)"
 joined_id="$(printf '%s\n' "$join_output" | sed -n 's/.*Joined as \([^ ]*\) (role:.*/\1/p' | head -1)"
 if [[ -z "$joined_id" ]]; then
@@ -531,7 +544,6 @@ missing_mcp_tokens() {
 # its activity (JSON events where the engine supports them) to $log_file.
 absolute_report="$workspace_root/$report_file"
 absolute_log="$workspace_root/$log_file"
-streams_log=1
 engine_command=()
 status=0
 case "$engine" in
@@ -585,13 +597,15 @@ case "$engine" in
       --output-format stream-json --verbose "$prompt")
     ;;
   grok)
-    streams_log=0
     engine_command=(grok -p "$prompt" --always-approve --cwd "$engine_directory")
     [[ -n "$model" ]] && engine_command+=(--model "$model")
     ;;
   agy)
-    streams_log=0
     engine_command=(agy -p "$prompt" --mode accept-edits)
+    [[ -n "$model" ]] && engine_command+=(--model "$model")
+    ;;
+  opencode)
+    engine_command=(opencode run "$prompt")
     [[ -n "$model" ]] && engine_command+=(--model "$model")
     ;;
 esac
@@ -621,6 +635,18 @@ file_age() {
   printf '%d' $(( $(date +%s) - modified ))
 }
 
+# Seconds since the engine last wrote to its log or, for engines that print the
+# report on stdout (streams_log=0), to its report.
+output_age() {
+  local age newest
+  newest="$(file_age "$log_file")"
+  if [[ -f "$report_file" ]]; then
+    age="$(file_age "$report_file")"
+    (( age < newest )) && newest="$age"
+  fi
+  printf '%d' "$newest"
+}
+
 if (( status == 0 )); then
   if [[ "$engine" == ccr || "$engine" == claude ]] && ! command -v jq >/dev/null 2>&1; then
     echo "jq is required for the $engine engine" | tee -a "$log_file" >&2
@@ -631,6 +657,7 @@ timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 stall_seconds="${SQUAD_WORKER_STALL_SECONDS:-$(( stall_minutes * 60 ))}"
 if (( status == 0 )); then
   : >"$log_file"
+  : >"$report_file"
   run_engine &
   engine_pid=$!
   # Watchdog: stop runs that exceed the time limit or stop producing output,
@@ -639,8 +666,7 @@ if (( status == 0 )); then
     sleep 1
     if (( $(date +%s) - started_at > timeout_seconds )); then
       stop_reason="timed out after $(( timeout_seconds / 60 ))m"
-    elif (( streams_log == 1 && stall_seconds > 0 )) && [[ -f "$log_file" ]] &&
-      (( $(file_age "$log_file") > stall_seconds )); then
+    elif (( stall_seconds > 0 )) && (( $(output_age) > stall_seconds )); then
       stop_reason="no output for $(( stall_seconds / 60 ))m"
     fi
     if [[ -n "$stop_reason" ]]; then
