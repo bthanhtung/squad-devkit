@@ -20,7 +20,8 @@ devkit_version="1.0.1"
 usage() {
   cat <<'EOF'
 Usage: squad-devkit [project-name-or-directory] [objective] [--task objective]
-                    [--manager CLI] [--setup] [--list] [--ghostty] [--tmux]
+                    [--manager CLI] [--workers LIST]
+                    [--disable-workers LIST] [--setup] [--doctor] [--list] [--ghostty] [--tmux]
                     [--dry-run] [--no-attach] [--no-prompt]
 
 Start a manager (Claude Code by default) for a project in the current terminal.
@@ -42,6 +43,11 @@ Without an objective the manager opens an interactive chat and asks for one firs
   --manager CLI Manager CLI for this run: claude, codex, agy, gemini, grok, or
                 opencode (or set SQUAD_DEVKIT_MANAGER)
   --setup       Choose and save the default manager CLI, then exit
+  --workers LIST          Only enable these worker engines (comma list of claude,codex,opencode,grok,agy,ccr)
+                          (or SQUAD_DEVKIT_WORKERS, or workers= in the config file)
+  --disable-workers LIST  Exclude these worker engines
+                          (or SQUAD_DEVKIT_DISABLE_WORKERS, or disabled_workers=)
+  --doctor      Diagnose environment: core tools, manager, worker engines, and multiplexer/panes
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
   --tmux        Run the manager in a tmux session; re-running attaches to it
                 (or set SQUAD_DEVKIT_BACKEND=here|ghostty|tmux)
@@ -76,7 +82,10 @@ fi
 dry_run=0
 no_attach=0
 setup=0
+doctor=0
 manager_client="${SQUAD_DEVKIT_MANAGER:-}"
+workers_opt="${SQUAD_DEVKIT_WORKERS:-}"
+disable_workers_opt="${SQUAD_DEVKIT_DISABLE_WORKERS:-}"
 backend="${SQUAD_DEVKIT_BACKEND:-here}"
 while (( $# > 0 )); do
   case "$1" in
@@ -90,6 +99,7 @@ while (( $# > 0 )); do
     --clean) clean_only=1 ;;
     --clean-all) clean_only=2 ;;
     --setup) setup=1 ;;
+    --doctor) doctor=1 ;;
     --manager)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
@@ -99,6 +109,16 @@ while (( $# > 0 )); do
       shift
       ;;
     --manager=*) manager_client="${1#*=}" ;;
+    --workers|--disable-workers)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      if [[ "$1" == --workers ]]; then workers_opt="$2"; else disable_workers_opt="$2"; fi
+      shift
+      ;;
+    --workers=*) workers_opt="${1#*=}" ;;
+    --disable-workers=*) disable_workers_opt="${1#*=}" ;;
     --task|--prompt)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
@@ -284,6 +304,182 @@ if [[ -n "$project_directory" && -z "$objective" ]] &&
   project_directory=""
 fi
 
+get_tool_version() {
+  local tool="$1"
+  local ver=""
+  case "$tool" in
+    squad)
+      ver="$("$tool" --version 2>&1 | head -n 1 || true)"
+      ;;
+    git)
+      ver="$("$tool" --version 2>&1 | head -n 1 || true)"
+      ;;
+    jq)
+      ver="$("$tool" --version 2>&1 | head -n 1 || true)"
+      ;;
+    curl)
+      ver="$("$tool" --version 2>&1 | head -n 1 || true)"
+      ;;
+    tmux)
+      ver="$("$tool" -V 2>&1 | head -n 1 || true)"
+      ;;
+    claude|codex|agy|gemini|grok|opencode|ccr)
+      ver="$("$tool" --version 2>&1 | head -n 1 || true)"
+      ;;
+    *)
+      ver=""
+      ;;
+  esac
+  # Trim if too long or redundant
+  printf '%s' "$ver"
+}
+
+# True when $2 is in the comma/space separated list $1.
+in_list() {
+  local item
+  for item in ${1//,/ }; do
+    [[ "$item" == "$2" ]] && return 0
+  done
+  return 1
+}
+
+# Worker enable/disable: CLI flag > env var > config file. An empty allow-list
+# means every engine is allowed; the disable list always wins.
+worker_enabled() {
+  local allow="$workers_opt" deny="$disable_workers_opt"
+  [[ -n "$allow" ]] || allow="$(devkit_config_get workers)"
+  [[ -n "$deny" ]] || deny="$(devkit_config_get disabled_workers)"
+  if [[ -n "$allow" ]] && ! in_list "$allow" "$1"; then return 1; fi
+  if [[ -n "$deny" ]] && in_list "$deny" "$1"; then return 1; fi
+  return 0
+}
+
+run_doctor() {
+  local status=0
+  local tool path ver
+  printf '=== squad-devkit doctor ===\n\n'
+
+  printf 'Core Tools:\n'
+  for tool in squad git jq curl tmux; do
+    if path="$(command -v "$tool" 2>/dev/null)"; then
+      ver="$(get_tool_version "$tool")"
+      if [[ -n "$ver" ]]; then
+        printf '  [OK]      %-8s %s (%s)\n' "$tool" "$path" "$ver"
+      else
+        printf '  [OK]      %-8s %s\n' "$tool" "$path"
+      fi
+    else
+      if [[ "$tool" == squad || "$tool" == git || "$tool" == jq ]]; then
+        printf '  [MISSING] %-8s (required)\n' "$tool"
+        status=1
+      else
+        printf '  [OPTIONAL] %-7s (not found)\n' "$tool"
+      fi
+    fi
+  done
+  printf '\n'
+
+  printf 'Manager CLI:\n'
+  local saved_manager=""
+  local default_mgr=""
+  saved_manager="$(devkit_config_get manager)"
+  local installed_managers=()
+  local mgr
+  # manager_clients is defined in lib/squad-devkit-agents.sh
+  # shellcheck disable=SC2154
+  for mgr in "${manager_clients[@]}"; do
+    if path="$(command -v "$mgr" 2>/dev/null)"; then
+      installed_managers+=("$mgr")
+      ver="$(get_tool_version "$mgr")"
+      local label
+      label="$(manager_label "$mgr")"
+      local note=""
+      if [[ "$mgr" == "$saved_manager" ]]; then
+        note=" [saved default]"
+      fi
+      if [[ -n "$ver" ]]; then
+        printf '  [OK]      %-10s %s (%s)%s\n' "$mgr" "$path" "$label, $ver" "$note"
+      else
+        printf '  [OK]      %-10s %s (%s)%s\n' "$mgr" "$path" "$label" "$note"
+      fi
+    fi
+  done
+
+  if (( ${#installed_managers[@]} == 0 )); then
+    printf '  [MISSING] No manager CLI installed (claude, codex, agy, gemini, grok, opencode)\n'
+    status=1
+  else
+    if [[ -n "$saved_manager" ]]; then
+      default_mgr="$saved_manager"
+    elif command -v claude >/dev/null 2>&1; then
+      default_mgr="claude"
+    else
+      default_mgr="${installed_managers[0]}"
+    fi
+    printf '  Active default manager: %s (%s)\n' "$default_mgr" "$(manager_label "$default_mgr")"
+  fi
+  printf '\n'
+
+  printf 'Worker Engines:\n'
+  local engines_found=0
+  local eng
+  for eng in claude codex opencode grok agy ccr; do
+    if path="$(command -v "$eng" 2>/dev/null)"; then
+      ver="$(get_tool_version "$eng")"
+      local state="[enabled]"
+      if worker_enabled "$eng"; then
+        engines_found=$((engines_found + 1))
+      else
+        state="[disabled]"
+      fi
+      if [[ -n "$ver" ]]; then
+        printf '  [FOUND]   %-8s %s (%s) %s\n' "$eng" "$path" "$ver" "$state"
+      else
+        printf '  [FOUND]   %-8s %s %s\n' "$eng" "$path" "$state"
+      fi
+    else
+      printf '  [-]       %-8s (not installed)\n' "$eng"
+    fi
+  done
+  if (( engines_found == 0 )); then
+    printf '  Note: No worker engines found. Manager will work without sub-workers.\n'
+  fi
+  printf '\n'
+
+  printf 'Terminal & Monitor Support:\n'
+  local term_prog="${TERM_PROGRAM:-unknown}"
+  printf '  TERM_PROGRAM: %s\n' "$term_prog"
+  local osascript_cmd="${SQUAD_DEVKIT_OSASCRIPT:-osascript}"
+  local pane_support="dashboard window (fallback)"
+
+  if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    pane_support="tmux split-pane"
+  elif [[ -n "${HERDR_PANE_ID:-}" ]] && command -v herdr >/dev/null 2>&1; then
+    pane_support="herdr split-pane"
+  elif [[ -n "${ZELLIJ:-}" ]] && command -v zellij >/dev/null 2>&1; then
+    pane_support="zellij floating pane"
+  elif [[ -n "${WEZTERM_PANE:-}" ]] && command -v wezterm >/dev/null 2>&1; then
+    pane_support="wezterm split-pane"
+  elif [[ -n "${KITTY_WINDOW_ID:-}" ]] && command -v kitten >/dev/null 2>&1; then
+    pane_support="kitty split-window"
+  elif [[ -n "${ITERM_SESSION_ID:-}" ]] && command -v "$osascript_cmd" >/dev/null 2>&1; then
+    pane_support="iTerm2 split-pane (AppleScript)"
+  elif [[ -n "${SQUAD_DEVKIT_GHOSTTY_TERMINAL:-}" ]] && command -v "$osascript_cmd" >/dev/null 2>&1; then
+    pane_support="Ghostty split-pane (AppleScript)"
+  elif [[ -z "${TMUX:-}" && "$term_prog" == "ghostty" ]] && command -v "$osascript_cmd" >/dev/null 2>&1; then
+    pane_support="Ghostty (splits supported on launch)"
+  fi
+  printf '  Monitor pane mode: %s\n' "$pane_support"
+
+  printf '\nResult: '
+  if (( status == 0 )); then
+    printf 'Environment ready for squad-devkit.\n'
+  else
+    printf 'Environment missing required tools.\n'
+  fi
+  return "$status"
+}
+
 if (( list_projects == 1 )); then
   printf 'Projects found in: %s\n' "$(search_roots_display)"
   print_projects
@@ -293,6 +489,11 @@ fi
 interactive=0
 if (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
   interactive=1
+fi
+
+if (( doctor == 1 )); then
+  run_doctor
+  exit $?
 fi
 
 if (( setup == 1 )); then
@@ -338,7 +539,7 @@ require_command squad
 worker_engines=()
 # Worker engines in trust order: claude > codex > opencode > grok, agy > ccr.
 for engine in claude codex opencode grok agy ccr; do
-  if command -v "$engine" >/dev/null 2>&1; then
+  if command -v "$engine" >/dev/null 2>&1 && worker_enabled "$engine"; then
     worker_engines+=("$engine")
   fi
 done

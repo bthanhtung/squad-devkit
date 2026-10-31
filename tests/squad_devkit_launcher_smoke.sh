@@ -210,4 +210,19 @@ rg -Fq 'lib/squad-devkit-manager.sh' "$manager_script"
 rg -Fq 'Do not repeat these instructions to the human.' "$manager_script"
 rg -Fq 'export SQUAD_DEVKIT_GHOSTTY_TERMINAL="$(osascript -e' "$manager_script"
 bash -n "$manager_script"
+doctor_dir="$temp_directory/doctor-check"
+mkdir -p "$doctor_dir"
+doctor_out="$("$repo_root/scripts/squad-devkit.sh" --doctor)"
+[[ "$doctor_out" == *"=== squad-devkit doctor ==="* ]] || fail
+[[ "$doctor_out" == *"Core Tools:"* ]] || fail
+[[ "$doctor_out" == *"Manager CLI:"* ]] || fail
+[[ "$doctor_out" == *"Worker Engines:"* ]] || fail
+[[ "$doctor_out" == *"Terminal & Monitor Support:"* ]] || fail
+[[ "$doctor_out" == *"Result: Environment ready for squad-devkit."* ]] || fail
+[[ ! -d "$doctor_dir/.squad" ]] || fail
+
+# Test doctor exit failure when required tools missing
+PATH="$test_bin:/bin:/usr/bin" "$repo_root/scripts/squad-devkit.sh" --doctor >"$temp_directory/doc-fail.log" 2>&1 && fail || true
+grep -q 'Result: Environment missing required tools.' "$temp_directory/doc-fail.log" || fail
+
 echo 'PASS: name lookup, manager-only launch (here, tmux, Ghostty), session reuse, and role refresh'

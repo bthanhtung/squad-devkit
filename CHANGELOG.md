@@ -17,6 +17,12 @@ releases.
 
 ### Added
 - `opencode` worker engine (experimental), between codex and grok in the trust order.
+- `squad-devkit --doctor` checks the core tools, manager and worker CLIs, and
+  monitor pane support.
+- `--workers` / `--disable-workers` (or `SQUAD_DEVKIT_WORKERS`,
+  `SQUAD_DEVKIT_DISABLE_WORKERS`, `workers=` / `disabled_workers=` in the config)
+  choose which worker engines the manager may use.
+- Bash and zsh completions in `scripts/completions/`.
 
 ### Fixed
 - `squad join --client` accepts `grok`, `agy`, and `ccr`; workers now record
