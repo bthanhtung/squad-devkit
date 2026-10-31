@@ -27,7 +27,7 @@ Start a manager (Claude Code by default) for a project in the current terminal.
 The manager plans and starts on-demand Codex or CCR workers with squad-worker
 when work needs delegating; no worker runs, or costs tokens, while idle.
 If Claude Code is not installed, the first run asks which installed CLI
-(codex, agy, grok, opencode) should manage, and remembers the answer.
+(codex, agy, gemini, grok, opencode) should manage, and remembers the answer.
 Defaults to the git repository containing the current directory. Pass a project
 name to search ~/Workspace (up to 8 levels), or a directory to launch from anywhere. Existing
 directories take priority; duplicate names require an explicit path.
@@ -39,7 +39,7 @@ manager finds the repositories involved.
 Pass an objective after the project, or with --task, to start planning immediately.
 Without an objective the manager opens an interactive chat and asks for one first.
 
-  --manager CLI Manager CLI for this run: claude, codex, agy, grok, or
+  --manager CLI Manager CLI for this run: claude, codex, agy, gemini, grok, or
                 opencode (or set SQUAD_DEVKIT_MANAGER)
   --setup       Choose and save the default manager CLI, then exit
   --ghostty     Open the manager in a new Ghostty window instead of this terminal

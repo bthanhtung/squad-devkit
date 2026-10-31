@@ -15,6 +15,9 @@ releases.
 - CONTRIBUTING lists exactly the checks CI runs.
 - `squad-worker --diff <id>` prints a worker's worktree changes without merging.
 
+### Added
+- `opencode` worker engine (experimental), between codex and grok in the trust order.
+
 ### Fixed
 - `squad join --client` accepts `grok`, `agy`, and `ccr`; workers now record
   their own engine as `client_type` (previously `codex`/`claude`).
