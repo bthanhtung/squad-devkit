@@ -2,7 +2,7 @@
 name = "squad"
 version = "0.7.6"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 description = "Multi-AI-agent terminal collaboration via simple CLI commands"
 repository = "https://github.com/mco-org/squad"
 
