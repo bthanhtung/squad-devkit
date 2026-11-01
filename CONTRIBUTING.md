@@ -8,7 +8,7 @@ squad-devkit, the manager-and-workers layer built from shell scripts in
 ## Development setup
 
 ```bash
-brew install jq tmux ripgrep shellcheck   # or your platform's equivalents
+brew install jq tmux ripgrep shellcheck zsh   # or your platform's equivalents
 cargo build
 export PATH="$PWD/target/debug:$PATH"     # use the squad binary you just built
 ```
@@ -27,8 +27,11 @@ shellcheck -S warning scripts/squad-devkit.sh scripts/squad-worker.sh \
 bash tests/squad_tmux_launcher_helpers_test.sh
 bash tests/squad_tmux_launcher_smoke.sh
 bash tests/squad_devkit_launcher_smoke.sh
+bash tests/squad_devkit_workers_smoke.sh
+bash tests/squad_completions_smoke.sh
 bash tests/squad_devkit_manager_choice_smoke.sh
 bash tests/squad_worker_smoke.sh
+bash tests/squad_worker_noop_smoke.sh
 bash tests/squad_devkit_clean_smoke.sh
 ```
 

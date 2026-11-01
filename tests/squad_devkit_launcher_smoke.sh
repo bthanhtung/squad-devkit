@@ -157,7 +157,7 @@ rg -q '^  manager \(role: manager-devkit\)' <<<"$(cd "$project_directory" && squ
 rg -Fq "squad-worker is: $repo_root/scripts/squad-worker.sh" "$DEVKIT_TEST_LOG"
 rg -q 'Do not repeat these instructions to the human\.\\n\\n## Your role' "$DEVKIT_TEST_LOG"
 [[ "$(cat "$DEVKIT_TEST_LOG")" != *ERROR* ]] || fail
-for role in manager-devkit dev tester reviewer researcher; do
+for role in manager-devkit dev tester reviewer researcher ui-ux security; do
   cmp -s "$repo_root/templates/devkit/$role.md" "$project_directory/.squad/roles/$role.md"
 done
 

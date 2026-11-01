@@ -77,7 +77,7 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
             sudo apt-get update -qq
-            sudo apt-get install -y -qq tmux jq ripgrep shellcheck
+            sudo apt-get install -y -qq tmux jq ripgrep shellcheck zsh
           else
             brew install tmux jq ripgrep shellcheck
           fi
@@ -95,6 +95,11 @@ jobs:
         run: |
           export PATH="$PWD/target/debug:$PATH"
           bash tests/squad_devkit_launcher_smoke.sh
+          bash tests/squad_devkit_workers_smoke.sh
+          bash tests/squad_completions_smoke.sh
           bash tests/squad_devkit_manager_choice_smoke.sh
           bash tests/squad_worker_smoke.sh
+          bash tests/squad_worker_noop_smoke.sh
+          bash tests/squad_worker_validation_smoke.sh
+          bash tests/squad_devkit_roles_smoke.sh
           bash tests/squad_devkit_clean_smoke.sh

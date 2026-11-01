@@ -53,8 +53,8 @@ _squad_devkit() {
   _arguments -s -S \
     '--manager[Manager CLI]:manager:(claude codex agy gemini grok opencode)' \
     '--setup[Choose and save default manager CLI]' \
-    '--workers[Enable only these worker engines]:workers:' \
-    '--disable-workers[Exclude worker engines]:workers:' \
+    '--workers[Enable only these worker engines]:workers:(claude codex opencode grok agy ccr)' \
+    '--disable-workers[Exclude worker engines]:workers:(claude codex opencode grok agy ccr)' \
     '--doctor[Diagnose environment and tools]' \
     '--list[List git projects found on machine]' \
     '--ghostty[Run manager in a Ghostty window]' \
@@ -75,7 +75,7 @@ _squad_devkit() {
 _squad_worker() {
   _arguments -s -S \
     '--engine[Worker engine]:engine:(claude codex opencode grok agy ccr)' \
-    '--role[Role prompt]:role:(dev tester reviewer researcher manager-devkit)' \
+    '--role[Role prompt]:role:(dev tester reviewer researcher ui-ux security manager-devkit)' \
     '--title[Task title]:title:' \
     '--brief[Task brief]:brief:' \
     '--brief-file[Read brief from file]:file:_files' \
@@ -87,6 +87,8 @@ _squad_worker() {
     '--timeout[Timeout in minutes]:timeout:' \
     '--worktree[Work in isolated git worktree]' \
     '--no-worktree[Work directly in project]' \
+    '--sandbox[Run shell commands in engine sandbox]' \
+    '--no-sandbox[Disable engine sandbox]' \
     '--manager[Manager agent ID]:manager:' \
     '--list[Show running workers]' \
     '--stop[Stop a running worker]:worker:_squad_devkit_workers_running' \

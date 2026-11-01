@@ -58,9 +58,9 @@ _squad_worker() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--engine --role --title --brief --brief-file --project --profile --model --mcp --all-mcp --timeout --worktree --no-worktree --manager --list --stop --merge --discard -h --help"
+  local opts="--engine --role --title --brief --brief-file --project --profile --model --mcp --all-mcp --timeout --worktree --no-worktree --sandbox --no-sandbox --manager --list --stop --merge --discard -h --help"
   local engines="claude codex opencode grok agy ccr"
-  local roles="dev tester reviewer researcher manager-devkit"
+  local roles="dev tester reviewer researcher ui-ux security manager-devkit"
   local profiles="high medium max"
 
   case "$prev" in

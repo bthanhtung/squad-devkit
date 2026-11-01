@@ -22,7 +22,7 @@ A worker joins the squad, receives a structured task from the manager, runs once
 without interaction, completes the task with its report, and leaves. The manager
 starts workers as background commands, so it can keep talking with you and is
 notified when each one finishes. The manager also chooses each worker's role
-(`dev`, `tester`, `reviewer`, or any other name) and its engine or profile.
+(`dev`, `tester`, `reviewer`, the optional `ui-ux` and `security`, or any other name) and its engine or profile.
 
 ## Why this saves tokens
 
@@ -54,9 +54,25 @@ The installer links `squad-devkit`, `squad-worker`, and `squad-monitor` into
 `~/.local/bin` (set `SQUAD_DEVKIT_BIN_DIR` for another directory). It then picks the manager as
 described below and lists the worker engines it found.
 
+Bash and Zsh completions are in `scripts/completions/`; the installer prints
+how to enable them. Both shells suggest engine names after `--workers` and
+`--disable-workers`, for example `squad-devkit --workers ag<Tab>`.
+
 Codex profiles are files named `$CODEX_HOME/<profile>.config.toml`, for example
 `~/.codex/high.config.toml`. Workers use `high` unless told otherwise; set
 `SQUAD_WORKER_CODEX_PROFILE` to change the default.
+
+For Claude workers, preapprove only a specific authorized shell command when needed:
+
+```sh
+SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS='Bash(bash tests/squad_completions_smoke.sh)' \
+  squad-worker test-1 --engine claude --brief 'Run bash tests/squad_completions_smoke.sh as a single command and report its result.'
+```
+
+This opt-in permission rule keeps the sandbox enabled by default. Without it,
+existing Claude permission checks still apply. Avoid broad `Bash(*)` rules.
+Codex workers require `jq` to filter MCP servers; disabled plugin transports
+are replaced only for that worker invocation, without changing user configuration.
 
 ## How the manager works
 
@@ -183,7 +199,7 @@ names list every match. A directory that is not a git repository is accepted, an
 `squad init` creates `.squad/` there.
 
 Each launch runs `squad init` and installs the role prompts `manager-devkit`,
-`dev`, `tester`, and `reviewer` into `.squad/roles/`. Role files that still
+`dev`, `tester`, `reviewer`, `researcher`, and the optional `ui-ux` and `security` roles into `.squad/roles/`. Role files that still
 start with the `<!-- squad-devkit template` line are refreshed from
 `templates/devkit/`. Delete that line to keep your own edits; the launcher then
 only prints a note when the template changes.
@@ -244,6 +260,7 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 | `--list` | Show running workers |
 | `--stop ID\|all` | Stop a running worker, which reports to the manager |
 | `--worktree`, `--no-worktree` | Force or skip the isolated git worktree |
+| `--sandbox`, `--no-sandbox` | Force or disable engine sandbox (codex, claude; default sandboxed) |
 | `--merge ID` | Apply a worker's worktree changes (three-way, uncommitted) and remove it |
 | `--discard ID\|all` | Remove a worker's worktree and branch without applying them |
 
@@ -274,7 +291,7 @@ edit them.)
   with a three-way merge through a temporary index, leaves them uncommitted,
   and removes the worktree and branch. Conflicts keep standard markers in the
   listed files and keep the worktree until `--discard`.
-- **Choose**: reviewers and researchers read the project directly;
+- **Choose**: reviewers, researchers and security workers read the project directly;
   `--worktree` forces isolation, `--no-worktree` edits in place, and
   `SQUAD_WORKER_WORKTREE=0` turns isolation off.
 

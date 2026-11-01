@@ -6,6 +6,9 @@ releases.
 
 ## [Unreleased]
 
+### Added
+- Optional `ui-ux` and `security` worker roles; the default team stays manager plus dev, and `security` runs read-only without a worktree.
+
 ### Changed
 - squad-devkit is now licensed under GPL-3.0. Code from the upstream `squad`
   CLI keeps its MIT license, kept in `LICENSES/MIT-squad.txt`.
@@ -23,8 +26,13 @@ releases.
   `SQUAD_DEVKIT_DISABLE_WORKERS`, `workers=` / `disabled_workers=` in the config)
   choose which worker engines the manager may use.
 - Bash and zsh completions in `scripts/completions/`.
+- `--sandbox` / `--no-sandbox` (and `SQUAD_WORKER_SANDBOX=0|1`) to toggle engine sandboxing for Codex (`workspace-write` vs `danger-full-access`) and Claude Code workers.
 
 ### Fixed
+- Worker runs with no file changes finalize without Git exit 128.
+- Codex MCP filtering handles plugin transports without invalid configuration;
+  Claude workers accept optional scoped `SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS` rules.
+- Zsh completion suggests worker engines after `--workers` and `--disable-workers`.
 - `squad join --client` accepts `grok`, `agy`, and `ccr`; workers now record
   their own engine as `client_type` (previously `codex`/`claude`).
 - The stall watchdog also covers engines that print their report on stdout
