@@ -30,6 +30,7 @@ bash tests/squad_devkit_launcher_smoke.sh
 bash tests/squad_devkit_manager_choice_smoke.sh
 bash tests/squad_worker_smoke.sh
 bash tests/squad_devkit_clean_smoke.sh
+bash tests/squad_devkit_workers_smoke.sh
 ```
 
 The smoke tests use fake `claude`, `codex`, and other CLIs, so they make no

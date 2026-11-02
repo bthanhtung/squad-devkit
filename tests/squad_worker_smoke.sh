@@ -461,10 +461,22 @@ visible="$(LC_ALL=C sed -e "s/$(printf '\033')\\[[0-9;?]*[A-Za-z]//g" "$flicker/
 # After a merge the worktree is gone, so --diff reports it.
 [[ "$("$worker" --diff wt-1 2>&1 || true)" == *'No worktree for wt-1'* ]] || fail
 
-# Every engine joins the squad under its own client type.
+# Every engine joins the squad under its own client type, or under the closest
+# client an older squad accepts (squad 0.7.6 knows claude, codex, gemini,
+# opencode only).
+probe_workspace="$temp_directory/client-probe"
+mkdir -p "$probe_workspace"
+(cd "$probe_workspace" && squad init >/dev/null)
 for engine in grok agy ccr claude codex opencode; do
+  expected="$engine"
+  if ! (cd "$probe_workspace" && squad join "probe-$engine" --client "$engine" >/dev/null 2>&1); then
+    case "$engine" in
+      ccr) expected=claude ;;
+      *) expected=codex ;;
+    esac
+  fi
   "$worker" "cl-$engine" --engine "$engine" --no-worktree --brief "Client $engine" >/dev/null 2>&1 || true
-  [[ "$(sqlite3 .squad/messages.db "SELECT client_type FROM agents WHERE id LIKE 'cl-$engine%'" | head -n 1)" == "$engine" ]] || fail
+  [[ "$(sqlite3 .squad/messages.db "SELECT client_type FROM agents WHERE id LIKE 'cl-$engine%'" | head -n 1)" == "$expected" ]] || fail
 done
 [[ "$("$worker" w --engine gemini --brief x 2>&1 || true)" == *'Unknown engine'* ]] || fail
 [[ "$("$worker" w --engine bogus --brief x 2>&1 || true)" == *'Unknown engine'* ]] || fail

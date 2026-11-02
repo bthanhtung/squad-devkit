@@ -98,3 +98,4 @@ jobs:
           bash tests/squad_devkit_manager_choice_smoke.sh
           bash tests/squad_worker_smoke.sh
           bash tests/squad_devkit_clean_smoke.sh
+          bash tests/squad_devkit_workers_smoke.sh

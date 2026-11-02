@@ -4,7 +4,7 @@ All notable changes to squad-devkit are documented here. The `squad` CLI
 itself follows the upstream [mco-org/squad](https://github.com/mco-org/squad)
 releases.
 
-## [Unreleased]
+## [1.0.2] - 2026-11-02
 
 ### Changed
 - squad-devkit is now licensed under GPL-3.0. Code from the upstream `squad`
@@ -16,6 +16,9 @@ releases.
 - `squad-worker --diff <id>` prints a worker's worktree changes without merging.
 
 ### Added
+- A `squad-devkit` skill for Claude Code and Codex (`skills/squad-devkit/`),
+  linked by the installer into `~/.claude/skills` and `~/.codex/skills`, so any
+  session can delegate work to workers, review, and merge (`--no-skill` skips it).
 - `opencode` worker engine (experimental), between codex and grok in the trust order.
 - `squad-devkit --doctor` checks the core tools, manager and worker CLIs, and
   monitor pane support.
@@ -25,6 +28,13 @@ releases.
 - Bash and zsh completions in `scripts/completions/`.
 
 ### Fixed
+- Workers fall back to a client type that older `squad` builds accept
+  (`ccr` → `claude`, `grok`/`agy` → `codex`) when `squad join` rejects
+  `--client <engine>`. With the documented Homebrew `squad` 0.7.6, ccr, grok,
+  and agy workers otherwise failed to join.
+- Worktrees on paths that go through a symlink (such as `/tmp`) now add
+  `.squad/` to `.git/info/exclude`, so merging no longer warns about an
+  embedded git repository.
 - `squad join --client` accepts `grok`, `agy`, and `ccr`; workers now record
   their own engine as `client_type` (previously `codex`/`claude`).
 - The stall watchdog also covers engines that print their report on stdout

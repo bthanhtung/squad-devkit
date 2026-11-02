@@ -7,7 +7,7 @@ source "$script_dir/lib/squad-devkit-agents.sh"
 
 usage() {
   cat <<'EOF'
-Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud]
+Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill]
 
 Link squad-devkit, squad-worker, and squad-monitor into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
 and choose the manager CLI. Claude Code is the default when installed; without
@@ -18,12 +18,18 @@ If the claude-hud status line plugin is installed, the installer also turns on
 its weekly quota and usage-pace display (display.sevenDayThreshold = 0,
 display.usagePace = true) unless you already set those keys; --no-hud skips it.
 The manager's status line then shows the weekly quota next to the squad label.
+
+It also installs the squad-devkit skill for Claude Code (~/.claude/skills) and
+Codex (~/.codex/skills) as a link to skills/squad-devkit in this repository, so
+any session can delegate to workers and `git pull` keeps the skill current;
+--no-skill skips it. An existing non-link directory there is left untouched.
 EOF
 }
 
 manager_client=""
 no_prompt=0
 configure_hud=1
+install_skill=1
 while (( $# > 0 )); do
   case "$1" in
     --manager)
@@ -37,6 +43,7 @@ while (( $# > 0 )); do
     --manager=*) manager_client="${1#*=}" ;;
     --no-prompt) no_prompt=1 ;;
     --no-hud) configure_hud=0 ;;
+    --no-skill) install_skill=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -54,6 +61,23 @@ ln -sfn "$script_dir/squad-devkit.sh" "$bin_directory/squad-devkit"
 ln -sfn "$script_dir/squad-worker.sh" "$bin_directory/squad-worker"
 ln -sfn "$script_dir/squad-worker-monitor.sh" "$bin_directory/squad-monitor"
 printf 'Linked squad-devkit, squad-worker, and squad-monitor into %s\n' "$bin_directory"
+
+# The skill is a link into this repository, so pulling updates it.
+if (( install_skill == 1 )); then
+  skill_source="$(cd "$script_dir/.." && pwd)/skills/squad-devkit"
+  for skills_directory in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
+    # Only for tools that are set up on this machine.
+    [[ -d "$(dirname "$skills_directory")" ]] || continue
+    target="$skills_directory/squad-devkit"
+    if [[ -e "$target" && ! -L "$target" ]]; then
+      printf 'Skill: kept your own %s (not a link)\n' "$target"
+      continue
+    fi
+    mkdir -p "$skills_directory"
+    ln -sfn "$skill_source" "$target"
+    printf 'Skill: linked %s\n' "$target"
+  done
+fi
 case ":$PATH:" in
   *":$bin_directory:"*) ;;
   *) printf 'Add %s to your PATH to run them from any terminal.\n' "$bin_directory" ;;
