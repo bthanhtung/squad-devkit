@@ -15,6 +15,8 @@ exit "${NOOP_ENGINE_EXIT:-0}"
 ENGINE
 chmod +x "$tmpdir/bin/agy"
 export HOME="$tmpdir/home" PATH="$tmpdir/bin:$PATH"
+# Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
+export XDG_CONFIG_HOME="$HOME/.config"
 export SQUAD_DEVKIT_WORKSPACE="$tmpdir/project" SQUAD_WORKER_PANES=0
 unset SQUAD_MANAGER_ID
 cd "$tmpdir/project"

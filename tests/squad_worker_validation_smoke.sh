@@ -6,6 +6,8 @@ tmpdir="$(mktemp -d /tmp/squad-worker-validation.XXXXXX)"
 trap 'rm -rf "$tmpdir"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 export HOME="$tmpdir/home"
+# Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
+export XDG_CONFIG_HOME="$HOME/.config"
 mkdir -p "$HOME"
 # Keep the caller's environment from changing the outcome of any case below.
 unset SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS SQUAD_DEVKIT_WORKSPACE \
@@ -135,5 +137,14 @@ expect_engine claude enabled
 expect_exit 2 "Unknown worker: CODEX" "$devkit" --doctor --workers CODEX
 expect_exit 2 "Unknown worker: bogus" env SQUAD_DEVKIT_WORKERS=bogus "$devkit" --doctor
 expect_exit 2 "Unknown worker: bogus" "$devkit" --doctor --disable-workers bogus
+
+# --doctor accepts an upstream squad: its workers fall back to clients it knows.
+upstream_bin="$tmpdir/upstream-bin"
+mkdir -p "$upstream_bin"
+printf '#!/bin/sh\necho "--client <claude|codex|gemini|opencode>"\n' >"$upstream_bin/squad"
+chmod +x "$upstream_bin/squad"
+doctor_output="$(PATH="$upstream_bin:$PATH" bash "$devkit" --doctor 2>&1 || true)"
+[[ "$doctor_output" == *'squad is the upstream build'* ]] || fail "doctor did not note the upstream squad"
+[[ "$doctor_output" != *'[ERROR]'*upstream* ]] || fail "doctor treats an upstream squad as an error"
 
 echo "PASS: squad-worker/devkit validation"

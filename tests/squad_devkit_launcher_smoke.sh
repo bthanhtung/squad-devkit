@@ -45,6 +45,8 @@ exit 1
 EOF
 chmod +x "$test_bin/claude" "$test_bin/codex" "$test_bin/ccr"
 export HOME="$temp_directory/home"
+# Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
+export XDG_CONFIG_HOME="$HOME/.config"
 export CODEX_HOME="$HOME/.codex"
 export SQUAD_DEVKIT_PROJECT_ROOT="$temp_directory"
 export PATH="$test_bin:$PATH"

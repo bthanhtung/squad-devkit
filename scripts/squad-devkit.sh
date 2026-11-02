@@ -377,10 +377,10 @@ run_doctor() {
       fi
     fi
   done
-  # Upstream squad shares the version number but rejects --client agy/grok/ccr.
+  # Upstream squad rejects --client agy/grok/ccr; those workers fall back to a
+  # client it accepts, so this is worth knowing but not an error.
   if command -v squad >/dev/null 2>&1 && ! squad help 2>&1 | grep -q 'agy'; then
-    printf '  [ERROR]   squad is upstream, not the squad-devkit build; run ./install.sh and put ~/.cargo/bin first in PATH\n'
-    status=1
+    printf '  [INFO]    squad is the upstream build: ccr joins as claude, grok and agy as codex. ./install.sh keeps their own names.\n'
   fi
   printf '\n'
 

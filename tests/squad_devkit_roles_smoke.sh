@@ -53,6 +53,8 @@ done
 EOF
 chmod +x "$test_bin/claude" "$test_bin/codex"
 export HOME="$temp_directory/home" PATH="$test_bin:$PATH"
+# Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
+export XDG_CONFIG_HOME="$HOME/.config"
 
 project_directory="$temp_directory/project"
 mkdir -p "$project_directory"
