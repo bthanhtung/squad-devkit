@@ -7,6 +7,9 @@ trap 'rm -rf "$tmpdir"' EXIT
 export PATH="$tmpdir/bin:$PATH"
 mkdir -p "$tmpdir/bin" "$tmpdir/home/.config/squad-devkit"
 export HOME="$tmpdir/home"
+# Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
+export XDG_CONFIG_HOME="$HOME/.config"
+unset SQUAD_DEVKIT_CONFIG SQUAD_DEVKIT_MANAGER SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS
 
 # Create mock CLI binaries
 for cli in squad git jq tmux claude codex agy ccr grok; do
