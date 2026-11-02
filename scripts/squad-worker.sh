@@ -20,7 +20,7 @@ usage() {
 Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FILE)
                     [--role ROLE] [--title TITLE] [--project DIR]
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
-                    [--timeout MINUTES] [--manager ID]
+                    [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
        squad-worker --list
        squad-worker --stop <worker-id|all>
        squad-worker --merge <worker-id> [--project DIR]
@@ -54,8 +54,10 @@ Options:
   --all-mcp          codex only: keep every configured MCP server
   --timeout MINUTES  Stop the run after this long (default 45)
   --worktree         Work in an isolated git worktree (default in git repositories,
-                     except for the reviewer and researcher roles)
+                     except for the reviewer, researcher and security roles)
   --no-worktree      Work directly in the project directory
+  --sandbox          Run shell commands in engine sandbox (default)
+  --no-sandbox       Disable engine sandbox
   --manager ID       Manager agent ID that owns the task (default: manager)
   --list             Show worker runs that are still running
   --stop ID|all      Stop a running worker (or all of them); it reports to the manager
@@ -65,11 +67,13 @@ Options:
   --discard ID|all   Remove a worker's worktree and branch without applying them
 
 Environment: SQUAD_WORKER_CODEX_PROFILE, SQUAD_WORKER_CLAUDE_MODEL,
-SQUAD_WORKER_CLAUDE_TOOLS, SQUAD_WORKER_CLAUDE_PERMISSION_MODE (default
+SQUAD_WORKER_CLAUDE_TOOLS, SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS (optional scoped
+Bash allow rules), SQUAD_WORKER_CLAUDE_PERMISSION_MODE (default
 acceptEdits, shell sandboxed), SQUAD_WORKER_CCR_TOOLS, SQUAD_WORKER_TIMEOUT (minutes),
 SQUAD_WORKER_STALL (minutes without log output before a run counts as stuck,
 default 10), SQUAD_WORKER_PANES=0, SQUAD_WORKER_PANE_HOLD (seconds a finished
-monitor pane stays open, default 60), SQUAD_WORKER_WORKTREE (auto, 1, or 0).
+monitor pane stays open, default 60), SQUAD_WORKER_WORKTREE (auto, 1, or 0),
+SQUAD_WORKER_SANDBOX (1 or 0).
 EOF
 }
 
@@ -90,6 +94,9 @@ all_mcp=0
 action=run
 stop_target=""
 worktree_mode="${SQUAD_WORKER_WORKTREE:-auto}"
+sandbox_mode="${SQUAD_WORKER_SANDBOX:-1}"
+sandbox_flag_set=""
+id_pattern='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 while (( $# > 0 )); do
   case "$1" in
     --engine|--role|--title|--brief|--brief-file|--profile|--model|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff)
@@ -119,6 +126,8 @@ while (( $# > 0 )); do
     --all-mcp) all_mcp=1 ;;
     --worktree) worktree_mode=1 ;;
     --no-worktree) worktree_mode=0 ;;
+    --sandbox) sandbox_mode=1; sandbox_flag_set+=s ;;
+    --no-sandbox) sandbox_mode=0; sandbox_flag_set+=n ;;
     --list) action=list ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -191,6 +200,11 @@ unmerged_worktrees() {
   return 0
 }
 
+if [[ "$action" =~ ^(stop|merge|discard|diff)$ ]] &&
+  [[ "$stop_target" != all || "$action" == diff ]] && [[ ! "$stop_target" =~ $id_pattern ]]; then
+  echo "Invalid worker id: $stop_target" >&2
+  exit 2
+fi
 if [[ "$action" == list || "$action" == stop ]]; then
   require_command squad
   workspace_root="$(find_workspace)"
@@ -238,11 +252,6 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
   export SQUAD_WORKTREE_WORKSPACE="$workspace_root"
   cd "$workspace_root"
   targets=()
-  if [[ "$action" == diff ]] &&
-    { [[ ! "$stop_target" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$stop_target" == . || "$stop_target" == .. ]]; }; then
-    echo "Invalid worker ID for --diff: $stop_target" >&2
-    exit 2
-  fi
   if [[ "$stop_target" == all && "$action" != diff ]]; then
     while IFS= read -r line; do
       [[ -n "$line" ]] && targets+=("${line%% *}")
@@ -301,18 +310,31 @@ if [[ -z "$worker_id" || -z "$engine" ]]; then
   usage >&2
   exit 2
 fi
+if [[ ! "$worker_id" =~ $id_pattern ]]; then
+  echo "Invalid worker id: $worker_id" >&2
+  exit 2
+fi
+if [[ ! "$role" =~ $id_pattern ]]; then
+  echo "Invalid role: $role" >&2
+  exit 2
+fi
+if [[ "$sandbox_flag_set" == *s* && "$sandbox_flag_set" == *n* ]]; then
+  echo "--sandbox and --no-sandbox are mutually exclusive" >&2
+  exit 2
+fi
 case "$engine" in
   claude|codex|opencode|grok|agy|ccr) ;;
   *) echo "Unknown engine: $engine (use claude, codex, opencode, grok, agy, or ccr)" >&2; exit 2 ;;
 esac
-if [[ ! "$timeout_minutes" =~ ^[0-9]+$ || ! "$stall_minutes" =~ ^[0-9]+$ ]]; then
-  echo "--timeout and SQUAD_WORKER_STALL take whole minutes" >&2
+if [[ ! "$timeout_minutes" =~ ^[0-9]+$ || "$timeout_minutes" =~ ^0+$ || ! "$stall_minutes" =~ ^[0-9]+$ ]]; then
+  echo "--timeout (at least 1) and SQUAD_WORKER_STALL take whole minutes" >&2
   exit 2
 fi
 if [[ -n "$brief_file" ]]; then
   if [[ "$brief_file" == - ]]; then
     brief="$(cat)"
   else
+    [[ -f "$brief_file" && -r "$brief_file" ]] || { echo "Brief file not readable: $brief_file" >&2; exit 2; }
     brief="$(cat "$brief_file")"
   fi
 fi
@@ -326,6 +348,7 @@ fi
 
 require_command squad
 require_command "$engine"
+[[ "$engine" != codex ]] || require_command jq
 if [[ "$engine" == ccr ]]; then
   require_command claude
   require_command curl
@@ -396,7 +419,7 @@ on_stop() {
 trap on_stop TERM INT
 
 # Isolated worktree: by default in git repositories, except for the read-only
-# reviewer and researcher roles. Fix rounds reuse an unmerged worktree.
+# reviewer, researcher and security roles. Fix rounds reuse an unmerged worktree.
 engine_directory="$project_directory"
 repository_root=""
 worktree_path=""
@@ -405,7 +428,7 @@ use_worktree=0
 case "$worktree_mode" in
   1) use_worktree=1 ;;
   0) ;;
-  *) [[ "$role" != reviewer && "$role" != researcher ]] && use_worktree=1 ;;
+  *) [[ "$role" != reviewer && "$role" != researcher && "$role" != security ]] && use_worktree=1 ;;
 esac
 if (( use_worktree == 1 )); then
   repository_root="$(worktree_repository_root "$project_directory" || true)"
@@ -437,6 +460,8 @@ squad receive "$worker_id" >/dev/null || true
 role_instructions=""
 if [[ -f ".squad/roles/$role.md" ]]; then
   role_instructions="$(grep -v '^<!-- squad-devkit template' ".squad/roles/$role.md")"
+else
+  echo "Note: no .squad/roles/$role.md; $worker_id runs without role instructions." >&2
 fi
 ask_command="$(printf '%q --from %q --workspace %q' "$script_dir/squad-ask.sh" "$worker_id" "$workspace_root")"
 if [[ "$engine" == ccr ]]; then
@@ -561,7 +586,12 @@ engine_command=()
 status=0
 case "$engine" in
   codex)
-    mcp_json="$(codex mcp list --json 2>/dev/null || true)"
+    mcp_json="$(codex mcp list --json 2>>"$log_file")" || status=3
+    if ! printf '%s\n' "$mcp_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      echo "Could not list Codex MCP servers; refusing an unfiltered worker launch." | tee -a "$log_file" >&2
+      status=3
+      mcp_json='[]'
+    fi
     missing=""
     if command -v jq >/dev/null 2>&1; then
       missing="$(missing_mcp_tokens "$mcp_json")"
@@ -576,30 +606,47 @@ case "$engine" in
     fi
     mcp_arguments=()
     if (( all_mcp == 0 )); then
-      configured_servers="$(printf '%s\n' "$mcp_json" |
-        sed -n 's/^    "name": "\([^"]*\)",$/\1/p' || true)"
-      while IFS= read -r server; do
+      configured_servers="$(printf '%s\n' "$mcp_json" | jq -r '
+        .[] | select(.enabled != false) | [.name, .transport.type // ""] | @tsv' 2>/dev/null || true)"
+      while IFS=$'\t' read -r server transport; do
         [[ -n "$server" ]] || continue
         if [[ " ${keep_mcp[*]:-} " == *" $server "* ]]; then
           continue
         fi
-        mcp_arguments+=(-c "mcp_servers.$server.enabled=false")
+        # Plugin servers need a transport even when disabled; never copy credentials.
+        case "$transport" in
+          stdio) mcp_arguments+=(-c "mcp_servers.$server={enabled=false,command=\"false\"}") ;;
+          streamable_http) mcp_arguments+=(-c "mcp_servers.$server={enabled=false,url=\"http://127.0.0.1\"}") ;;
+          *) mcp_arguments+=(-c "mcp_servers.$server.enabled=false") ;;
+        esac
       done <<<"$configured_servers"
     fi
     add_directory=()
     [[ "$engine_directory" != "$workspace_root" ]] && add_directory=(--add-dir "$workspace_root")
+    sandbox_arguments=(--sandbox workspace-write)
+    if [[ "$sandbox_mode" == 0 ]]; then
+      sandbox_arguments=(--sandbox danger-full-access)
+    fi
     engine_command=(codex exec --json --cd "$engine_directory" --profile "$profile" --ephemeral
-      --skip-git-repo-check --sandbox workspace-write ${add_directory[@]+"${add_directory[@]}"}
+      --skip-git-repo-check ${sandbox_arguments[@]+"${sandbox_arguments[@]}"} ${add_directory[@]+"${add_directory[@]}"}
       ${mcp_arguments[@]+"${mcp_arguments[@]}"} --output-last-message "$absolute_report" "$prompt")
     ;;
   claude)
     # Six core tools keep the prompt small. Edits are accepted in the project;
-    # shell commands run only inside Claude Code's sandbox, and are denied
-    # (and reported) where the sandbox is unavailable.
+    # shell commands run inside Claude Code's sandbox by default, and can be
+    # disabled with --no-sandbox or SQUAD_WORKER_SANDBOX=0.
+    claude_settings='{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}'
+    if [[ "$sandbox_mode" == 0 ]]; then
+      claude_settings='{"sandbox":{"enabled":false}}'
+    fi
+    claude_allowed_tools=()
+    if [[ -n "${SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS:-}" ]]; then
+      claude_allowed_tools=(--allowedTools "$SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS")
+    fi
     engine_command=(claude -p --model "$model" --strict-mcp-config --disable-slash-commands
       --no-session-persistence --tools "${SQUAD_WORKER_CLAUDE_TOOLS:-Read,Edit,Write,Glob,Grep,Bash}"
       --permission-mode "${SQUAD_WORKER_CLAUDE_PERMISSION_MODE:-acceptEdits}"
-      --settings '{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}'
+      ${claude_allowed_tools[@]+"${claude_allowed_tools[@]}"} --settings "$claude_settings"
       --add-dir "$workspace_root" --output-format stream-json --verbose "$prompt")
     ;;
   ccr)
@@ -717,7 +764,10 @@ if [[ -n "$worktree_path" ]]; then
   worktree_commit "$worktree_path" "$worker_id: $title" >/dev/null 2>&1 || true
   patch_file="$output_directory/$run_name.patch"
   worktree_patch "$repository_root" "$worker_id" >"$patch_file" 2>/dev/null || true
-  changed_files="$(git apply --numstat "$patch_file" 2>/dev/null | wc -l | tr -d ' ')"
+  changed_files=0
+  if [[ -s "$patch_file" ]]; then
+    changed_files="$(git apply --numstat "$patch_file" 2>/dev/null | wc -l | tr -d ' ')"
+  fi
   worktree_note="Worktree: $changed_files changed file(s) in $worktree_path (branch squad/$worker_id). Review: git -C $worktree_path diff $worktree_base_commit. Merge: squad-worker --merge $worker_id. Discard: squad-worker --discard $worker_id."
 fi
 

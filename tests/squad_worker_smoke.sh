@@ -28,6 +28,11 @@ mkdir -p "$project_directory/src" "$test_bin" "$temp_directory/home"
 cat >"$test_bin/codex" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1 $2" == 'mcp list' ]]; then
+  if [[ -n "${FAKE_MCP_INVALID:-}" ]]; then echo 'invalid config' >&2; exit 1; fi
+  if [[ -n "${FAKE_MCP_TRANSPORTS:-}" ]]; then
+    printf '%s\n' '[{"name":"disabled-plugin","enabled":false,"transport":{"type":"stdio"}},{"name":"stdio-plugin","enabled":true,"transport":{"type":"stdio"}},{"name":"http-plugin","enabled":true,"transport":{"type":"streamable_http"}}]'
+    exit 0
+  fi
   printf '[\n  {\n    "name": "figma",\n    "enabled": true,\n    "transport": {"bearer_token_env_var": "FAKE_FIGMA_TOKEN"}\n  },\n  {\n    "name": "sentry",\n    "enabled": true\n  }\n]\n'
   exit 0
 fi
@@ -125,6 +130,14 @@ monitor_frame="$("$repo_root/scripts/squad-worker-monitor.sh" "$dev_one_status" 
 [[ "$("$repo_root/scripts/squad-worker-monitor.sh" --all --once)" == *'dev-1'*'codex/high'*'completed'* ]] || fail
 [[ ! -e .squad/workers/.pane.lock ]] || fail
 grep -q 'dev-1 (codex) completed task .* Report: .*/.squad/workers/dev-1-' <<<"$(squad receive manager)"
+
+"$worker" dev-ns --engine codex --no-sandbox --brief 'No sandbox codex' >/dev/null
+codex_ns_call="$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$codex_ns_call" == *"exec --json --cd $PWD --profile high --ephemeral --skip-git-repo-check --sandbox danger-full-access"* ]] || fail
+
+SQUAD_WORKER_SANDBOX=0 "$worker" dev-env-ns --engine codex --brief 'Env no sandbox codex' >/dev/null
+codex_env_ns_call="$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$codex_env_ns_call" == *"exec --json --cd $PWD --profile high --ephemeral --skip-git-repo-check --sandbox danger-full-access"* ]] || fail
 
 ccr_output="$("$worker" doc-1 --engine ccr --role writer --title 'Write README' \
   --brief 'Create README.md. Files you own: README.md')"
@@ -245,6 +258,25 @@ worker_pane="$(tmux list-panes -t workers -F '#{pane_id} #{pane_title}' | awk '/
 tmux capture-pane -p -t "$worker_pane" | grep -q 'COMPLETED'
 grep -qx 'export SQUAD_WORKER_PANE_HOLD=60' .squad/workers/tmux-1-*.monitor.sh
 [[ "$(squad agents)" != *'dev-2 '* ]] || fail
+status=0
+FAKE_MCP_INVALID=1 "$worker" plugins-invalid --engine codex --brief 'Must not launch unfiltered' \
+  >/dev/null 2>"$temp_directory/error" || status=$?
+[[ "$status" == 3 ]] || fail
+[[ "$(grep -c 'Must not launch unfiltered' "$WORKER_TEST_LOG")" == 0 ]] || fail
+grep -q 'refusing an unfiltered worker launch' "$temp_directory/error"
+
+# Plugin MCP entries must remain valid without starting or leaking their transports.
+FAKE_MCP_TRANSPORTS=1 "$worker" plugins-1 --engine codex --brief 'Plugin filtering' >/dev/null
+plugin_call="$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$plugin_call" == *'mcp_servers.stdio-plugin={enabled=false,command="false"}'* ]] || fail
+[[ "$plugin_call" == *'mcp_servers.http-plugin={enabled=false,url="http://127.0.0.1"}'* ]] || fail
+[[ "$plugin_call" != *'mcp_servers.disabled-plugin'* ]] || fail
+FAKE_MCP_TRANSPORTS=1 "$worker" plugins-2 --engine codex --mcp stdio-plugin --brief 'Keep requested plugin' >/dev/null
+plugin_call="$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$plugin_call" != *'mcp_servers.stdio-plugin'* && "$plugin_call" == *'mcp_servers.http-plugin='* ]] || fail
+FAKE_MCP_TRANSPORTS=1 "$worker" plugins-3 --engine codex --all-mcp --brief 'Keep all plugins' >/dev/null
+[[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" != *'mcp_servers.'* ]] || fail
+
 # claude engine: model, auto permissions, workspace access, tokens from stream-json.
 "$worker" lead-1 --engine claude --brief 'High-stakes change. Files you own: core.py' >/dev/null
 claude_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
@@ -252,6 +284,13 @@ claude_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
 [[ "$claude_call" == *'squad-ask.sh --from lead-1 --workspace '*'--to manager'* ]] || fail
 lead_status="$(ls .squad/workers/lead-1-*.status)"
 grep -qx 'model=haiku' "$lead_status"
+SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS='Bash(bash tests/squad_completions_smoke.sh)' \
+  "$worker" lead-scoped --engine claude --brief 'Run authorized test' >/dev/null
+claude_scoped_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$claude_scoped_call" == *'--allowedTools Bash(bash tests/squad_completions_smoke.sh)'* ]] || fail
+[[ "$claude_scoped_call" == *'"enabled":true,"autoAllowBashIfSandboxed":true'* ]] || fail
+[[ "$claude_scoped_call" != *'bypassPermissions'* && "$claude_scoped_call" != *'dangerously-skip-permissions'* ]] || fail
+
 "$worker" lead-2 --engine claude --model opus --brief 'Hardest design. Files you own: design.md' >/dev/null
 grep -qx 'model=opus' .squad/workers/lead-2-*.status
 [[ "$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)" == *'-p --model opus '* ]] || fail
@@ -259,6 +298,14 @@ grep -qx 'tokens_in=1200' "$lead_status"
 grep -qx 'tokens_out=80' "$lead_status"
 grep -qx 'state=completed' "$lead_status"
 [[ "$(grep -c 'cannot ask questions' "$WORKER_TEST_LOG")" -ge 1 ]] || fail
+
+"$worker" lead-ns --engine claude --no-sandbox --brief 'No sandbox claude' >/dev/null
+claude_ns_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$claude_ns_call" == *'--settings {"sandbox":{"enabled":false}}'* ]] || fail
+
+SQUAD_WORKER_SANDBOX=0 "$worker" lead-env-ns --engine claude --brief 'Env no sandbox claude' >/dev/null
+claude_env_ns_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$claude_env_ns_call" == *'--settings {"sandbox":{"enabled":false}}'* ]] || fail
 
 # A run that stops producing output is stopped and reported instead of hanging.
 status=0
@@ -372,6 +419,8 @@ grep -q '^<<<<<<< ' "$repo/app.txt"
 "$worker" rev-1 --engine codex --role reviewer --project "$repo" --brief 'Review app.txt' >/dev/null
 grep -q "codex:exec --json --cd $(cd "$repo" && pwd) " "$WORKER_TEST_LOG"
 [[ -z "$(grep '^worktree=' .squad/workers/rev-1-*.status | cut -d= -f2)" ]] || fail
+"$worker" sec-1 --engine codex --role security --project "$repo" --brief 'Audit app.txt' >/dev/null
+[[ -z "$(grep '^worktree=' .squad/workers/sec-1-*.status | cut -d= -f2)" ]] || fail
 "$worker" plain-1 --engine codex --no-worktree --project "$repo" --brief 'In place' >/dev/null
 [[ -z "$(grep '^worktree=' .squad/workers/plain-1-*.status | cut -d= -f2)" ]] || fail
 status=0

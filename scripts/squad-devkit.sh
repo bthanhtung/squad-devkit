@@ -377,6 +377,11 @@ run_doctor() {
       fi
     fi
   done
+  # Upstream squad rejects --client agy/grok/ccr; those workers fall back to a
+  # client it accepts, so this is worth knowing but not an error.
+  if command -v squad >/dev/null 2>&1 && ! squad help 2>&1 | grep -q 'agy'; then
+    printf '  [INFO]    squad is the upstream build: ccr joins as claude, grok and agy as codex. ./install.sh keeps their own names.\n'
+  fi
   printf '\n'
 
   printf 'Manager CLI:\n'
@@ -485,6 +490,22 @@ if (( list_projects == 1 )); then
   print_projects
   exit 0
 fi
+
+# Validate and dedupe worker lists (flag > env > config) before any use.
+known_workers="claude codex opencode grok agy ccr"
+normalize_worker_list() {
+  local item out=""
+  for item in ${1//,/ }; do
+    [[ " $known_workers " == *" $item "* ]] || {
+      echo "Unknown worker: $item (use one of: ${known_workers// /, })" >&2
+      exit 2
+    }
+    in_list "$out" "$item" || out="${out:+$out,}$item"
+  done
+  printf '%s' "$out"
+}
+workers_opt="$(normalize_worker_list "${workers_opt:-$(devkit_config_get workers)}")" || exit 2
+disable_workers_opt="$(normalize_worker_list "${disable_workers_opt:-$(devkit_config_get disabled_workers)}")" || exit 2
 
 interactive=0
 if (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
@@ -642,7 +663,7 @@ prepare_project() {
   local role=""
   local source=""
   local destination=""
-  for role in manager-devkit dev tester reviewer researcher; do
+  for role in manager-devkit dev tester reviewer researcher ui-ux security; do
     source="$script_dir/../templates/devkit/$role.md"
     destination="$project_directory/.squad/roles/$role.md"
     if [[ ! -e "$destination" ]]; then

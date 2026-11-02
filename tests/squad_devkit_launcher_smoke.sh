@@ -45,6 +45,8 @@ exit 1
 EOF
 chmod +x "$test_bin/claude" "$test_bin/codex" "$test_bin/ccr"
 export HOME="$temp_directory/home"
+# Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
+export XDG_CONFIG_HOME="$HOME/.config"
 export CODEX_HOME="$HOME/.codex"
 export SQUAD_DEVKIT_PROJECT_ROOT="$temp_directory"
 export PATH="$test_bin:$PATH"
@@ -157,7 +159,7 @@ rg -q '^  manager \(role: manager-devkit\)' <<<"$(cd "$project_directory" && squ
 rg -Fq "squad-worker is: $repo_root/scripts/squad-worker.sh" "$DEVKIT_TEST_LOG"
 rg -q 'Do not repeat these instructions to the human\.\\n\\n## Your role' "$DEVKIT_TEST_LOG"
 [[ "$(cat "$DEVKIT_TEST_LOG")" != *ERROR* ]] || fail
-for role in manager-devkit dev tester reviewer researcher; do
+for role in manager-devkit dev tester reviewer researcher ui-ux security; do
   cmp -s "$repo_root/templates/devkit/$role.md" "$project_directory/.squad/roles/$role.md"
 done
 
