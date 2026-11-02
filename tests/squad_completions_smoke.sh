@@ -28,7 +28,7 @@ zmodload zsh/zpty
 root=$1
 zpty -b shell zsh -f
 trap 'zpty -d shell' EXIT
-zpty -w shell "autoload -Uz compinit; compinit -D; fpath=(\"$root/scripts/completions\" \$fpath); unfunction _squad-devkit 2>/dev/null; autoload -Uz \"$root/scripts/completions/_squad-devkit\"; compdef _squad-devkit squad-devkit squad-worker; PS1=''; report() { print -r -- \"RESULT:\$BUFFER:END\"; zle send-break; }; zle -N report; bindkey '^X' report; bindkey '^I' complete-word"
+zpty -w shell "autoload -Uz compinit; compinit -u -D; fpath=(\"$root/scripts/completions\" \$fpath); unfunction _squad-devkit 2>/dev/null; autoload -Uz \"$root/scripts/completions/_squad-devkit\"; compdef _squad-devkit squad-devkit squad-worker; PS1=''; report() { print -r -- \"RESULT:\$BUFFER:END\"; zle send-break; }; zle -N report; bindkey '^X' report; bindkey '^I' complete-word"
 check() {
   local input=$1 expected=$2 output='' chunk='' tries=0
   # The report widget returns the buffer after Tab; it never executes the command.
