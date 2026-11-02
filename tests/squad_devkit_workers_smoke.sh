@@ -6,6 +6,8 @@ trap '/bin/rm -rf "$tmpdir"' EXIT
 
 mkdir -p "$tmpdir/bin" "$tmpdir/home/.config/squad-devkit"
 export HOME="$tmpdir/home"
+# Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
+export XDG_CONFIG_HOME="$HOME/.config"
 export SQUAD_DEVKIT_CONFIG="$HOME/.config/squad-devkit/config"
 unset SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS SQUAD_DEVKIT_MANAGER
 # Only explicitly selected utilities and fake CLIs are visible to the launcher.

@@ -22,9 +22,12 @@ worktree_home() {
 
 # Keeps .squad/ out of `git status` when the worktrees live inside the repository.
 worktree_exclude_squad() {
-  local root="$1" exclude
-  case "${SQUAD_WORKTREE_WORKSPACE:?}/" in
-    "$root"/*) ;;
+  local root="$1" exclude workspace physical_root
+  # Compare physical paths: git reports them resolved (/private/tmp, not /tmp).
+  workspace="$(cd "${SQUAD_WORKTREE_WORKSPACE:?}" && pwd -P)" || return 0
+  physical_root="$(cd "$root" && pwd -P)" || return 0
+  case "$workspace/" in
+    "$physical_root"/*) ;;
     *) return 0 ;;
   esac
   exclude="$(git -C "$root" rev-parse --path-format=absolute --git-path info/exclude)" || return 0

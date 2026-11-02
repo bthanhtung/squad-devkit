@@ -103,3 +103,4 @@ jobs:
           bash tests/squad_worker_validation_smoke.sh
           bash tests/squad_devkit_roles_smoke.sh
           bash tests/squad_devkit_clean_smoke.sh
+          bash tests/squad_devkit_workers_smoke.sh

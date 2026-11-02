@@ -85,6 +85,12 @@ which installed CLI to use), lists the worker engines it found, and, when
 claude-hud is installed, turns on its weekly-quota and usage-pace display.
 Run `squad-devkit --setup` to choose another manager later.
 
+The installer also adds a `squad-devkit` skill to Claude Code and Codex
+(`~/.claude/skills`, `~/.codex/skills`, linked to this repository so `git pull`
+updates it). In any session you can then ask to hand work to workers, check
+them, or merge a worker's worktree, without starting a separate manager.
+`squad-devkit --doctor` checks the setup.
+
 ## Usage
 
 ```bash

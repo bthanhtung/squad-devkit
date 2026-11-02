@@ -4,7 +4,7 @@ All notable changes to squad-devkit are documented here. The `squad` CLI
 itself follows the upstream [mco-org/squad](https://github.com/mco-org/squad)
 releases.
 
-## [Unreleased]
+## [1.0.2] - 2026-11-02
 
 ### Added
 - Optional `ui-ux` and `security` worker roles; the default team stays manager plus dev, and `security` runs read-only without a worktree.
@@ -19,6 +19,9 @@ releases.
 - `squad-worker --diff <id>` prints a worker's worktree changes without merging.
 
 ### Added
+- A `squad-devkit` skill for Claude Code and Codex (`skills/squad-devkit/`),
+  linked by the installer into `~/.claude/skills` and `~/.codex/skills`, so any
+  session can delegate work to workers, review, and merge (`--no-skill` skips it).
 - `opencode` worker engine (experimental), between codex and grok in the trust order.
 - `squad-devkit --doctor` checks the core tools, manager and worker CLIs, and
   monitor pane support.
@@ -29,6 +32,13 @@ releases.
 - `--sandbox` / `--no-sandbox` (and `SQUAD_WORKER_SANDBOX=0|1`) to toggle engine sandboxing for Codex (`workspace-write` vs `danger-full-access`) and Claude Code workers.
 
 ### Fixed
+- Workers fall back to a client type that older `squad` builds accept
+  (`ccr` → `claude`, `grok`/`agy` → `codex`) when `squad join` rejects
+  `--client <engine>`. With the documented Homebrew `squad` 0.7.6, ccr, grok,
+  and agy workers otherwise failed to join.
+- Worktrees on paths that go through a symlink (such as `/tmp`) now add
+  `.squad/` to `.git/info/exclude`, so merging no longer warns about an
+  embedded git repository.
 - Worker runs with no file changes finalize without Git exit 128.
 - Codex MCP filtering handles plugin transports without invalid configuration;
   Claude workers accept optional scoped `SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS` rules.

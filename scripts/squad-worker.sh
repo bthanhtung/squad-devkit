@@ -368,8 +368,21 @@ export SQUAD_WORKTREE_WORKSPACE="$workspace_root"
 project_directory="${project_directory:-$workspace_root}"
 cd "$workspace_root"
 
+# Join under the engine's own client type. squad builds from mco-org (the
+# documented install) accept only claude, codex, gemini, and opencode, so on
+# "invalid --client value" fall back to the closest of those.
 client="$engine"
-join_output="$(squad join "$worker_id" --role "$role" --client "$client" --protocol-version 2)"
+if ! join_output="$(squad join "$worker_id" --role "$role" --client "$client" --protocol-version 2 2>&1)"; then
+  if [[ "$join_output" != *'invalid --client value'* ]]; then
+    printf '%s\n' "$join_output" >&2
+    exit 1
+  fi
+  case "$engine" in
+    ccr) client=claude ;;
+    *) client=codex ;;
+  esac
+  join_output="$(squad join "$worker_id" --role "$role" --client "$client" --protocol-version 2)"
+fi
 joined_id="$(printf '%s\n' "$join_output" | sed -n 's/.*Joined as \([^ ]*\) (role:.*/\1/p' | head -1)"
 if [[ -z "$joined_id" ]]; then
   printf '%s\n' "$join_output" >&2

@@ -93,6 +93,18 @@ install_output="$("$repo_root/scripts/install-devkit.sh" --no-prompt)"
 [[ "$install_output" == *'Manager: claude (Claude Code)'* ]] || fail
 [[ ! -e "$SQUAD_DEVKIT_CONFIG" ]] || fail
 [[ "$install_output" != *'claude-hud'* ]] || fail
+# The installer links the skill for Claude Code and Codex when they are set up,
+# and never replaces a directory the user made.
+mkdir -p "$HOME/.claude" "$HOME/.codex/skills/squad-devkit"
+skill_output="$("$repo_root/scripts/install-devkit.sh" --no-prompt)"
+[[ "$(readlink "$HOME/.claude/skills/squad-devkit")" == "$repo_root/skills/squad-devkit" ]] || fail
+[[ -f "$HOME/.claude/skills/squad-devkit/SKILL.md" ]] || fail
+[[ ! -L "$HOME/.codex/skills/squad-devkit" ]] || fail
+[[ "$skill_output" == *"Skill: kept your own $HOME/.codex/skills/squad-devkit (not a link)"* ]] || fail
+rm -rf "$HOME/.claude/skills" "$HOME/.codex"
+[[ "$("$repo_root/scripts/install-devkit.sh" --no-prompt --no-skill)" != *'Skill:'* ]] || fail
+[[ ! -e "$HOME/.claude/skills/squad-devkit" ]] || fail
+grep -q '^name: squad-devkit$' "$repo_root/skills/squad-devkit/SKILL.md"
 hud_config="$HOME/.claude/plugins/claude-hud/config.json"
 mkdir -p "$(dirname "$hud_config")"
 printf '{"display":{"sevenDayThreshold":50},"theme":"dark"}' >"$hud_config"
