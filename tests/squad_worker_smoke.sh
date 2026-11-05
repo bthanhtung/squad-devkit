@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Fixtures must not inherit the invoking squad session.
+unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_DEVKIT_YOLO
 # Name the failing command, so CI logs show where a test stopped.
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
@@ -555,4 +557,32 @@ FAKE_PLAIN_SLEEP=30 SQUAD_WORKER_TIMEOUT_SECONDS=2 "$worker" to-1 --engine grok 
   --brief 'Too long' >/dev/null 2>"$temp_directory/error" || status=$?
 [[ "$status" == 124 ]] || fail
 grep -q 'to-1 (grok) timed out' "$temp_directory/error"
+# Only fake engines run with bypass flags; inheritance and standalone opt-in agree.
+for engine in claude codex agy; do
+  for opt_in in flag inherited; do
+    : >"$WORKER_TEST_LOG"
+    if [[ "$opt_in" == flag ]]; then
+      "$worker" "yolo-$engine-$opt_in" --engine "$engine" --no-worktree --yolo --brief 'Check opt-in' >/dev/null
+    else
+      SQUAD_DEVKIT_YOLO=1 "$worker" "yolo-$engine-$opt_in" --engine "$engine" --no-worktree --brief 'Check inheritance' >/dev/null
+    fi
+    call="$(grep "^$engine:" "$WORKER_TEST_LOG")"
+    case "$engine" in
+      codex) [[ "$call" == *'--dangerously-bypass-approvals-and-sandbox'* && "$call" != *'--sandbox '* ]] || fail ;;
+      claude) [[ "$call" == *'--dangerously-skip-permissions'* && "$call" == *'"enabled":false'* && "$call" != *'--permission-mode '* ]] || fail ;;
+      agy) [[ "$call" == *'--dangerously-skip-permissions'* && "$call" != *'--sandbox '* ]] || fail ;;
+    esac
+  done
+done
+if SQUAD_DEVKIT_YOLO=true "$worker" yolo-invalid --engine codex --brief test > /dev/null 2>"$temp_directory/error"; then fail; fi
+grep -q 'SQUAD_DEVKIT_YOLO must be 0 or 1' "$temp_directory/error"
+for opts in '--yolo --sandbox' '--sandbox --yolo' '--yolo --sandbox --no-sandbox'; do
+  if "$worker" yolo-conflict --engine codex $opts --brief test >/dev/null 2>&1; then fail; fi
+done
+if SQUAD_DEVKIT_YOLO=1 "$worker" yolo-conflict --engine codex --sandbox --brief test >/dev/null 2>&1; then fail; fi
+if SQUAD_WORKER_SANDBOX=1 "$worker" yolo-conflict --engine claude --yolo --brief test >/dev/null 2>&1; then fail; fi
+for engine in grok opencode ccr; do
+  if "$worker" yolo-unsupported --engine "$engine" --yolo --brief test >/dev/null 2>&1; then fail; fi
+done
+
 echo 'PASS: squad-worker engines, worktrees, panes in every terminal, flicker-free monitor, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'

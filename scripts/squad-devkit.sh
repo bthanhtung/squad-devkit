@@ -58,6 +58,8 @@ Without an objective the manager opens an interactive chat and asks for one firs
                 SQUAD_DEVKIT_MAX_MB (200), then exit; every launch does this too
   --clean-all   Remove every finished worker run, then exit
   --no-prompt   Skip the first-run manager question (or set SQUAD_DEVKIT_NO_PROMPT)
+  --yolo        Bypass engine permissions and sandbox for Claude/Codex/AGY managers
+                and their workers (session only; SQUAD_DEVKIT_YOLO=1)
   --dry-run     Show the manager command without changing the project
   --no-attach   tmux only: start the session in the background
   --version     Print the squad-devkit version
@@ -92,6 +94,7 @@ while (( $# > 0 )); do
     --here) backend=here ;;
     --tmux) backend=tmux ;;
     --ghostty) backend=ghostty ;;
+    --yolo) export SQUAD_DEVKIT_YOLO=1 ;;
     --dry-run) dry_run=1 ;;
     --no-attach) no_attach=1 ;;
     --no-prompt) no_prompt=1 ;;
@@ -526,6 +529,7 @@ fi
 # Cleaning needs no manager, so it works where no manager CLI is installed.
 if (( clean_only == 0 )); then
   manager_client="$(resolve_manager "$manager_client" "$interactive")"
+  validate_yolo_client "$manager_client"
 fi
 
 # Without a project argument, use the repository containing the current
@@ -604,6 +608,7 @@ else
 fi
 manager_prompt+=$'\n\n'"The human's messages in the chat are their requests. When a message gives you work, start investigating and planning right away, without asking for the objective again unless it is genuinely ambiguous. Do not repeat these instructions to the human."
 manager_command="$(shell_join "$script_dir/lib/squad-devkit-manager.sh" "$manager_client" "$manager_prompt" "$objective")"
+manager_command="$(shell_join env "SQUAD_DEVKIT_YOLO=${SQUAD_DEVKIT_YOLO:-0}") $manager_command"
 manager_title="$(manager_label "$manager_client")"
 
 if (( dry_run == 1 )); then

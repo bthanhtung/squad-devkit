@@ -12,6 +12,7 @@ source "$lib_dir/squad-tmux-launcher-helpers.sh"
 source "$lib_dir/squad-devkit-agents.sh"
 
 client="$1"
+validate_yolo_client "$client"
 prompt_template="$2"
 first_message="${3:-}"
 pid_directory=".squad/managers"
@@ -83,6 +84,9 @@ if [[ "$client" == claude ]]; then
     fallback=""
   fi
 fi
+if [[ -n "$fallback" ]]; then
+  validate_yolo_client "$fallback"
+fi
 rm -f "$handoff_marker"
 
 # Session settings for Claude Code, passed with --settings and merged with the
@@ -93,6 +97,9 @@ SQUAD_DEVKIT_SESSION_START="$(date +%s)"
 export SQUAD_DEVKIT_SESSION_START
 if [[ "$client" == claude ]] && command -v jq >/dev/null 2>&1; then
   settings='{}'
+  if [[ "${SQUAD_DEVKIT_YOLO:-0}" == 1 ]]; then
+    settings='{"sandbox":{"enabled":false}}'
+  fi
   if [[ -n "$fallback" ]]; then
     hook_command="$(shell_join "$lib_dir/squad-devkit-handoff-hook.sh" "$PWD/$handoff_marker")"
     settings="$(jq -c --arg matcher "${SQUAD_DEVKIT_FALLBACK_ON:-rate_limit|billing_error}" --arg command "$hook_command" \

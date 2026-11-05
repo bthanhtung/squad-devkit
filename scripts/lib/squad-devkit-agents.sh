@@ -27,6 +27,19 @@ squad_client_flag() {
   esac
 }
 
+# Only the exact boolean 1 opts this session into native permission bypass.
+validate_yolo_client() {
+  case "${SQUAD_DEVKIT_YOLO:-0}" in
+    0) return 0 ;;
+    1) ;;
+    *) echo 'SQUAD_DEVKIT_YOLO must be 0 or 1' >&2; return 2 ;;
+  esac
+  case "$1" in
+    claude|codex|agy) ;;
+    *) echo 'YOLO supports only claude, codex, and agy' >&2; return 2 ;;
+  esac
+}
+
 # Prints the interactive command that starts a manager. The instructions go
 # to the system prompt where the CLI supports it (Claude Code, Codex), so the
 # chat shows only the human's message; other CLIs receive them as the first
@@ -36,14 +49,23 @@ manager_start_command() {
   local client="$1"
   local instructions="$2"
   local message="${3:-}"
+  validate_yolo_client "$client" || return $?
   local binary
   binary="$(command -v "$client")"
   local permission_mode="${SQUAD_DEVKIT_PERMISSION_MODE-auto}"
   local literal_quotes="'''"
   local arguments=()
+  if [[ "${SQUAD_DEVKIT_YOLO:-0}" == 1 ]]; then
+    case "$client" in
+      codex) arguments+=(--dangerously-bypass-approvals-and-sandbox) ;;
+      *) arguments+=(--dangerously-skip-permissions) ;;
+    esac
+  fi
   case "$client" in
     claude)
-      if [[ -n "$permission_mode" && "$permission_mode" != default ]]; then
+      if [[ "${SQUAD_DEVKIT_YOLO:-0}" == 1 ]]; then
+        [[ -n "${4:-}" ]] || arguments+=(--settings '{"sandbox":{"enabled":false}}')
+      elif [[ -n "$permission_mode" && "$permission_mode" != default ]]; then
         arguments+=(--permission-mode "$permission_mode")
       fi
       arguments+=(--append-system-prompt "$instructions")

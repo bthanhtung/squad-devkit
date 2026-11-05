@@ -22,7 +22,7 @@ _squad_devkit() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--manager --setup --workers --disable-workers --doctor --list --ghostty --tmux --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
+  local opts="--manager --setup --workers --disable-workers --doctor --list --ghostty --tmux --yolo --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
   local managers="claude codex agy gemini grok opencode"
 
   case "$prev" in
@@ -58,7 +58,7 @@ _squad_worker() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--engine --role --title --brief --brief-file --project --profile --model --mcp --all-mcp --timeout --worktree --no-worktree --sandbox --no-sandbox --manager --list --stop --merge --discard -h --help"
+  local opts="--engine --role --title --brief --brief-file --project --profile --model --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --discard -h --help"
   local engines="claude codex opencode grok agy ccr"
   local roles="dev tester reviewer researcher ui-ux security manager-devkit"
   local profiles="high medium max"
