@@ -169,6 +169,30 @@ status_get() {
   sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
 }
 
+# A failed kill probe can mean permission denied; only a successful process
+# table snapshot proves absence. Start time prevents signalling a reused PID.
+reconcile_status() {
+  local file="$1" pid expected actual table reason="" tmp
+  [[ "$(status_get "$file" state)" == running ]] || return 0
+  pid="$(status_get "$file" pid)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  table="$(LC_ALL=C ps -axo pid=,lstart=,stat= 2>/dev/null)" || return 0
+  actual="$(printf '%s\n' "$table" | awk -v pid="$pid" '$1 == pid { $1=""; sub(/^ +/, ""); print; exit }')"
+  expected="$(status_get "$file" process_started)"
+  if [[ -z "$actual" ]]; then
+    reason="worker process disappeared; exit status unavailable"
+  elif [[ -n "$expected" && "$actual" != "$expected "* ]]; then
+    reason="worker PID was reused; exit status unavailable"
+  elif [[ "$actual" == *" Z"* ]]; then
+    reason="worker process is a zombie; exit status unavailable"
+  fi
+  [[ -n "$reason" ]] || return 0
+  tmp="$(mktemp "$file.reconcile.XXXXXX")"
+  awk '!/^(state|reason|finished|exit)=/' "$file" >"$tmp"
+  printf 'state=lost\nreason=%s; report may be incomplete\nfinished=%s\nexit=\n' "$reason" "$(date +%s)" >>"$tmp"
+  if [[ "$(status_get "$file" state)" == running ]]; then mv "$tmp" "$file"; else rm -f "$tmp"; fi
+}
+
 # Status files of runs that are still running, newest first.
 running_status_files() {
   local file
@@ -213,6 +237,8 @@ if [[ "$action" == list || "$action" == stop ]]; then
   found=0
   while IFS= read -r file; do
     [[ -n "$file" ]] || continue
+    reconcile_status "$file"
+    [[ "$(status_get "$file" state)" == running ]] || continue
     id="$(status_get "$file" worker)"
     pid="$(status_get "$file" pid)"
     if [[ "$action" == list ]]; then
@@ -223,8 +249,8 @@ if [[ "$action" == list || "$action" == stop ]]; then
       if [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null; then
         echo "Stopping $id (pid $pid)."
       else
-        printf 'state=lost\n' >>"$file"
-        echo "$id was not running any more; marked lost."
+        reconcile_status "$file"
+        echo "$id could not be stopped; state=$(status_get "$file" state)."
       fi
       found=1
     fi
@@ -401,6 +427,7 @@ finish_run() {
     kill -TERM "$engine_pid" 2>/dev/null || true
   fi
   if [[ -n "$status_file" && -f "$status_file" ]] && grep -qx 'state=running' "$status_file"; then
+    stop_reason="${stop_reason:-wrapper exited before finalization (exit $exit_status)}"
     write_status failed "$exit_status"
   fi
   squad leave "$worker_id" >/dev/null 2>&1 || true
@@ -497,6 +524,7 @@ report_file="$output_directory/$run_name.md"
 log_file="$output_directory/$run_name.log"
 status_file="$output_directory/$run_name.status"
 started_at="$(date +%s)"
+process_started="$(LC_ALL=C ps -p "$$" -o lstart= | awk '{$1=$1; print}' || true)"
 run_profile=""
 [[ "$engine" == codex ]] && run_profile="$profile"
 if [[ "$engine" == claude ]]; then
@@ -516,7 +544,8 @@ write_status() {
     printf 'worker=%s\nengine=%s\nprofile=%s\nmodel=%s\nrole=%s\n' \
       "$worker_id" "$engine" "$run_profile" "$model" "$role"
     printf 'title=%s\ntask=%s\nstate=%s\nreason=%s\n' \
-      "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state" "$stop_reason"
+      "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state" "${failure_reason:-$stop_reason}"
+    printf 'process_started=%s\n' "$process_started"
     printf 'pid=%s\nstarted=%s\nfinished=%s\nexit=%s\n' "$$" "$started_at" "$finished" "$exit_status"
     printf 'tokens_in=%s\ntokens_cached=%s\ntokens_out=%s\n' "$tokens_in" "$tokens_cached" "$tokens_out"
     printf 'project=%s\nlog=%s\nreport=%s\n' "$project_directory" \
@@ -776,6 +805,9 @@ if [[ -s "$report_file" ]]; then
   report="$(cat "$report_file")"
 fi
 if (( status != 0 )) || [[ -z "${report//[[:space:]]/}" ]]; then
+  if [[ -z "${report//[[:space:]]/}" ]]; then
+    failure_reason="${stop_reason:-worker returned no report (engine exit $status)}"
+  fi
   (( status != 0 )) || status=1
   state=failed
   [[ "$stop_reason" == "stopped by request" ]] && state=stopped
