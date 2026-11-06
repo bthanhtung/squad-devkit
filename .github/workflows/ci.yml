@@ -103,4 +103,6 @@ jobs:
           bash tests/squad_worker_validation_smoke.sh
           bash tests/squad_devkit_roles_smoke.sh
           bash tests/squad_devkit_clean_smoke.sh
-          bash tests/squad_devkit_workers_smoke.sh
+          bash tests/squad_worker_status_regression.sh
+          bash tests/squad_herdr_panes_regression.sh
+          bash tests/squad_terminal_routing_regression.sh
