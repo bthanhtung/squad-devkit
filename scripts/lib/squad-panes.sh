@@ -27,6 +27,26 @@ squad_panes_unlock() {
   rmdir "$1/.pane.lock" 2>/dev/null || true
 }
 
+# Herdr TUI and the desktop app use different servers and terminal IDs.
+squad_panes_herdr_kind() {
+  if [[ -n "${HC_TERMINAL_ID:-}" ]]; then
+    printf 'herdr_app\n'
+  elif [[ "${HERDR_ENV:-}" == 1 ]]; then
+    printf 'herdr\n'
+  fi
+}
+
+squad_panes_herdr_manager() {
+  [[ "$(squad_panes_herdr_kind)" == herdr ]] || return 0
+  command -v herdr >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 0
+  if [[ -n "${HERDR_PANE_ID:-}" ]]; then
+    printf '%s\n' "$HERDR_PANE_ID"
+  else
+    herdr pane current --current 2>/dev/null |
+      jq -er '.result.pane.pane_id | select(type == "string" and length > 0)' 2>/dev/null || true
+  fi
+}
+
 squad_open_monitor() {
   local command_script="$1" title="$2" workspace="$3" state="$4" dashboard_script="$5"
   [[ "${SQUAD_WORKER_PANES:-1}" != 0 ]] || return 0
@@ -34,8 +54,12 @@ squad_open_monitor() {
   local backend="" manager=""
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     backend=tmux; manager="$TMUX_PANE"
-  elif [[ -n "${HERDR_PANE_ID:-}" ]] && command -v herdr >/dev/null 2>&1; then
-    backend=herdr; manager="$HERDR_PANE_ID"
+  elif [[ "$(squad_panes_herdr_kind)" == herdr_app ]]; then
+    echo "squad-worker: Herdr app/core terminal detected; monitor split unavailable (desktop pane mapping is not verified)." >&2
+    return 0
+  elif [[ "$(squad_panes_herdr_kind)" == herdr ]]; then
+    manager="$(squad_panes_herdr_manager)"
+    [[ -n "$manager" ]] && backend=herdr
   elif [[ -n "${ZELLIJ:-}" ]] && command -v zellij >/dev/null 2>&1; then
     backend=zellij; manager="${ZELLIJ_SESSION_NAME:-zellij}"
   elif [[ -n "${WEZTERM_PANE:-}" ]] && command -v wezterm >/dev/null 2>&1; then
@@ -71,12 +95,12 @@ squad_panes_tmux() {
 squad_panes_herdr() {
   local manager="$1" previous="$2" command_script="$3" title="$4" workspace="$5" output="" created
   if [[ -n "$previous" ]]; then
-    output="$(herdr pane split "$previous" --direction down --cwd "$workspace" 2>/dev/null || true)"
+    output="$(herdr pane split "$previous" --direction down --cwd "$workspace" --no-focus 2>/dev/null || true)"
   fi
   if [[ "$output" != *'"pane_id"'* ]]; then
-    output="$(herdr pane split "$manager" --direction right --cwd "$workspace")" || return 1
+    output="$(herdr pane split "$manager" --direction right --cwd "$workspace" --no-focus)" || return 1
   fi
-  created="$(printf '%s' "$output" | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p')"
+  created="$(printf '%s' "$output" | jq -er '.result.pane.pane_id | select(type == "string" and length > 0)')" || return 1
   [[ -n "$created" ]] || return 1
   herdr pane rename "$created" "$title" >/dev/null 2>&1 || true
   herdr pane run "$created" "exec $(printf '%q' "$command_script")" >/dev/null 2>&1 || true

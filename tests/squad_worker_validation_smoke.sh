@@ -10,7 +10,7 @@ export HOME="$tmpdir/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 mkdir -p "$HOME"
 # Keep the caller's environment from changing the outcome of any case below.
-unset SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS SQUAD_DEVKIT_WORKSPACE \
+unset SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS SQUAD_DEVKIT_WORKSPACE SQUAD_DEVKIT_YOLO \
   SQUAD_DEVKIT_CONFIG SQUAD_WORKER_SANDBOX SQUAD_WORKER_TIMEOUT SQUAD_WORKER_STALL
 worker="$repo_root/scripts/squad-worker.sh"
 devkit="$repo_root/scripts/squad-devkit.sh"

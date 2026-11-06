@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset HC_TERMINAL_ID
+# Fixtures must not inherit the invoking squad session.
+unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_DEVKIT_YOLO
 # Name the failing command, so CI logs show where a test stopped.
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
@@ -229,16 +232,16 @@ fi
 EOF
 chmod +x "$test_bin/herdr"
 export WORKER_HERDR_LOG="$temp_directory/herdr"
-HERDR_PANE_ID=w1:pM SQUAD_DEVKIT_GHOSTTY_TERMINAL=MANAGER-TERMINAL "$worker" herd-1 --engine codex --brief 'Herdr pane' >/dev/null
-HERDR_PANE_ID=w1:pM "$worker" herd-2 --engine codex --brief 'Herdr stacked pane' >/dev/null
-grep -qx "pane split w1:pM --direction right --cwd $PWD" "$WORKER_HERDR_LOG"
+HERDR_ENV=1 HERDR_PANE_ID=w1:pM SQUAD_DEVKIT_GHOSTTY_TERMINAL=MANAGER-TERMINAL "$worker" herd-1 --engine codex --brief 'Herdr pane' >/dev/null
+HERDR_ENV=1 HERDR_PANE_ID=w1:pM "$worker" herd-2 --engine codex --brief 'Herdr stacked pane' >/dev/null
+grep -qx "pane split w1:pM --direction right --cwd $PWD --no-focus" "$WORKER_HERDR_LOG"
 grep -qx 'pane rename w1:p1 herd-1 · codex' "$WORKER_HERDR_LOG"
 grep -q '^pane run w1:p1 exec .*/\.squad/workers/herd-1-.*\.monitor\.sh$' "$WORKER_HERDR_LOG"
-grep -qx "pane split w1:p1 --direction down --cwd $PWD" "$WORKER_HERDR_LOG"
+grep -qx "pane split w1:p1 --direction down --cwd $PWD --no-focus" "$WORKER_HERDR_LOG"
 grep -qx 'pane rename w1:p2 herd-2 · codex' "$WORKER_HERDR_LOG"
 [[ ! -e "$WORKER_OSASCRIPT_LOG" ]] || fail
 printf 'gone\n' >.squad/workers/.herdr-w1_pM.last
-HERDR_PANE_ID=w1:pM "$worker" herd-3 --engine codex --brief 'Previous pane closed' >/dev/null
+HERDR_ENV=1 HERDR_PANE_ID=w1:pM "$worker" herd-3 --engine codex --brief 'Previous pane closed' >/dev/null
 [[ "$(grep -c "^pane split w1:pM --direction right" "$WORKER_HERDR_LOG")" == 2 ]] || fail
 [[ "$(cat .squad/workers/.herdr-w1_pM.last)" == w1:p4 ]] || fail
 

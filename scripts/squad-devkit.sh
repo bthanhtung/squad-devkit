@@ -14,6 +14,7 @@ done
 script_dir="$(cd "$(dirname "$source_file")" && pwd)"
 source "$script_dir/lib/squad-tmux-launcher-helpers.sh"
 source "$script_dir/lib/squad-devkit-agents.sh"
+source "$script_dir/lib/squad-panes.sh"
 
 devkit_version="1.0.2"
 
@@ -459,8 +460,10 @@ run_doctor() {
 
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     pane_support="tmux split-pane"
-  elif [[ -n "${HERDR_PANE_ID:-}" ]] && command -v herdr >/dev/null 2>&1; then
-    pane_support="herdr split-pane"
+  elif [[ "$(squad_panes_herdr_kind)" == herdr_app ]]; then
+    pane_support="Herdr app/core (monitor split unavailable: desktop pane mapping not verified)"
+  elif [[ -n "$(squad_panes_herdr_manager)" ]]; then
+    pane_support="herdr split-pane (TUI)"
   elif [[ -n "${ZELLIJ:-}" ]] && command -v zellij >/dev/null 2>&1; then
     pane_support="zellij floating pane"
   elif [[ -n "${WEZTERM_PANE:-}" ]] && command -v wezterm >/dev/null 2>&1; then
