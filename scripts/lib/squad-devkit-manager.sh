@@ -98,6 +98,11 @@ if [[ "$client" == claude ]] && command -v jq >/dev/null 2>&1; then
     settings="$(jq -c --arg matcher "${SQUAD_DEVKIT_FALLBACK_ON:-rate_limit|billing_error}" --arg command "$hook_command" \
       '.hooks.StopFailure = [{matcher: $matcher, hooks: [{type: "command", command: $command}]}]' <<<"$settings")"
   fi
+  if [[ "${SQUAD_DEVKIT_GUARD:-1}" != 0 ]]; then
+    guard_command="$(shell_join "$lib_dir/squad-devkit-manager-guard.sh" "$PWD")"
+    settings="$(jq -c --arg command "$guard_command" \
+      '.hooks.PreToolUse = [{matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash", hooks: [{type: "command", command: $command}]}]' <<<"$settings")"
+  fi
   if [[ "${SQUAD_DEVKIT_STATUSLINE:-1}" != 0 ]]; then
     savings_command="$(shell_join "$lib_dir/../squad-worker-monitor.sh" --savings "$PWD")"
     user_status_line="$(jq -r '.statusLine.command // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null || true)"
@@ -114,6 +119,15 @@ if [[ "$client" == claude ]] && command -v jq >/dev/null 2>&1; then
   if [[ "$settings" != '{}' ]]; then
     settings_file="$pid_directory/$manager_id.settings.json"
     printf '%s\n' "$settings" >"$settings_file"
+  fi
+fi
+
+if [[ -z "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then
+  # Tell the user once per project, not on every start.
+  route_notice_marker="$pid_directory/.route-notice-shown"
+  if [[ ! -e "$route_notice_marker" ]]; then
+    echo 'squad-devkit: squad-route is not configured; record "squad-route: not configured" in each plan'"'"'s Triage.' >&2
+    { mkdir -p "$pid_directory" && : >"$route_notice_marker"; } 2>/dev/null || true
   fi
 fi
 

@@ -40,13 +40,42 @@ Then start each worker as a background command (in Claude Code with
 and start independent workers together:
 
 ```sh
-squad-worker dev-1 --engine codex --project /path/to/repo --brief-file - <<'BRIEF'
+squad-worker dev-1 --engine codex --role dev --project /path/to/repo --plan .squad/plans/<name>.md --brief-file - <<'BRIEF'
 Goal, files the worker owns, exact changes, acceptance criteria,
 the verification command, and what is out of scope.
 BRIEF
 ```
 
-Workers see only the brief, so make it complete. When done, run
+Workers see only the brief, so make it complete.
+
+## Plans and approvals
+
+- Every worker run needs `--plan .squad/plans/<name>.md`, validated: sections
+  Triage, Goal, Perspectives, Tasks, Acceptance; Triage lines `Risk`,
+  `Complexity` (low|moderate|high) and `squad-route`
+  (`not configured` is fine; the installer links `squad-route`); all five
+  perspective labels. Copy `templates/devkit/plan.md.example`. Show the human
+  the plan summary before starting workers.
+- Small follow-ups: add a `## Follow-up: <name>` section to the existing plan.
+  `--no-plan "<reason>"` is only for genuine emergencies; the reason is
+  recorded in the status file and report.
+- Commit and push only after the human approves and you record
+  `- commit: <repo>` / `- push: <repo>` under `## Approvals`, preferably with
+  the absolute path (`- push: /abs/path/to/repo`); a bare basename matches
+  every repo with that name. Remove these
+  lines when the work is done; approvals do not expire. The Claude manager
+  guard hook blocks them without it, and blocks Edit/Write outside `.squad/`,
+  `$CLAUDE_CONFIG_DIR/projects/` (memory), temp dirs, and
+  `SQUAD_DEVKIT_GUARD_ALLOW`; never other project paths. A wrapped commit or
+  push that cannot be verified is denied: run plain `git -C <repo> ...`.
+  `SQUAD_DEVKIT_GUARD=0` disables the guard (logged human decision only). It
+  does not catch shell writes (`sed -i`, redirects): never use them on project
+  files. Read the reviewer's verdict before merging: `completed` means it ran,
+  not that it approved.
+- New or empty repos: `squad-worker --clone <url>` or `--init` with
+  `--project`, not your own git; repos with no commits run in place.
+  `.claude/` is excluded automatically.
+- Browser, dashboard, and DNS actions go in `## Manual ops` of the plan. When done, run
 `squad leave <joined ID>` from `~/.squad-devkit`.
 
 ## Choose the worker
@@ -78,7 +107,11 @@ squad-monitor --all                  # live table of every run in any terminal
 
 A report is a claim, not proof: read the diff and rerun the verification
 before merging. Merge one worker at a time. Conflicts leave standard markers
-in the listed files. Never commit or push without the human's approval.
+in the listed files. `--merge` refuses high-risk plans or sensitive patches
+(auth, secret, token, `.env`, `_headers`, `netlify.toml`, `vercel.json`,
+security paths; CSP, Authorization, API-key, private-key lines) without a newer
+reviewer run on the same plan; `--override-review "<reason>"` records an
+override in the plan. High-risk pushes also need `- review: <repo>`. Never commit or push without the human's approval.
 Workers that fail, time out, or stall report back instead of hanging; rerun
 or reassign their task.
 
