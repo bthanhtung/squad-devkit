@@ -219,6 +219,11 @@ SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod 
 printf '{"statusLine":{"type":"command","command":"my-own-statusline"}}' >"$HOME/.claude/settings.json"
 rm -f "$MANAGER_TEST_LOG.settings"
 SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod logs'
+[[ -e "$MANAGER_TEST_LOG.settings" ]] || fail
+[[ "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$MANAGER_TEST_LOG.settings")" == *'squad-devkit-manager-guard.sh'* ]] || fail
+[[ -z "$(jq -r '.statusLine // empty' "$MANAGER_TEST_LOG.settings")" ]] || fail
+rm -f "$MANAGER_TEST_LOG.settings"
+SQUAD_DEVKIT_GUARD=0 SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod logs'
 [[ ! -e "$MANAGER_TEST_LOG.settings" ]] || fail
 bash -n "$repo_root/scripts/completions/squad-devkit.bash"
 # Source in subshell to test bash completion without errors

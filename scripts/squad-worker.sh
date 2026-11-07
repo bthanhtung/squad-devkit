@@ -14,6 +14,8 @@ done
 script_dir="$(cd "$(dirname "$source_file")" && pwd)"
 source "$script_dir/lib/squad-worktree.sh"
 source "$script_dir/lib/squad-panes.sh"
+# shellcheck source=lib/squad-plan.sh
+source "$script_dir/lib/squad-plan.sh"
 
 usage() {
   cat <<'EOF'
@@ -21,9 +23,10 @@ Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FIL
                     [--role ROLE] [--title TITLE] [--project DIR]
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
                     [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
+                    [--plan FILE | --no-plan "REASON"] [--clone URL] [--init]
        squad-worker --list
        squad-worker --stop <worker-id|all>
-       squad-worker --merge <worker-id> [--project DIR]
+       squad-worker --merge <worker-id> [--project DIR] [--override-review "REASON"]
        squad-worker --diff <worker-id> [--project DIR]
        squad-worker --discard <worker-id|all> [--project DIR]
 
@@ -59,6 +62,17 @@ Options:
   --sandbox          Run shell commands in engine sandbox (default)
   --no-sandbox       Disable engine sandbox
   --manager ID       Manager agent ID that owns the task (default: manager)
+  --plan FILE        Plan the work follows (see templates/devkit/plan.md.example);
+                     validated, recorded in the status file and the report. Required
+                     in manager context (--manager, SQUAD_MANAGER_ID, or
+                     SQUAD_WORKER_REQUIRE_PLAN=1; SQUAD_WORKER_REQUIRE_PLAN=0 disables)
+  --no-plan REASON   Run without a plan and record why (excludes --plan)
+  --clone URL        git clone URL into --project first, if that directory is missing
+  --init             Create --project if missing and git init it (no commits);
+                     a repository without commits runs in place, without a worktree
+  --override-review REASON
+                     With --merge: merge despite a missing review of a high-risk or
+                     sensitive patch; the reason is recorded in the plan
   --list             Show worker runs that are still running
   --stop ID|all      Stop a running worker (or all of them); it reports to the manager
   --merge ID         Apply a worker's worktree changes to the project (three-way;
@@ -86,6 +100,12 @@ brief_file=""
 profile="${SQUAD_WORKER_CODEX_PROFILE:-high}"
 model=""
 manager_id="${SQUAD_MANAGER_ID:-manager}"
+manager_flag_set=""
+plan_argument=""
+no_plan_reason=""
+clone_url=""
+init_project=0
+override_review=""
 project_directory=""
 timeout_minutes="${SQUAD_WORKER_TIMEOUT:-45}"
 stall_minutes="${SQUAD_WORKER_STALL:-10}"
@@ -97,9 +117,20 @@ worktree_mode="${SQUAD_WORKER_WORKTREE:-auto}"
 sandbox_mode="${SQUAD_WORKER_SANDBOX:-1}"
 sandbox_flag_set=""
 id_pattern='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+# Collapses a free-text reason to one trimmed line of at most 200 characters and
+# prints it: one_line_reason <flag> <text>. Returns 1 when nothing is left.
+one_line_reason() {
+  local text
+  text="$(printf '%s' "$2" | tr '\r\n' '  ' | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print substr($0, 1, 200) }')"
+  if [[ -z "$text" ]]; then
+    echo "$1 needs a reason" >&2
+    return 1
+  fi
+  printf '%s' "$text"
+}
 while (( $# > 0 )); do
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--model|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff)
+    --engine|--role|--title|--brief|--brief-file|--profile|--model|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -113,7 +144,11 @@ while (( $# > 0 )); do
         --profile) profile="$2" ;;
         --model) model="$2" ;;
         --mcp) keep_mcp+=("$2") ;;
-        --manager) manager_id="$2" ;;
+        --manager) manager_id="$2"; manager_flag_set=1 ;;
+        --plan) plan_argument="$2" ;;
+        --no-plan) no_plan_reason="$(one_line_reason --no-plan "$2")" || exit 2 ;;
+        --clone) clone_url="$2" ;;
+        --override-review) override_review="$(one_line_reason --override-review "$2")" || exit 2 ;;
         --project) project_directory="$2" ;;
         --timeout) timeout_minutes="$2" ;;
         --stop) action=stop; stop_target="$2" ;;
@@ -124,6 +159,7 @@ while (( $# > 0 )); do
       shift
       ;;
     --all-mcp) all_mcp=1 ;;
+    --init) init_project=1 ;;
     --worktree) worktree_mode=1 ;;
     --no-worktree) worktree_mode=0 ;;
     --sandbox) sandbox_mode=1; sandbox_flag_set+=s ;;
@@ -141,6 +177,11 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+if [[ -n "$override_review" && "$action" != merge ]]; then
+  echo "--override-review only applies to --merge" >&2
+  exit 2
+fi
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -202,12 +243,20 @@ running_status_files() {
   return 0
 }
 
+# Status files of one worker's runs, newest first. Names are <id>-YYYYMMDD-HHMMSS.status,
+# so the id match is exact (`dev` does not match `dev-1-...`).
+worker_status_files() {
+  local d='[0-9]'
+  ls -t .squad/workers/"$1"-$d$d$d$d$d$d$d$d-$d$d$d$d$d$d.status 2>/dev/null
+  return 0
+}
+
 # The newest status file of a worker's runs that used a worktree.
 latest_status_with_worktree() {
   local file
   while IFS= read -r file; do
     [[ -n "$(status_get "$file" worktree)" ]] && { printf '%s\n' "$file"; return 0; }
-  done < <(ls -t .squad/workers/"$1"-*.status 2>/dev/null)
+  done < <(worker_status_files "$1")
   return 0
 }
 
@@ -222,6 +271,133 @@ unmerged_worktrees() {
     printf '  %s  %s\n' "$id" "$path"
   done < <(ls -t .squad/workers/*.status 2>/dev/null)
   return 0
+}
+
+# Why a patch needs a review before it is merged, one reason per line. The patch is
+# read per file. Only *.md, *.mdx and *.rst count as documentation: they skip the
+# security-folder and content checks, but secret-looking paths and private keys are
+# checked in every file. Both sides of a rename are checked.
+sensitive_reasons() {
+  awk '
+    function is_doc(path,   lower) {
+      lower = tolower(path)
+      return lower ~ /\.(md|mdx|rst)$/
+    }
+    function path_sensitive(path, doc,   lower, n, parts, i, stem) {
+      lower = tolower(path)
+      if (lower ~ /secret|credential|password|private[_-]key/) return 1
+      if (lower ~ /token(s)?([^a-z]|$)/) return 1
+      if (lower ~ /_headers|netlify\.toml|vercel\.json/) return 1
+      if (!doc && lower ~ /security/) return 1
+      n = split(lower, parts, "/")
+      for (i = 1; i <= n; i++) {
+        if (parts[i] == ".env" || parts[i] ~ /^\.env\./) return 1
+        stem = parts[i]
+        sub(/\..*$/, "", stem)
+        if (stem ~ /^o?auth/ && stem !~ /^author/) return 1
+      }
+      return 0
+    }
+    function report(path) {
+      if (path in seen) return
+      seen[path] = 1
+      if (path_sensitive(path, is_doc(path))) print "patch touches " path
+    }
+    /^diff --git / {
+      rest = $0
+      sub(/^diff --git /, "", rest)
+      gsub(/"/, "", rest)
+      len = length(rest)
+      a = ""
+      b = ""
+      if (len % 2 == 1) {
+        half = (len - 5) / 2
+        if (half > 0 && substr(rest, 1, 2) == "a/" && substr(rest, half + 3, 3) == " b/" &&
+            substr(rest, 3, half) == substr(rest, half + 6)) {
+          a = substr(rest, 3, half)
+          b = a
+        }
+      }
+      if (a == "") {
+        # A rename (or an unusual header): split at the first " b/".
+        i = index(rest, " b/")
+        if (i > 0) {
+          a = substr(rest, 1, i - 1)
+          sub(/^a\//, "", a)
+          b = substr(rest, i + 3)
+        } else {
+          a = rest
+          b = rest
+        }
+      }
+      report(a)
+      if (b != a) report(b)
+      doc = is_doc(a) && is_doc(b)
+      next
+    }
+    $0 !~ /^[+-]/ || $0 ~ /^(\+\+\+|---)/ { next }
+    {
+      low = tolower($0)
+      if ($0 ~ /BEGIN [A-Za-z ]*PRIVATE KEY/ && !pk++) print "patch changes a private key"
+      if (doc) next
+      if (low ~ /content-security-policy/ && !csp++) print "patch changes a Content-Security-Policy line"
+      if (low ~ /authorization/ && !authz++) print "patch changes an Authorization line"
+      if (low ~ /api[_-]?key/ && !apikey++) print "patch changes an API key line"
+    }
+  ' "$1"
+}
+
+# True when another worker with role reviewer finished the same plan after the
+# target's last finish: review_exists <target status file> <plan>.
+review_exists() {
+  local target_status="$1" plan="$2" target_finished file finished state
+  # A worker without a real plan cannot be reviewed against one.
+  [[ -n "$plan" && "$plan" != none ]] || return 1
+  target_finished="$(status_get "$target_status" finished)"
+  target_finished="${target_finished:-0}"
+  while IFS= read -r file; do
+    [[ "$(status_get "$file" role)" == reviewer ]] || continue
+    [[ "$(status_get "$file" worker)" != "$(status_get "$target_status" worker)" ]] || continue
+    [[ "$(status_get "$file" plan)" == "$plan" ]] || continue
+    state="$(status_get "$file" state)"
+    [[ "$state" == "completed" || "$state" == "done" ]] || continue
+    finished="$(status_get "$file" finished)"
+    if [[ "$finished" =~ ^[0-9]+$ ]] && (( finished > target_finished )); then
+      return 0
+    fi
+  done < <(ls -t .squad/workers/*.status 2>/dev/null)
+  return 1
+}
+
+# Returns 1 for a high-risk plan's or sensitive patch without a review, unless
+# --override-review was given: review_gate <target> <patch file>.
+review_gate() {
+  local target="$1" patch="$2" file plan="" reasons="" sensitive
+  file="$(worker_status_files "$target" | head -n 1)"
+  [[ -z "$file" ]] || plan="$(status_get "$file" plan)"
+  if [[ -n "$plan" && "$plan" != none && -f "$plan" && "$(plan_field "$plan" risk)" == high ]]; then
+    reasons="plan risk is high"
+  fi
+  sensitive="$(sensitive_reasons "$patch" | paste -sd ';' - | sed 's/;/; /g')"
+  reasons="${reasons:+$reasons; }$sensitive"
+  reasons="${reasons%; }"
+  [[ -n "$reasons" ]] || return 0
+  if [[ -n "$file" ]] && review_exists "$file" "$plan"; then
+    return 0
+  fi
+  if [[ -n "$override_review" ]]; then
+    echo "squad-worker: review override for $target: $override_review"
+    if [[ -n "$plan" && "$plan" != none && -f "$plan" ]]; then
+      plan_append_approval "$plan" "- review-override: $target — $override_review ($(date +%Y-%m-%d))"
+    fi
+    return 0
+  fi
+  if [[ -z "$plan" || "$plan" == none ]]; then
+    echo "squad-worker: merging $target needs a review: $reasons. $target has no plan, so a reviewer cannot satisfy the gate: rerun the worker with --plan <plan>, or pass --override-review \"<reason>\"." >&2
+    return 1
+  fi
+  echo "squad-worker: merging $target needs a review: $reasons. Run a reviewer with --plan $plan, or pass --override-review \"<reason>\"." >&2
+  return 1
 }
 
 if [[ "$action" =~ ^(stop|merge|discard|diff)$ ]] &&
@@ -317,6 +493,8 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
     if [[ ! -s "$patch_file" ]]; then
       worktree_remove "$root" "$target"
       echo "$target made no changes; removed its worktree."
+    elif ! review_gate "$target" "$patch_file"; then
+      exit_status=3
     elif apply_output="$(worktree_apply "$root" "$patch_file")"; then
       worktree_remove "$root" "$target"
       echo "Merged $target into $root ($(git apply --numstat "$patch_file" | wc -l | tr -d ' ') files, uncommitted). Worktree removed."
@@ -347,6 +525,42 @@ fi
 if [[ "$sandbox_flag_set" == *s* && "$sandbox_flag_set" == *n* ]]; then
   echo "--sandbox and --no-sandbox are mutually exclusive" >&2
   exit 2
+fi
+if [[ -n "$plan_argument" && -n "$no_plan_reason" ]]; then
+  echo "--plan and --no-plan are mutually exclusive" >&2
+  exit 2
+fi
+if [[ -n "$no_plan_reason" && -z "${no_plan_reason//[[:space:]]/}" ]]; then
+  echo "--no-plan needs a reason" >&2
+  exit 2
+fi
+if [[ -n "$clone_url" && -z "$project_directory" ]]; then
+  echo "--clone needs --project" >&2
+  exit 2
+fi
+# Manager context: a plan is required unless SQUAD_WORKER_REQUIRE_PLAN=0.
+manager_context=0
+if [[ -n "$manager_flag_set" || -n "${SQUAD_MANAGER_ID:-}" || "${SQUAD_WORKER_REQUIRE_PLAN:-}" == 1 ]]; then
+  manager_context=1
+fi
+[[ "${SQUAD_WORKER_REQUIRE_PLAN:-}" != 0 ]] || manager_context=0
+if (( manager_context == 1 )) && [[ -z "$plan_argument" && -z "$no_plan_reason" ]]; then
+  echo 'squad-worker: a plan is required in manager context. Pass --plan .squad/plans/<name>.md (see templates/devkit/plan.md.example) or --no-plan "<reason>".' >&2
+  exit 2
+fi
+plan_path=none
+plan_line="Plan: none (override: ${no_plan_reason:-no plan given})"
+if [[ -n "$plan_argument" ]]; then
+  plan_directory="$(cd "$(dirname "$plan_argument")" 2>/dev/null && pwd || true)"
+  plan_path="${plan_directory:-$(dirname "$plan_argument")}/$(basename "$plan_argument")"
+  if ! plan_problems="$(plan_validate "$plan_path")"; then
+    {
+      echo "squad-worker: plan $plan_path is incomplete:"
+      printf '%s\n' "$plan_problems" | sed 's/^/  /'
+    } >&2
+    exit 2
+  fi
+  plan_line="Plan: $plan_path"
 fi
 case "$engine" in
   claude|codex|opencode|grok|agy|ccr) ;;
@@ -380,6 +594,28 @@ if [[ "$engine" == ccr ]]; then
   require_command curl
 fi
 
+if [[ -n "$clone_url" ]]; then
+  if [[ -d "$project_directory" ]]; then
+    echo "squad-worker: $project_directory already exists; ignoring --clone."
+  else
+    require_command git
+    GIT_ALLOW_PROTOCOL="${GIT_ALLOW_PROTOCOL:-file:git:http:https:ssh}" \
+      git clone -- "$clone_url" "$project_directory" || exit 1
+  fi
+fi
+if (( init_project == 1 )) && [[ -n "$project_directory" ]]; then
+  require_command git
+  project_existed=0
+  [[ ! -d "$project_directory" ]] || project_existed=1
+  mkdir -p "$project_directory"
+  if ! git -C "$project_directory" rev-parse --git-dir >/dev/null 2>&1; then
+    (( project_existed == 0 )) || echo "squad-worker: initialising a git repository in $project_directory."
+    git -C "$project_directory" init -q -b main 2>/dev/null || {
+      git -C "$project_directory" init -q
+      git -C "$project_directory" symbolic-ref HEAD refs/heads/main
+    }
+  fi
+fi
 if [[ -n "$project_directory" ]]; then
   if [[ ! -d "$project_directory" ]]; then
     echo "Project directory does not exist: $project_directory" >&2
@@ -464,6 +700,9 @@ if (( use_worktree == 1 )); then
       echo "--worktree needs a git repository: $project_directory" >&2
       exit 2
     fi
+  elif [[ "$worktree_mode" != 1 ]] && ! git -C "$repository_root" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    echo "squad-worker: $project_directory has no commits yet; running $worker_id in place (no worktree)."
+    repository_root=""
   elif worktree_path="$(worktree_create "$repository_root" "$worker_id")"; then
     worktree_base_commit="$(worktree_base "$repository_root" "$worker_id")"
     prefix="$(git -C "$project_directory" rev-parse --show-prefix)"
@@ -473,6 +712,9 @@ if (( use_worktree == 1 )); then
     exit 1
   fi
 fi
+
+# Agent settings under .claude/ stay out of the repository's status.
+worktree_exclude_claude "$engine_directory"
 
 create_output="$(squad task create "$manager_id" "$worker_id" --title "$title" --body "$brief")"
 task_id="$(printf '%s\n' "$create_output" | sed -n 's/^Created task \([^ ]*\) for .*/\1/p')"
@@ -505,6 +747,8 @@ $role_instructions
 
 Working directory: $engine_directory${worktree_path:+
 This is your own git worktree of $repository_root, isolated from other workers. The manager reviews and merges your changes, so do not commit, push, or switch branches.}
+
+$plan_line
 
 $brief
 
@@ -552,6 +796,11 @@ write_status() {
       "$workspace_root/$log_file" "$workspace_root/$report_file"
     printf 'repository=%s\nworktree=%s\nbase=%s\npatch=%s\n' "$repository_root" "$worktree_path" \
       "$worktree_base_commit" "${patch_file:+$workspace_root/$patch_file}"
+    if [[ "$plan_path" == none ]]; then
+      printf 'plan=none\nplan_override=%s\n' "$no_plan_reason"
+    else
+      printf 'plan=%s\n' "$plan_path"
+    fi
   } >"$status_file.tmp"
   mv "$status_file.tmp" "$status_file"
 }
@@ -820,6 +1069,10 @@ if (( status != 0 )) || [[ -z "${report//[[:space:]]/}" ]]; then
 fi
 
 write_status completed 0
+report="$plan_line
+
+$report"
+printf '%s\n' "$report" >"$report_file"
 squad task complete "$worker_id" "$task_id" --summary "$(printf '%s' "$report" | cut -c1-4000)" >/dev/null
 squad send --task-id "$task_id" "$worker_id" "$manager_id" \
   "$worker_id ($engine) completed task $task_id. Report: $workspace_root/$report_file${worktree_note:+ $worktree_note}" >/dev/null || true
