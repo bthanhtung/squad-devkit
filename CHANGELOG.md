@@ -7,6 +7,7 @@ releases.
 ## [Unreleased]
 
 ### Added
+- Add session-only `--yolo` for Claude, Codex, and AGY managers/workers, with explicit backend/fallback inheritance and sandbox conflict checks.
 - Plan guardrails: `squad-worker --plan FILE` validates a plan
   (`templates/devkit/plan.md.example`) and records it in the status file and
   report; manager context requires it unless `--no-plan "REASON"` or

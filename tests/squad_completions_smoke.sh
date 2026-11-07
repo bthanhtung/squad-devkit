@@ -14,6 +14,8 @@ check_bash() {
   "$function"
   [[ "${COMPREPLY[*]}" == "$expected" ]] || fail "Bash $*: ${COMPREPLY[*]}"
 }
+check_bash _squad_devkit --yolo squad-devkit --yo
+check_bash _squad_worker --yolo squad-worker dev-1 --yo
 check_bash _squad_devkit --doctor squad-devkit --doc
 check_bash _squad_devkit codex squad-devkit --manager co
 check_bash _squad_devkit agy squad-devkit --workers ag
@@ -41,6 +43,8 @@ check() {
   print -ru2 -- "FAIL: Zsh $input; expected $expected; output: $output"
   return 1
 }
+check 'squad-devkit --yo' 'squad-devkit --yolo '
+check 'squad-worker dev-1 --yo' 'squad-worker dev-1 --yolo '
 check 'squad-devkit --doc' 'squad-devkit --doctor '
 check 'squad-devkit --manager co' 'squad-devkit --manager codex '
 check 'squad-devkit --workers ag' 'squad-devkit --workers agy '

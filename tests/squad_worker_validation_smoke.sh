@@ -35,6 +35,9 @@ done
 expect_usage_error "at least 1" "$worker" w1 --engine agy --brief hi --timeout 0
 expect_usage_error "Brief file not readable: $tmpdir/missing" "$worker" w1 --engine agy --brief-file "$tmpdir/missing"
 expect_usage_error "mutually exclusive" "$worker" w1 --engine agy --brief hi --sandbox --no-sandbox
+# YOLO does not bypass the plan gate in manager context.
+expect_usage_error "a plan is required" env -u SQUAD_WORKER_REQUIRE_PLAN SQUAD_MANAGER_ID=manager-1 \
+  "$worker" x --engine claude --yolo --brief y
 expect_usage_error "Unknown worker: bogus (use one of:" "$devkit" --dry-run --no-prompt --workers claude,bogus "$tmpdir"
 expect_usage_error "Unknown worker: nope" "$devkit" --dry-run --no-prompt --disable-workers nope "$tmpdir"
 expect_usage_error "Unknown worker: envbad" env SQUAD_DEVKIT_WORKERS=envbad "$devkit" --dry-run --no-prompt "$tmpdir"

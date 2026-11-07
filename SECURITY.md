@@ -31,3 +31,30 @@ and a fix or mitigation plan once the report is confirmed.
 - **Status line.** For claude-hud users, the manager session enables
   claude-hud's `--extra-cmd` (`CLAUDE_HUD_ALLOW_EXTRA_CMD=1`) only to run
   squad-devkit's own savings command.
+
+### Opt-in YOLO sessions
+
+`squad-devkit --yolo --manager codex` starts a session with native engine
+permission bypass; workers started by that manager inherit it. Claude, Codex,
+and AGY are supported. `squad-worker dev-1 --engine claude --yolo --brief "Run the checks"`
+opts in a single worker independently. Without opt-in, existing behavior is unchanged.
+
+The session boolean `SQUAD_DEVKIT_YOLO=1` carries opt-in through here, tmux,
+Ghostty, and manager fallback; `0` disables inheritance. It is never saved to
+configuration. Unsupported engines reject YOLO. YOLO conflicts with worker
+`--sandbox` and `SQUAD_WORKER_SANDBOX=1`; omit YOLO to use sandboxing.
+YOLO bypasses engine permission prompts and sandboxing only. The squad-worker
+plan gate and merge review gate still apply to every engine. The manager guard
+hook is installed only for Claude managers on machines with jq; it relies on
+Claude Code honoring PreToolUse denies in bypass mode, which squad-devkit does
+not test. Codex and AGY managers have no guard hook. A YOLO manager cannot start
+workers on engines without YOLO support (opencode, grok, ccr) unless
+SQUAD_DEVKIT_YOLO=0.
+Claude uses `--dangerously-skip-permissions` with session sandboxing disabled,
+Codex uses `--dangerously-bypass-approvals-and-sandbox`, and AGY uses
+`--dangerously-skip-permissions` without `--sandbox`.
+
+Use only in an environment you trust: this bypasses engine permission checks
+and engine sandboxing, not OS/admin restrictions. Conversational instructions
+are not permission controls. No global settings or role instructions change.
+An existing tmux session keeps its original mode; exit it before changing modes.

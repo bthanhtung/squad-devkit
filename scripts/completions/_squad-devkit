@@ -59,6 +59,7 @@ _squad_devkit() {
     '--list[List git projects found on machine]' \
     '--ghostty[Run manager in a Ghostty window]' \
     '--tmux[Run manager in a tmux session]' \
+    '--yolo[Bypass engine permissions and sandbox for this session]' \
     '--dry-run[Print manager command only]' \
     '--task[Objective for manager]:objective:' \
     '--prompt[Objective for manager]:objective:' \
@@ -87,6 +88,7 @@ _squad_worker() {
     '--timeout[Timeout in minutes]:timeout:' \
     '--worktree[Work in isolated git worktree]' \
     '--no-worktree[Work directly in project]' \
+    '--yolo[Bypass engine permissions and sandbox (claude, codex, agy)]' \
     '--sandbox[Run shell commands in engine sandbox]' \
     '--no-sandbox[Disable engine sandbox]' \
     '--manager[Manager agent ID]:manager:' \

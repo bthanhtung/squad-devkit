@@ -59,6 +59,8 @@ Options:
   --worktree         Work in an isolated git worktree (default in git repositories,
                      except for the reviewer, researcher and security roles)
   --no-worktree      Work directly in the project directory
+  --yolo             Bypass permissions and sandbox (claude, codex, agy only;
+                     inherited from SQUAD_DEVKIT_YOLO=1)
   --sandbox          Run shell commands in engine sandbox (default)
   --no-sandbox       Disable engine sandbox
   --manager ID       Manager agent ID that owns the task (default: manager)
@@ -116,6 +118,7 @@ stop_target=""
 worktree_mode="${SQUAD_WORKER_WORKTREE:-auto}"
 sandbox_mode="${SQUAD_WORKER_SANDBOX:-1}"
 sandbox_flag_set=""
+yolo="${SQUAD_DEVKIT_YOLO:-0}"
 id_pattern='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 # Collapses a free-text reason to one trimmed line of at most 200 characters and
 # prints it: one_line_reason <flag> <text>. Returns 1 when nothing is left.
@@ -162,6 +165,7 @@ while (( $# > 0 )); do
     --init) init_project=1 ;;
     --worktree) worktree_mode=1 ;;
     --no-worktree) worktree_mode=0 ;;
+    --yolo) yolo=1 ;;
     --sandbox) sandbox_mode=1; sandbox_flag_set+=s ;;
     --no-sandbox) sandbox_mode=0; sandbox_flag_set+=n ;;
     --list) action=list ;;
@@ -525,6 +529,21 @@ fi
 if [[ "$sandbox_flag_set" == *s* && "$sandbox_flag_set" == *n* ]]; then
   echo "--sandbox and --no-sandbox are mutually exclusive" >&2
   exit 2
+fi
+case "$yolo" in
+  0|1) ;;
+  *) echo 'SQUAD_DEVKIT_YOLO must be 0 or 1' >&2; exit 2 ;;
+esac
+if [[ "$yolo" == 1 ]]; then
+  case "$engine" in
+    claude|codex|agy) ;;
+    *) echo 'YOLO supports only claude, codex, and agy' >&2; exit 2 ;;
+  esac
+  if [[ "${SQUAD_WORKER_SANDBOX:-}" == 1 || "$sandbox_flag_set" == *s* ]]; then
+    echo 'YOLO and --sandbox (or SQUAD_WORKER_SANDBOX=1) are mutually exclusive' >&2
+    exit 2
+  fi
+  sandbox_mode=0
 fi
 if [[ -n "$plan_argument" && -n "$no_plan_reason" ]]; then
   echo "--plan and --no-plan are mutually exclusive" >&2
@@ -905,6 +924,9 @@ case "$engine" in
     if [[ "$sandbox_mode" == 0 ]]; then
       sandbox_arguments=(--sandbox danger-full-access)
     fi
+    if [[ "$yolo" == 1 ]]; then
+      sandbox_arguments=(--dangerously-bypass-approvals-and-sandbox)
+    fi
     engine_command=(codex exec --json --cd "$engine_directory" --profile "$profile" --ephemeral
       --skip-git-repo-check ${sandbox_arguments[@]+"${sandbox_arguments[@]}"} ${add_directory[@]+"${add_directory[@]}"}
       ${mcp_arguments[@]+"${mcp_arguments[@]}"} --output-last-message "$absolute_report" "$prompt")
@@ -921,9 +943,11 @@ case "$engine" in
     if [[ -n "${SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS:-}" ]]; then
       claude_allowed_tools=(--allowedTools "$SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS")
     fi
+    permission_arguments=(--permission-mode "${SQUAD_WORKER_CLAUDE_PERMISSION_MODE:-acceptEdits}")
+    [[ "$yolo" == 1 ]] && permission_arguments=(--dangerously-skip-permissions)
     engine_command=(claude -p --model "$model" --strict-mcp-config --disable-slash-commands
       --no-session-persistence --tools "${SQUAD_WORKER_CLAUDE_TOOLS:-Read,Edit,Write,Glob,Grep,Bash}"
-      --permission-mode "${SQUAD_WORKER_CLAUDE_PERMISSION_MODE:-acceptEdits}"
+      "${permission_arguments[@]}"
       ${claude_allowed_tools[@]+"${claude_allowed_tools[@]}"} --settings "$claude_settings"
       --add-dir "$workspace_root" --output-format stream-json --verbose "$prompt")
     ;;
@@ -940,6 +964,7 @@ case "$engine" in
     ;;
   agy)
     engine_command=(agy -p "$prompt" --mode accept-edits)
+    [[ "$yolo" == 1 ]] && engine_command+=(--dangerously-skip-permissions)
     [[ -n "$model" ]] && engine_command+=(--model "$model")
     ;;
   opencode)

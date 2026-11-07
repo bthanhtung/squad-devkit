@@ -204,6 +204,14 @@ only. squad-devkit never stores credentials, and worker prompts forbid reading
 them from configuration files. See [SECURITY.md](./SECURITY.md) for details and
 how to report a vulnerability.
 
+### Opt-in YOLO sessions
+
+`squad-devkit --yolo` lets Claude, Codex, and AGY sessions skip their engine
+permission prompts and sandboxing. It is off by default, never saved to
+configuration, and rejected by engines without YOLO support. See
+[docs/squad-devkit.md](./docs/squad-devkit.md#opt-in-yolo-sessions) for usage and
+per-engine behavior, and [SECURITY.md](./SECURITY.md) for what still applies.
+
 ## FAQ
 
 **Why not just use Claude Code subagents?**
@@ -254,4 +262,3 @@ it must stay under GPL-3.0 with its source available.
 
 The code that comes from the upstream squad CLI keeps its original MIT license
 and copyright notice, in [LICENSES/MIT-squad.txt](./LICENSES/MIT-squad.txt).
-

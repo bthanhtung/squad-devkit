@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Fixtures must not inherit the invoking squad session.
+unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_DEVKIT_YOLO
 # Name the failing command, so CI logs show where a test stopped.
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
@@ -172,6 +174,37 @@ if "$repo_root/scripts/squad-devkit.sh" "$project_directory" --no-attach >"$temp
 fi
 rg -q 'An older multi-pane devkit session exists' "$temp_directory/error"
 tmux kill-session -t "$session_name"
+# A fresh tmux server must receive opt-in through the launch command.
+"$repo_root/scripts/squad-devkit.sh" "$project_directory" --tmux --no-attach --yolo
+for attempt in {1..30}; do
+  if rg -q '^claude:--dangerously-skip-permissions' "$DEVKIT_TEST_LOG"; then break; fi
+  sleep 1
+done
+rg -q '^claude:--dangerously-skip-permissions' "$DEVKIT_TEST_LOG"
+# Keep the same server alive with stale opt-in from an earlier launch.
+tmux new-session -d -s yolo-env-keeper
+tmux set-environment -g SQUAD_DEVKIT_YOLO 1
+tmux kill-session -t "$session_name"
+for caller_yolo in 0 unset 1; do
+  : >"$DEVKIT_TEST_LOG"
+  if [[ "$caller_yolo" == unset ]]; then
+    env -u SQUAD_DEVKIT_YOLO "$repo_root/scripts/squad-devkit.sh" "$project_directory" --tmux --no-attach
+  else
+    SQUAD_DEVKIT_YOLO="$caller_yolo" "$repo_root/scripts/squad-devkit.sh" "$project_directory" --tmux --no-attach
+  fi
+  for attempt in {1..30}; do
+    if [[ -s "$DEVKIT_TEST_LOG" ]]; then break; fi
+    sleep 1
+  done
+  if [[ "$caller_yolo" == 1 ]]; then
+    rg -q '^claude:--dangerously-skip-permissions' "$DEVKIT_TEST_LOG"
+  else
+    rg -q '^claude:--permission-mode auto ' "$DEVKIT_TEST_LOG"
+    [[ "$(cat "$DEVKIT_TEST_LOG")" != *--dangerously-skip-permissions* ]] || fail
+  fi
+  tmux kill-session -t "$session_name"
+done
+tmux kill-session -t yolo-env-keeper
 
 printf '<!-- squad-devkit template: old\nold manager role\n' >"$project_directory/.squad/roles/manager-devkit.md"
 printf 'my own dev role\n' >"$project_directory/.squad/roles/dev.md"
@@ -212,6 +245,13 @@ rg -Fq 'lib/squad-devkit-manager.sh' "$manager_script"
 rg -Fq 'Do not repeat these instructions to the human.' "$manager_script"
 rg -Fq 'export SQUAD_DEVKIT_GHOSTTY_TERMINAL="$(osascript -e' "$manager_script"
 bash -n "$manager_script"
+# The generated Ghostty script carries opt-in even without terminal inheritance.
+"$repo_root/scripts/squad-devkit.sh" "$project_directory" --ghostty --yolo
+manager_script="$(sed -n '3p' "$DEVKIT_OSASCRIPT_LOG")"
+rg -Fq 'exec env SQUAD_DEVKIT_YOLO=1 ' "$manager_script"
+# A real wrapper process passes session opt-in to its fake manager child.
+"$repo_root/scripts/squad-devkit.sh" "$project_directory" --here --yolo
+rg -q '^here:.*--dangerously-skip-permissions' "$DEVKIT_TEST_LOG"
 doctor_dir="$temp_directory/doctor-check"
 mkdir -p "$doctor_dir"
 doctor_out="$("$repo_root/scripts/squad-devkit.sh" --doctor)"
