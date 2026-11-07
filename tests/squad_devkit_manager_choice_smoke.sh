@@ -224,6 +224,8 @@ SQUAD_DEVKIT_YOLO=1 TRANSCRIPT="$temp_directory/transcript.jsonl" SQUAD_DEVKIT_H
   "$wrapper" claude 'You are the {{MANAGER_LABEL}} manager ({{MANAGER_ID}}).' 'check prod logs' 2>"$temp_directory/handoff-log"
 grep -qx 'codex-arg:--dangerously-bypass-approvals-and-sandbox' "$MANAGER_TEST_LOG"
 [[ "$(jq -r '.sandbox.enabled' "$MANAGER_TEST_LOG.settings")" == false ]] || fail
+# YOLO keeps the manager guard hook.
+[[ "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$MANAGER_TEST_LOG.settings")" == *'squad-devkit-manager-guard.sh'* ]] || fail
 grep -q 'Handing over to Codex CLI as manager' "$temp_directory/handoff-log"
 [[ "$(grep -c 'claude was not stopped' "$MANAGER_TEST_LOG")" == 0 ]] || fail
 [[ "$(jq -r '.hooks.StopFailure[0].matcher' "$MANAGER_TEST_LOG.settings")" == 'rate_limit|billing_error' ]] || fail
@@ -234,6 +236,13 @@ grep -q '^\*\*assistant\*\*: Plan written; starting logs-1.' .squad/managers/man
 grep -q '^## Squad tasks' .squad/managers/manager.handoff.md
 [[ ! -e .squad/managers/manager.handoff.json && ! -e .squad/managers/manager.settings.json ]] || fail
 [[ -z "$(squad agents | grep manager || true)" ]] || fail
+: >"$MANAGER_TEST_LOG"
+rm -f "$MANAGER_TEST_LOG.settings"
+SQUAD_DEVKIT_YOLO=1 SQUAD_DEVKIT_GUARD=0 SQUAD_DEVKIT_STATUSLINE=0 TRANSCRIPT="$temp_directory/transcript.jsonl" SQUAD_DEVKIT_HANDOFF_DELAY=0.2 \
+  "$wrapper" claude 'You are the {{MANAGER_LABEL}} manager ({{MANAGER_ID}}).' 'check prod logs' 2>"$temp_directory/handoff-noguard-log"
+[[ -e "$MANAGER_TEST_LOG.settings" ]] || fail
+[[ "$(jq -r '.sandbox.enabled' "$MANAGER_TEST_LOG.settings")" == false ]] || fail
+jq -e '.hooks.PreToolUse == null' "$MANAGER_TEST_LOG.settings" >/dev/null || fail
 : >"$MANAGER_TEST_LOG"
 TRANSCRIPT="$temp_directory/transcript.jsonl" SQUAD_DEVKIT_FALLBACK_MANAGER=none \
   "$wrapper" claude 'No fallback.' 'check prod logs'
@@ -247,6 +256,11 @@ SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod 
 printf '{"statusLine":{"type":"command","command":"my-own-statusline"}}' >"$HOME/.claude/settings.json"
 rm -f "$MANAGER_TEST_LOG.settings"
 SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod logs'
+[[ -e "$MANAGER_TEST_LOG.settings" ]] || fail
+[[ "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$MANAGER_TEST_LOG.settings")" == *'squad-devkit-manager-guard.sh'* ]] || fail
+[[ -z "$(jq -r '.statusLine // empty' "$MANAGER_TEST_LOG.settings")" ]] || fail
+rm -f "$MANAGER_TEST_LOG.settings"
+SQUAD_DEVKIT_GUARD=0 SQUAD_DEVKIT_FALLBACK_MANAGER=none "$wrapper" claude 'No fallback.' 'check prod logs'
 [[ ! -e "$MANAGER_TEST_LOG.settings" ]] || fail
 bash -n "$repo_root/scripts/completions/squad-devkit.bash"
 # Source in subshell to test bash completion without errors

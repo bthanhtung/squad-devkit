@@ -204,6 +204,14 @@ only. squad-devkit never stores credentials, and worker prompts forbid reading
 them from configuration files. See [SECURITY.md](./SECURITY.md) for details and
 how to report a vulnerability.
 
+### Opt-in YOLO sessions
+
+`squad-devkit --yolo` lets Claude, Codex, and AGY sessions skip their engine
+permission prompts and sandboxing. It is off by default, never saved to
+configuration, and rejected by engines without YOLO support. See
+[docs/squad-devkit.md](./docs/squad-devkit.md#opt-in-yolo-sessions) for usage and
+per-engine behavior, and [SECURITY.md](./SECURITY.md) for what still applies.
+
 ## FAQ
 
 **Why not just use Claude Code subagents?**
@@ -254,23 +262,3 @@ it must stay under GPL-3.0 with its source available.
 
 The code that comes from the upstream squad CLI keeps its original MIT license
 and copyright notice, in [LICENSES/MIT-squad.txt](./LICENSES/MIT-squad.txt).
-
-### Opt-in YOLO sessions
-
-`squad-devkit --yolo --manager codex` starts a session with native engine
-permission bypass; workers started by that manager inherit it. Claude, Codex,
-and AGY are supported. `squad-worker dev-1 --engine claude --yolo --brief "Run the checks"`
-opts in a single worker independently. Without opt-in, existing behavior is unchanged.
-
-The session boolean `SQUAD_DEVKIT_YOLO=1` carries opt-in through here, tmux,
-Ghostty, and manager fallback; `0` disables inheritance. It is never saved to
-configuration. Unsupported engines reject YOLO. YOLO conflicts with worker
-`--sandbox` and `SQUAD_WORKER_SANDBOX=1`; omit YOLO to use sandboxing.
-Claude uses `--dangerously-skip-permissions` with session sandboxing disabled,
-Codex uses `--dangerously-bypass-approvals-and-sandbox`, and AGY uses
-`--dangerously-skip-permissions` without `--sandbox`.
-
-Use only in an environment you trust: this bypasses engine permission checks
-and engine sandboxing, not OS/admin restrictions. Conversational instructions
-are not permission controls. No global settings or role instructions change.
-An existing tmux session keeps its original mode; exit it before changing modes.

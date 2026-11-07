@@ -10,8 +10,10 @@ export HOME="$tmpdir/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 mkdir -p "$HOME"
 # Keep the caller's environment from changing the outcome of any case below.
-unset SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS SQUAD_DEVKIT_WORKSPACE \
+unset SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS SQUAD_DEVKIT_WORKSPACE SQUAD_DEVKIT_YOLO \
   SQUAD_DEVKIT_CONFIG SQUAD_WORKER_SANDBOX SQUAD_WORKER_TIMEOUT SQUAD_WORKER_STALL
+# These cases are about argument validation, not the manager's plan requirement.
+export SQUAD_WORKER_REQUIRE_PLAN=0
 worker="$repo_root/scripts/squad-worker.sh"
 devkit="$repo_root/scripts/squad-devkit.sh"
 
@@ -33,6 +35,9 @@ done
 expect_usage_error "at least 1" "$worker" w1 --engine agy --brief hi --timeout 0
 expect_usage_error "Brief file not readable: $tmpdir/missing" "$worker" w1 --engine agy --brief-file "$tmpdir/missing"
 expect_usage_error "mutually exclusive" "$worker" w1 --engine agy --brief hi --sandbox --no-sandbox
+# YOLO does not bypass the plan gate in manager context.
+expect_usage_error "a plan is required" env -u SQUAD_WORKER_REQUIRE_PLAN SQUAD_MANAGER_ID=manager-1 \
+  "$worker" x --engine claude --yolo --brief y
 expect_usage_error "Unknown worker: bogus (use one of:" "$devkit" --dry-run --no-prompt --workers claude,bogus "$tmpdir"
 expect_usage_error "Unknown worker: nope" "$devkit" --dry-run --no-prompt --disable-workers nope "$tmpdir"
 expect_usage_error "Unknown worker: envbad" env SQUAD_DEVKIT_WORKERS=envbad "$devkit" --dry-run --no-prompt "$tmpdir"
