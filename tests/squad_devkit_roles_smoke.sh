@@ -155,7 +155,7 @@ squad join lead --role manager-devkit --client codex --protocol-version 2 >/dev/
 worker="$repo_root/scripts/squad-worker.sh"
 run_worker() {
   local id="$1" role="$2" brief="$3"
-  "$worker" "$id" --engine codex --manager lead --role "$role" --brief "$brief" >"$temp_directory/worker-$id.out" 2>&1 </dev/null ||
+  "$worker" "$id" --engine codex --manager lead --no-plan 'roles smoke' --role "$role" --brief "$brief" >"$temp_directory/worker-$id.out" 2>&1 </dev/null ||
     { cat "$temp_directory/worker-$id.out" >&2; fail "worker $id exited non-zero"; }
 }
 last_codex_call() {

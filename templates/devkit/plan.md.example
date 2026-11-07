@@ -1,0 +1,48 @@
+# <title>
+
+## Triage
+- Workstream: <code|debug|infra|security|docs|research>
+- Risk: moderate — <why; pick low, moderate or high>
+- Complexity: moderate — <why; pick low, moderate or high>
+- Needs human: <yes|no> — <open decision, if any>
+- squad-route: <json answer, or "not configured">
+
+## Goal
+<outcome, and how you will know it is done>
+
+## Findings
+- `<path>:<line>` — <what it does, what to follow or avoid>
+
+## Perspectives
+- Principal engineer: <what this perspective changed>
+- Engineering manager: <what this perspective changed>
+- Technical lead: <what this perspective changed>
+- QA/QC: <what this perspective changed>
+- End user: <what this perspective changed>
+
+## Decisions
+- <decision> — <why>
+
+## Tasks
+- <worker-id> (<engine>, <role>): <task>. Files: <owned files>. Depends on: <none|worker-id>.
+
+## Acceptance
+- <checkable criterion>; verify with `<command>` → <expected result>
+
+## Approvals
+<!-- Only the human grants approvals; record their words and the date, never self-approve.
+     Add lines under this comment, one per action:
+       - commit: /abs/path/to/repo — <human's words, date>
+       - push: /abs/path/to/repo — <human's words, date>
+       - review: /abs/path/to/repo   (after a reviewer passed a high-risk change)
+     A bare repo basename (legacy) also works but matches every repo with that name.
+     `squad-worker --merge --override-review` appends its own review-override line. -->
+
+## Manual ops
+- <browser, dashboard, or DNS action> — <why no worker can do it>
+
+## Follow-up: <name>
+- Request: <what the human asked for>
+- Files: <files the worker owns>
+- Acceptance: <checkable criterion>
+- Verify: `<command>` → <expected result>

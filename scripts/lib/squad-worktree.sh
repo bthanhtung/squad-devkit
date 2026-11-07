@@ -35,6 +35,28 @@ worktree_exclude_squad() {
   grep -qxE '/?\.squad/?' "$exclude" 2>/dev/null || printf '.squad/\n' >>"$exclude"
 }
 
+# Keeps .claude/ out of `git status` for a directory inside a git repository, through
+# the shared info/exclude (never the tracked .gitignore): worktree_exclude_claude <dir>.
+worktree_exclude_claude() {
+  local exclude top
+  git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  # --path-format needs git 2.31; older git prints a path relative to the top level.
+  if ! exclude="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || top=""
+    exclude="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || exclude=""
+    if [[ -n "$exclude" && "$exclude" != /* ]]; then
+      # Relative output is relative to the directory git ran in, which is $1.
+      exclude="$(cd "$1" && cd "$exclude" 2>/dev/null && pwd)" || exclude="${top:+$top/}$exclude"
+    fi
+  fi
+  exclude="$exclude/info/exclude"
+  if [[ "$exclude" == /info/exclude ]] || ! { mkdir -p "$(dirname "$exclude")" &&
+    { grep -qxE '/?\.claude/?' "$exclude" 2>/dev/null || printf '.claude/\n' >>"$exclude"; }; } 2>/dev/null; then
+    echo "squad-worker: could not exclude .claude/ from git status ($exclude not writable)." >&2
+  fi
+  return 0
+}
+
 # Prints a commit holding the repository's current working tree.
 worktree_snapshot() {
   local root="$1" index tree
@@ -99,7 +121,8 @@ worktree_patch() {
   local root="$1" id="$2" home base
   home="$(worktree_home "$root")" || return 1
   base="$(worktree_base "$root" "$id")" || return 1
-  git -C "$home/$id" diff --binary "$base" HEAD
+  # Agent settings under .claude/ are never part of a worker's deliverable.
+  git -C "$home/$id" diff --binary "$base" HEAD -- . ':(exclude).claude' ':(exclude,glob)**/.claude/**'
 }
 
 # Applies a patch to the repository's working tree with a three-way merge.
