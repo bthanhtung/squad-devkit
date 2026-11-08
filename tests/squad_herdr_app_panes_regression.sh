@@ -5,6 +5,10 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 temp="$(mktemp -d /tmp/squad-herdr-app-panes.XXXXXX)"
 trap 'rm -rf "$temp"' EXIT
 mkdir -p "$temp/bin" "$temp/state"
+for cli in claude codex; do
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$temp/bin/$cli"
+  chmod +x "$temp/bin/$cli"
+done
 export HERDR_APP_TEST_LOG="$temp/log"
 export HERDR_APP_INVENTORY="$temp/inventory.json"
 export HERDR_APP_COUNTER="$temp/counter"
