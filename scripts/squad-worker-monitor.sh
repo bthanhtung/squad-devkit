@@ -46,6 +46,15 @@ while (( $# > 0 )); do
   shift
 done
 
+source_file="${BASH_SOURCE[0]}"
+while [[ -L "$source_file" ]]; do
+  source_directory="$(cd "$(dirname "$source_file")" && pwd)"
+  link_target="$(readlink "$source_file")"
+  if [[ "$link_target" == /* ]]; then source_file="$link_target"
+  else source_file="$source_directory/$link_target"; fi
+done
+source "$(cd "$(dirname "$source_file")" && pwd)/lib/squad-worker-model.sh"
+
 status_get() {
   sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
 }
@@ -253,13 +262,25 @@ watch_run() {
 
   printf '%s%s%s · %s · role %s\n' "$bold" "$worker" "$reset" "$engine_label" "${role:-dev}"
   printf '%sTask:%s %s\n' "$dim" "$reset" "${title:0:$(( $(terminal_columns) - 7 ))}"
+  squad_worker_model_label "$file"; printf '\n'
   [[ -n "$worktree" ]] && printf '%sBranch:%s squad/%s (isolated worktree)\n' "$dim" "$reset" "$worker"
   rule
+  printf '%s in %s\n' "$(state_label "$(effective_state "$file")" "$(status_get "$file" reason)" "$(status_get "$file" exit)")" "$(format_duration "$(elapsed_seconds "$file")")"
+  if (( once == 0 )) && [[ -n "${SQUAD_WORKER_MONITOR_READY:-}" ]]; then
+    printf '%s\n' "$$" >"$SQUAD_WORKER_MONITOR_READY"
+  fi
 
   local printed=0 last_size=-1 size summary="" running_command="" state
   local calls="" failures="" files="" tokens_in="" tokens_cached="" tokens_out="" turns=""
-  local status_shown=0 line index
+  local status_shown=0 line index model_label last_model_label
+  last_model_label="$(squad_worker_model_label "$file")"
   while true; do
+    model_label="$(squad_worker_model_label "$file")"
+    if [[ "$model_label" != "$last_model_label" ]]; then
+      (( status_shown == 1 )) && printf '%s' "$clear_line" && status_shown=0
+      printf '%s\n' "$model_label"
+      last_model_label="$model_label"
+    fi
     state="$(effective_state "$file")"
     size="$(file_size "$log")"
     if [[ "$size" != "$last_size" || "$state" != running ]]; then
@@ -339,6 +360,7 @@ render_all() {
       "$(status_get "$file" worker)" "$engine" "$(status_get "$file" role)" "$state" \
       "$(format_duration "$(elapsed_seconds "$file")")" "${calls:-0}" "$tokens" \
       "$(status_get "$file" title | cut -c1-$(( columns > 90 ? columns - 90 : 10 )))")"$'\n'
+    frame+="$(squad_worker_model_label "$file")"$'\n'
   done < <(ls -t "$directory"/*.status 2>/dev/null)
   (( found == 1 )) || frame+="No worker runs in $directory yet."$'\n'
   if (( once == 1 )) || [[ ! -t 1 ]]; then

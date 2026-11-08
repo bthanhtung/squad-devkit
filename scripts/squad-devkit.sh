@@ -59,6 +59,8 @@ Without an objective the manager opens an interactive chat and asks for one firs
                 SQUAD_DEVKIT_MAX_MB (200), then exit; every launch does this too
   --clean-all   Remove every finished worker run, then exit
   --no-prompt   Skip the first-run manager question (or set SQUAD_DEVKIT_NO_PROMPT)
+  --yolo        Bypass engine permissions and sandbox for Claude/Codex/AGY managers
+                and their workers (session only; SQUAD_DEVKIT_YOLO=1)
   --dry-run     Show the manager command without changing the project
   --no-attach   tmux only: start the session in the background
   --version     Print the squad-devkit version
@@ -93,6 +95,7 @@ while (( $# > 0 )); do
     --here) backend=here ;;
     --tmux) backend=tmux ;;
     --ghostty) backend=ghostty ;;
+    --yolo) export SQUAD_DEVKIT_YOLO=1 ;;
     --dry-run) dry_run=1 ;;
     --no-attach) no_attach=1 ;;
     --no-prompt) no_prompt=1 ;;
@@ -460,8 +463,15 @@ run_doctor() {
 
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     pane_support="tmux split-pane"
+  elif [[ -n "$(squad_panes_orca_manager "$PWD")" ]] &&
+    command -v "$(squad_panes_orca_cli)" >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    pane_support="Orca split-pane (explicit manager terminal)"
   elif [[ "$(squad_panes_herdr_kind)" == herdr_app ]]; then
-    pane_support="Herdr app/core (monitor split unavailable: desktop pane mapping not verified)"
+    if [[ -n "$(squad_panes_herdr_app_manager)" ]]; then
+      pane_support="Herdr desktop split-pane (explicit manager terminal)"
+    else
+      pane_support="Herdr desktop (monitor split unavailable: manager terminal not resolved)"
+    fi
   elif [[ -n "$(squad_panes_herdr_manager)" ]]; then
     pane_support="herdr split-pane (TUI)"
   elif [[ -n "${ZELLIJ:-}" ]] && command -v zellij >/dev/null 2>&1; then
@@ -529,6 +539,7 @@ fi
 # Cleaning needs no manager, so it works where no manager CLI is installed.
 if (( clean_only == 0 )); then
   manager_client="$(resolve_manager "$manager_client" "$interactive")"
+  validate_yolo_client "$manager_client"
 fi
 
 # Without a project argument, use the repository containing the current
@@ -591,8 +602,15 @@ worker_command="$script_dir/squad-worker.sh"
 if (( ${#worker_engines[@]} == 0 )); then
   worker_line="No worker engine is installed, so do the work yourself instead of starting squad-worker."
 else
+  worker_catalog="$(source "$script_dir/lib/squad-worker-model.sh"; squad_worker_model_catalog "${worker_engines[@]}")" || exit $?
+  while IFS= read -r missing_mapping; do
+    [[ -z "$missing_mapping" ]] || printf 'Worker models: %s; run squad config workers, then squad-worker --models.\n' "$missing_mapping" >&2
+  done < <(printf '%s' "$worker_catalog" | jq -r '.[] | select(.installed and .tier != "" and .source == "unresolved" and .engine != "ccr") | "\(.engine) \(.tier): set SQUAD_WORKER_\(.engine | ascii_upcase)_MODEL_\(.tier | ascii_upcase)"')
   worker_line="squad-worker is: $worker_command
+Always pass --manager {{MANAGER_ID}} on every worker launch; do not rely on inherited environment variables.
 Installed worker engines, most trusted first: ${worker_engines[*]}
+Local model candidates (provider availability unverified; null means unmapped, never guess):
+$(printf '%s' "$worker_catalog" | jq -c '.')
 In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
 fi
 if [[ -n "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then
@@ -607,6 +625,7 @@ else
 fi
 manager_prompt+=$'\n\n'"The human's messages in the chat are their requests. When a message gives you work, start investigating and planning right away, without asking for the objective again unless it is genuinely ambiguous. Do not repeat these instructions to the human."
 manager_command="$(shell_join "$script_dir/lib/squad-devkit-manager.sh" "$manager_client" "$manager_prompt" "$objective")"
+manager_command="$(shell_join env "SQUAD_DEVKIT_YOLO=${SQUAD_DEVKIT_YOLO:-0}") $manager_command"
 manager_title="$(manager_label "$manager_client")"
 
 if (( dry_run == 1 )); then
@@ -687,6 +706,10 @@ ghostty_focused_terminal='tell application "Ghostty" to get id of focused termin
 if [[ "$backend" == here ]]; then
   prepare_project
   cd "$project_directory"
+  if [[ -z "${TMUX:-}" ]]; then
+    SQUAD_DEVKIT_ORCA_TERMINAL="$(squad_panes_orca_manager "$project_directory")"
+    export SQUAD_DEVKIT_ORCA_TERMINAL
+  fi
   if [[ -z "${TMUX:-}" && "${TERM_PROGRAM:-}" == ghostty ]] &&
     command -v "${SQUAD_DEVKIT_OSASCRIPT:-osascript}" >/dev/null 2>&1; then
     SQUAD_DEVKIT_GHOSTTY_TERMINAL="$("${SQUAD_DEVKIT_OSASCRIPT:-osascript}" -e "$ghostty_focused_terminal" 2>/dev/null || true)"

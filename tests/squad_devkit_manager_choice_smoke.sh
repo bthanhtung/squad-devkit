@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Fixtures must not inherit the invoking squad session.
+unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_DEVKIT_YOLO HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE HERDR_ENV HERDR_PANE_ID
+unset CODEX_HOME CLAUDE_CONFIG_DIR
 # Name the failing command, so CI logs show where a test stopped.
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
@@ -36,7 +39,7 @@ grep -q '1) codex' "$temp_directory/log"
 grep -q '2) agy' "$temp_directory/log"
 grep -q 'Enter a number from 1 to 2.' "$temp_directory/log"
 [[ "$choice" == *'Manager: agy'* ]] || fail
-[[ "$choice" == *"manager: $repo_root/scripts/lib/squad-devkit-manager.sh agy "* ]] || fail
+[[ "$choice" == *"manager: env SQUAD_DEVKIT_YOLO=0 $repo_root/scripts/lib/squad-devkit-manager.sh agy "* ]] || fail
 [[ "$choice" == *"cli: $test_bin/agy -i INSTRUCTIONS"* ]] || fail
 [[ "$choice" == *'You already joined the squad as {{MANAGER_ID}}'* ]] || fail
 [[ "$choice" == *'squad receive {{MANAGER_ID}} --wait --timeout 900'* ]] || fail
@@ -67,6 +70,28 @@ setup_output="$(printf 'codex\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$devkit" --setup
 grep -q '1) claude' "$temp_directory/log"
 [[ "$setup_output" == *'Saved manager: codex'* ]] || fail
 [[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=codex' ]] || fail
+
+fake_cli tmux
+fake_cli osascript
+# YOLO stays session-scoped and is explicit in every backend command.
+for engine in claude codex agy; do
+  for backend in here tmux ghostty; do
+    yolo_run="$("$devkit" "$project_directory" --manager "$engine" --"$backend" --yolo --dry-run)"
+    [[ "$yolo_run" == *'manager: env SQUAD_DEVKIT_YOLO=1 '* ]] || fail
+    case "$engine" in
+      codex) [[ "$yolo_run" == *'--dangerously-bypass-approvals-and-sandbox'* && "$yolo_run" != *'--sandbox '* ]] || fail ;;
+      *) [[ "$yolo_run" == *'--dangerously-skip-permissions'* ]] || fail ;;
+    esac
+  done
+done
+fake_cli grok
+if "$devkit" "$project_directory" --manager grok --yolo --dry-run 2>"$temp_directory/log"; then fail; fi
+grep -q 'YOLO supports only' "$temp_directory/log"
+if SQUAD_DEVKIT_YOLO=true "$devkit" "$project_directory" --manager codex --dry-run 2>"$temp_directory/log"; then fail; fi
+grep -q 'SQUAD_DEVKIT_YOLO must be 0 or 1' "$temp_directory/log"
+inherited="$(SQUAD_DEVKIT_YOLO=1 "$devkit" "$project_directory" --manager codex --here --dry-run)"
+[[ "$inherited" == *'manager: env SQUAD_DEVKIT_YOLO=1 '* ]] || fail
+[[ "$inherited" == *'--dangerously-bypass-approvals-and-sandbox'* ]] || fail
 
 rm "$test_bin/codex" "$test_bin/claude"
 fake_cli grok
@@ -131,6 +156,8 @@ export MANAGER_TEST_LOG="$temp_directory/manager-log"
 cd "$project_directory"
 squad init >/dev/null
 cp "$repo_root/templates/devkit/manager-devkit.md" .squad/roles/manager-devkit.md
+if SQUAD_DEVKIT_YOLO=1 SQUAD_DEVKIT_FALLBACK_MANAGER=grok "$wrapper" claude test 2>"$temp_directory/log"; then fail; fi
+grep -q 'YOLO supports only' "$temp_directory/log"
 mkdir -p .squad/managers
 squad join manager --role manager-devkit >/dev/null
 sleep 30 &
@@ -194,8 +221,10 @@ echo 'claude was not stopped' >>"$MANAGER_TEST_LOG"
 EOF
 chmod +x "$test_bin/claude"
 : >"$MANAGER_TEST_LOG"
-TRANSCRIPT="$temp_directory/transcript.jsonl" SQUAD_DEVKIT_HANDOFF_DELAY=0.2 \
+SQUAD_DEVKIT_YOLO=1 TRANSCRIPT="$temp_directory/transcript.jsonl" SQUAD_DEVKIT_HANDOFF_DELAY=0.2 \
   "$wrapper" claude 'You are the {{MANAGER_LABEL}} manager ({{MANAGER_ID}}).' 'check prod logs' 2>"$temp_directory/handoff-log"
+grep -qx 'codex-arg:--dangerously-bypass-approvals-and-sandbox' "$MANAGER_TEST_LOG"
+[[ "$(jq -r '.sandbox.enabled' "$MANAGER_TEST_LOG.settings")" == false ]] || fail
 grep -q 'Handing over to Codex CLI as manager' "$temp_directory/handoff-log"
 [[ "$(grep -c 'claude was not stopped' "$MANAGER_TEST_LOG")" == 0 ]] || fail
 [[ "$(jq -r '.hooks.StopFailure[0].matcher' "$MANAGER_TEST_LOG.settings")" == 'rate_limit|billing_error' ]] || fail

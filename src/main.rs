@@ -24,6 +24,7 @@ fn main() -> Result<()> {
 
     match command.as_str() {
         "init" => cmd_init(args.collect()),
+        "config" => cmd_config(args.collect()),
         "join" => {
             let id = args.next().unwrap_or_default();
             if id.is_empty() {
@@ -607,6 +608,71 @@ fn cmd_init(args: Vec<String>) -> Result<()> {
             println!("  {} → {}", name, path.display());
         }
     }
+    offer_worker_setup(&workspace);
+    Ok(())
+}
+
+/// Offers worker model setup only on a terminal and only when nothing is saved
+/// yet; scripted init never blocks or runs model discovery.
+fn offer_worker_setup(workspace: &Path) {
+    use squad::worker_config;
+    use std::io::{BufRead, IsTerminal};
+
+    if worker_config::config_path(workspace).exists() {
+        println!("Worker models: .squad/worker-models.json (change with `squad config workers`).");
+        return;
+    }
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if interactive {
+        print!("Choose worker models for fast/balanced/strong tiers now? This runs installed CLIs' model-list commands. [y/N]: ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut answer = String::new();
+        let accepted = std::io::stdin().lock().read_line(&mut answer).is_ok()
+            && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+        if accepted {
+            let timeout = std::time::Duration::from_secs(worker_config::DEFAULT_TIMEOUT_SECS);
+            let mut input = std::io::stdin().lock();
+            let mut output = std::io::stdout();
+            if let Err(error) =
+                worker_config::run_setup(workspace, &mut input, &mut output, timeout)
+            {
+                eprintln!("Worker model setup failed: {error:#}");
+            }
+            return;
+        }
+    }
+    println!("Tip: run `squad config workers` to choose worker models without knowing model IDs.");
+}
+
+fn cmd_config(args: Vec<String>) -> Result<()> {
+    const USAGE: &str = "Usage: squad config workers [--timeout <secs>]";
+    let mut args = args.into_iter();
+    if args.next().as_deref() != Some("workers") {
+        bail!(USAGE);
+    }
+    let mut timeout_secs = squad::worker_config::DEFAULT_TIMEOUT_SECS;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--timeout" => {
+                let value = args.next().context(USAGE)?;
+                timeout_secs = value
+                    .parse()
+                    .ok()
+                    .filter(|secs| (1..=300).contains(secs))
+                    .with_context(|| format!("invalid --timeout value: {value} (1-300 seconds)"))?;
+            }
+            _ => bail!(USAGE),
+        }
+    }
+    let workspace = find_workspace()?;
+    let mut input = std::io::stdin().lock();
+    let mut output = std::io::stdout();
+    squad::worker_config::run_setup(
+        &workspace,
+        &mut input,
+        &mut output,
+        std::time::Duration::from_secs(timeout_secs),
+    )?;
     Ok(())
 }
 
@@ -1279,6 +1345,7 @@ const HELP_TEXT: &str = r#"squad — Multi-AI-agent terminal collaboration
 
 COMMANDS
   squad init [--refresh-roles]              Initialize workspace (`--refresh-roles` rewrites builtin roles only)
+  squad config workers [--timeout <secs>]   Choose worker models per tier from installed CLIs (saved in .squad/worker-models.json)
   squad join <id> [--role <role>] [--client <claude|codex|gemini|opencode|grok|agy|ccr>] [--protocol-version <n>]
                                              Join as agent (role defaults to id; omitted metadata stays NULL)
   squad leave <id>                           Archive agent

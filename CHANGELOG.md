@@ -4,6 +4,11 @@ All notable changes to squad-devkit are documented here. The `squad` CLI
 itself follows the upstream [mco-org/squad](https://github.com/mco-org/squad)
 releases.
 
+## [Unreleased]
+
+### Added
+- Add session-only `--yolo` for Claude, Codex, and AGY managers/workers, with explicit backend/fallback inheritance and sandbox conflict checks.
+
 ## [1.0.2] - 2026-11-02
 
 ### Added

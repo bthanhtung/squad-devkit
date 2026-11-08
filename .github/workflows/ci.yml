@@ -86,7 +86,7 @@ jobs:
         run: |
           shellcheck -S warning scripts/squad-devkit.sh scripts/squad-worker.sh \
             scripts/squad-worker-monitor.sh scripts/squad-ask.sh scripts/squad-route.sh \
-            scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh scripts/lib/squad-worktree.sh scripts/lib/squad-panes.sh
+            scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh scripts/lib/squad-worktree.sh scripts/lib/squad-panes.sh scripts/lib/squad-worker-model.sh
 
       - name: Build squad
         run: cargo build
@@ -98,6 +98,8 @@ jobs:
           bash tests/squad_devkit_workers_smoke.sh
           bash tests/squad_completions_smoke.sh
           bash tests/squad_devkit_manager_choice_smoke.sh
+          bash tests/squad_worker_required_split_smoke.sh
+          bash tests/squad_worker_model_smoke.sh
           bash tests/squad_worker_smoke.sh
           bash tests/squad_worker_noop_smoke.sh
           bash tests/squad_worker_validation_smoke.sh
@@ -106,3 +108,6 @@ jobs:
           bash tests/squad_worker_status_regression.sh
           bash tests/squad_herdr_panes_regression.sh
           bash tests/squad_terminal_routing_regression.sh
+          bash tests/squad_herdr_app_panes_regression.sh
+          bash tests/squad_orca_panes_regression.sh
+          bash tests/squad_worker_agy_lifecycle_smoke.sh

@@ -33,9 +33,9 @@ notified when each one finishes. The manager also chooses each worker's role
 - **Small worker context.** Codex workers start with every MCP server disabled
   unless the manager asks for one (`--mcp NAME`). A trivial edit costs about
   18k tokens instead of 52–98k. CCR workers skip MCP servers and skills.
-- **Right-sized models.** The default Codex profile is `high`. The manager picks
-  `medium` for mechanical work, `max` only for hard problems, and CCR for cheap
-  tasks.
+- **Worker model setup.** `squad config workers` lists installed providers' models
+  by friendly name and ID. Choose tiers and reasoning effort separately; Codex
+  uses its CLI configuration unless an explicit profile is selected.
 - **No polling in the manager.** A Claude Code manager is notified when a
   background worker exits. Other managers block on one `squad receive --wait`
   until a worker reports, instead of polling in a loop.
@@ -59,8 +59,8 @@ how to enable them. Both shells suggest engine names after `--workers` and
 `--disable-workers`, for example `squad-devkit --workers ag<Tab>`.
 
 Codex profiles are files named `$CODEX_HOME/<profile>.config.toml`, for example
-`~/.codex/high.config.toml`. Workers use `high` unless told otherwise; set
-`SQUAD_WORKER_CODEX_PROFILE` to change the default.
+`~/.codex/high.config.toml`. Workers use the CLI configuration by default; set
+`SQUAD_WORKER_CODEX_PROFILE` or `--profile` to select an existing profile explicitly.
 
 For Claude workers, preapprove only a specific authorized shell command when needed:
 
@@ -251,7 +251,7 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 | `--role ROLE` | Role prompt from `.squad/roles/ROLE.md` (default `dev`) |
 | `--brief TEXT`, `--brief-file FILE\|-` | Self-contained task description (required) |
 | `--title TITLE` | Task title (default: first line of the brief) |
-| `--profile NAME` | Codex profile (default `high`) |
+| `--profile NAME` | Codex profile (default: CLI configuration) |
 | `--model NAME` | Model for claude (default `haiku`; `sonnet`, `opus`), grok, or agy |
 | `--timeout MINUTES` | Stop the run after this long (default 45) |
 | `--mcp NAME`, `--all-mcp` | Codex: keep one or all MCP servers enabled |
@@ -374,25 +374,61 @@ in (`scripts/lib/squad-panes.sh`), checked in this order:
 | Terminal | Detected by | How the monitor opens |
 |---|---|---|
 | tmux | `TMUX_PANE` | `split-window`, `main-vertical` layout (`squad-devkit --tmux` works in any terminal) |
-| Herdr | `HERDR_PANE_ID` | `herdr pane split` |
-| Zellij | `ZELLIJ` | `zellij run --floating` (Zellij only splits the focused pane, so workers float; toggle them with Zellij's floating-pane key) |
+| Orca | `SQUAD_DEVKIT_ORCA_TERMINAL` captured at manager launch | `terminal split`, pane title, then focus returns to manager |
+| Herdr desktop | `HC_TERMINAL_ID` | `herdr-app do pane.split` with explicit pane and `argv`, verified in `herdr-app ls`, then `pane.focus` returns to manager |
+| Herdr TUI | `HERDR_ENV=1` (`HERDR_PANE_ID`) | `herdr pane split` |
+| Zellij | `ZELLIJ` | Standalone runs float; manager runs require tmux because a split cannot be confirmed |
 | WezTerm | `WEZTERM_PANE` | `wezterm cli split-pane`, then focus returns to the manager |
 | Kitty | `KITTY_WINDOW_ID` | `kitten @ launch --keep-focus` (needs `allow_remote_control yes`; best with the `splits` layout) |
 | iTerm2 | `ITERM_SESSION_ID` | AppleScript `split vertically/horizontally` |
 | Ghostty | terminal id recorded by `squad-devkit` | AppleScript `split` |
 | Anything else | | one dashboard window per manager session running `squad-monitor --all` |
 
-The dashboard covers terminals without a split API: macOS Terminal.app (opened
+Orca requires a running Orca runtime, its CLI, and `jq`. Launch with
+`squad-devkit --here` from an Orca terminal: the launcher matches `ORCA_PANE_KEY`
+against runtime-listed `tabId:leafId` and exports the exact manager handle once.
+Alternatively, supply `SQUAD_DEVKIT_ORCA_TERMINAL` with a runtime-issued handle.
+Direct `squad-worker` calls need this exported handle; workers never infer
+handles or select the active terminal. `ORCA_CLI_COMMAND`
+selects a CLI executable; dev sessions use `orca-dev` when `ORCA_DEV_REPO_ROOT`
+is set. tmux retains priority. A stale previous pane falls back to the manager;
+a failed or ambiguous split is never retried as a fresh request and does not
+open a dashboard, since the original pane may already be running.
+
+Herdr desktop (`HC_TERMINAL_ID`) is separate from Herdr TUI (`HERDR_ENV=1` /
+`HERDR_PANE_ID`). It requires a running Herdr window, `herdr-app`, and `jq`.
+Before splitting, `squad-panes` queries `herdr-app ls` and resolves
+`HC_TERMINAL_ID` to a unique `.pane` and `.tab` in a local space
+(`spaces[].machine` is `null` or empty); missing, ambiguous, or remote-machine
+terminals fail closed without falling back to focused-pane defaults or a
+dashboard. The first worker splits `right` of the manager pane and later workers
+stack `down` from the previous live sibling in the same tab (reconciled against
+`herdr-app ls` before mutating). Because `pane.split` has no folder flag, `cwd`
+is preserved via the JSON `argv` wrapper executing the monitor script. Each
+split verifies that the returned `pane` and `terminal` IDs appear in the
+manager's tab in a fresh `herdr-app ls` snapshot and restores manager focus via
+`herdr-app do pane.focus --pane <id>`. Uncertain mutations are never retried.
+Process readiness proves the monitor script rendered, not that the pane is
+visually unobscured (for example if a pane is zoomed or covered by an overlay);
+local Herdr desktop 3-worker splits are verified via `herdr-app ls` and frame
+capture, while AGY workers have a known CLI lifecycle limitation where `agy`
+may exit `1` after emitting a successful result event.
+
+For independent panes in macOS Terminal.app, launch `squad-devkit --tmux`.
+
+Manager workers require a confirmed split and rendered monitor before the engine starts; disabled panes or split failures fail the run and notify the manager. Use tmux when the terminal cannot split. Standalone workers retain best-effort behavior.
+
+For standalone workers, the dashboard covers terminals without a split API: macOS Terminal.app (opened
 with AppleScript), and on Linux desktops the first of `x-terminal-emulator`,
 `gnome-terminal`, `konsole`, `xfce4-terminal`, or `xterm`. It also catches a
 split that fails, such as Kitty without remote control. Over SSH or with no
 desktop, no window opens: run `squad-monitor --all` yourself, or start the
-manager with `squad-devkit --tmux`. `SQUAD_WORKER_PANES=0` turns monitors off
+manager with `squad-devkit --tmux`. `SQUAD_WORKER_PANES=0` turns standalone monitors off (manager workers fail)
 and `SQUAD_WORKER_DASHBOARD=0` turns off only the dashboard window.
 
-tmux, Herdr, and Ghostty are tested end to end; the WezTerm, Kitty, iTerm2,
-Zellij, and dashboard paths follow each terminal's documented API and are
-covered by tests with stand-in commands.
+tmux, Herdr desktop (local spaces), Herdr TUI, and Ghostty are tested end to end;
+the Orca, WezTerm, Kitty, iTerm2, Zellij, and dashboard paths follow
+each terminal's documented API and are covered by tests with stand-in commands.
 
 A pane never redraws the whole screen, so it does not flicker. The header
 prints once, each event is appended as it happens, and only the bottom status
@@ -418,7 +454,7 @@ the merge command for worktree runs, and the start of the report, then counts
 down and closes 60 seconds later (Enter closes it at once). Codex reports
 tokens when the run finishes; claude-code-router does not report them. Set
 `SQUAD_WORKER_PANE_HOLD=<seconds>` to change the delay, or
-`SQUAD_WORKER_PANES=0` to open no panes. A run whose worker process ended
+`SQUAD_WORKER_PANES=0` to open no panes for standalone workers; manager workers fail. A run whose worker process ended
 without updating its status shows as LOST.
 
 `squad-monitor --all` shows one table of every run in `.squad/workers`
@@ -434,3 +470,108 @@ old layout is still running, the launcher refuses to reuse it and prints the
 `tmux kill-session` command; stop it once its work is saved. Role files that
 lack the template line are kept as they are; replace them with the files in
 `templates/devkit/` to get the new manager instructions.
+
+### Opt-in YOLO sessions
+
+`squad-devkit --yolo --manager codex` starts a session with native engine
+permission bypass; workers started by that manager inherit it. Claude, Codex,
+and AGY are supported. `squad-worker dev-1 --engine claude --yolo --brief "Run the checks"`
+opts in a single worker independently. Without opt-in, existing behavior is unchanged.
+
+The session boolean `SQUAD_DEVKIT_YOLO=1` carries opt-in through here, tmux,
+Ghostty, and manager fallback; `0` disables inheritance. It is never saved to
+configuration. Unsupported engines reject YOLO. YOLO conflicts with worker
+`--sandbox` and `SQUAD_WORKER_SANDBOX=1`; omit YOLO to use sandboxing.
+Claude uses `--dangerously-skip-permissions` with session sandboxing disabled,
+Codex uses `--dangerously-bypass-approvals-and-sandbox`, and AGY uses
+`--dangerously-skip-permissions` without `--sandbox`.
+
+Use only in an environment you trust: this bypasses engine permission checks
+and engine sandboxing, not OS/admin restrictions. Conversational instructions
+are not permission controls. No global settings or role instructions change.
+An existing tmux session keeps its original mode; exit it before changing modes.
+
+### Worker model selection
+
+`--model NAME` overrides `SQUAD_WORKER_<ENGINE>_MODEL` (uppercase engine:
+`CLAUDE`, `CODEX`, `OPENCODE`, `GROK`, `AGY`, `CCR`). Empty environment values
+use the default: Claude uses `haiku`; other engines use their CLI default.
+Codex `--profile` selects a configuration profile, not a model; an explicit
+model overrides the profile's model. Model names come from the installed CLI
+and provider; no fixed model catalog is assumed.
+
+CCR uses its router default. Model overrides (flag or environment) are rejected:
+router/provider mapping cannot be guaranteed by forwarding Claude's `--model`.
+Configure the router separately or use `--engine claude --model NAME`.
+
+Startup stderr, `squad-worker --list`, individual monitors and the dashboard
+show requested selection, its source, and actual model evidence separately.
+Status retains `model` for compatibility and adds `requested_model`,
+`model_source` (`flag`, `tier-environment`, `environment`, `builtin`, `cli-default`, `router-default`),
+and `actual_model`. Claude/CCR/AGY structured assistant and result model-usage
+fields supply reported models (comma-separated when multiple); status refreshes
+while running and persists the evidence on completion or failure. Init selection aliases are excluded from actual evidence. A router's
+reported alias may not identify its upstream provider. AGY uses stream-json output (plain wrapper output remains compatible). Other engines currently
+remain `actual=unknown`: requests, profiles and free-form text are not proof.
+Old status files display unknown provenance/actual model. No credentials or
+router configuration are inspected for model discovery.
+
+### Worker capability tiers and local catalog
+
+Assign concrete models supported by your installed provider; these are capability
+policy mappings, not correctness, availability, pricing or subscription guarantees.
+Use setup to choose models from your installed providers:
+
+Run `squad config workers` after `squad init` to choose models by friendly name
+and exact ID, assign fast/balanced/strong tiers, and choose supported reasoning
+effort independently. Terminal init offers setup; scripted init never fetches
+models or waits for input. Re-init preserves selections. Setup reviews changes
+before saving `.squad/worker-models.json`; `q` or EOF cancels without replacing it.
+
+Discovery uses installed `agy models` and `codex debug models`, with bounded
+child processes and no inference. Refresh, retry, or choose an explicitly labeled
+cached list with its source and timestamp (lists over seven days old say stale).
+Codex output is marked refresh unconfirmed unless its cache timestamp advances;
+its `models_cache.json` is a fallback only. Catalogs do not verify account access.
+Other engines explain unsupported discovery; Claude aliases and CCR routing remain.
+No credentials or shell/provider configuration are read or changed by setup.
+
+```sh
+squad config workers
+squad-worker --models                       # installed engines; JSON, no paid calls
+squad-worker --models --engine codex        # known engine, even if not installed
+squad-devkit --workers codex,claude          # manager sees only enabled installed candidates
+squad-worker dev-1 --engine codex --model-tier balanced --brief 'Implement the bounded fix and run its tests'
+squad-worker review-1 --engine codex --model-tier strong --model 'your-explicit-model' --brief 'Review the public contract change'
+```
+
+`--model` wins over tier configuration. Tiers resolve
+`SQUAD_WORKER_<ENGINE>_MODEL_<FAST|BALANCED|STRONG>`; only balanced may fall back
+to `SQUAD_WORKER_<ENGINE>_MODEL`. Next comes the saved tier in local JSON,
+then Claude's otherwise unmapped tiers use
+`haiku`, `sonnet`, `opus`. Without a tier existing behavior is preserved, including
+Claude's `haiku` default. Other unmapped tiers fail before task/worktree creation;
+CCR rejects tier and model overrides because its router selects the model.
+Model names reject control characters. Catalog `candidate` is configured or built-in,
+`null` means unresolved/default, and `provider_availability` is always `unverified`.
+Catalog mode never creates tasks/worktrees or launches engines. Use
+`squad-worker --models --project DIR` to inspect an external project's mappings.
+Both launch and catalog search project ancestors first, then the squad workspace;
+the first worker-models.json found supplies the saved tiers. Saved effort applies
+only when that saved model wins: Codex gets `-c model_reasoning_effort="VALUE"`, AGY
+gets `--effort VALUE`. Environment/explicit model overrides use CLI effort defaults.
+Codex uses its CLI configuration unless `--profile` or
+`SQUAD_WORKER_CODEX_PROFILE` explicitly selects a profile; tier is never effort.
+Devkit warns about missing supported tiers for selected, installed engines.
+
+Managers triage task/risk/complexity first: fast for mechanical/docs low-risk work,
+balanced for normal bounded implementation/debug/tests, strong for high-risk,
+complex, uncertain-root-cause, security or public-contract work. The strongest
+applicable criterion wins, even for mechanical/docs edits; prefer the cheapest
+worker that meets the required bar. Choose tools first
+(MCP requires Codex), then a mapped model; record engine/model/tier/profile/reason
+in plan and brief. Profiles are not models. Never choose disabled/unmapped
+candidates or silently downgrade; escalate failed rounds, use another capable
+enabled engine, or report the required mapping. Router advice cannot override
+safety/quality policy. Status and monitor labels add `model_tier` while preserving
+requested and actual model evidence separately.

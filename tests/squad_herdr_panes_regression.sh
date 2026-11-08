@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-unset HC_TERMINAL_ID
+unset HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 temp="$(mktemp -d /tmp/squad-herdr-panes.XXXXXX)"
 trap 'rm -rf "$temp"' EXIT

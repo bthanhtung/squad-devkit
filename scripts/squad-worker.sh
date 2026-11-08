@@ -36,7 +36,7 @@ stdout and saved under .squad/workers/ in the manager's squad workspace
 Engines, most trusted first:
   claude   Claude Code (your Anthropic plan; --model haiku by default,
            sonnet for complex or high-risk work, opus for the hardest)
-  codex    codex exec, sandboxed to the project (--profile, default: high)
+  codex    codex exec, sandboxed to the project (--profile, default: CLI configuration)
   opencode OpenCode headless (experimental)
   grok     Grok Build headless (experimental)
   agy      Antigravity CLI headless (experimental)
@@ -47,8 +47,10 @@ Options:
   --title TITLE      Task title (default: first line of the brief)
   --brief-file -     Read the brief from stdin
   --project DIR      Directory the worker works in (default: the squad workspace)
-  --profile NAME     codex profile (default: high)
-  --model NAME       Model for claude, opencode, grok, or agy
+  --profile NAME     codex profile (default: CLI configuration)
+  --models           Print local model candidates as JSON; optional --engine/--project filters
+  --model-tier TIER  fast|balanced|strong; requires a mapping (Claude aliases available)
+  --model NAME       Model override (except CCR; router selects its model)
   --mcp NAME         codex only: keep this MCP server enabled (repeatable);
                      all others are disabled to keep the worker's context small
   --all-mcp          codex only: keep every configured MCP server
@@ -56,6 +58,8 @@ Options:
   --worktree         Work in an isolated git worktree (default in git repositories,
                      except for the reviewer, researcher and security roles)
   --no-worktree      Work directly in the project directory
+  --yolo             Bypass permissions and sandbox (claude, codex, agy only;
+                     inherited from SQUAD_DEVKIT_YOLO=1)
   --sandbox          Run shell commands in engine sandbox (default)
   --no-sandbox       Disable engine sandbox
   --manager ID       Manager agent ID that owns the task (default: manager)
@@ -83,9 +87,15 @@ role="dev"
 title=""
 brief=""
 brief_file=""
-profile="${SQUAD_WORKER_CODEX_PROFILE:-high}"
+profile="${SQUAD_WORKER_CODEX_PROFILE:-}"
 model=""
+model_source=""
+model_tier=""
+models=0
+catalog_incompatible=0
 manager_id="${SQUAD_MANAGER_ID:-manager}"
+required_split=0
+[[ -z "${SQUAD_MANAGER_ID:-}" ]] || required_split=1
 project_directory=""
 timeout_minutes="${SQUAD_WORKER_TIMEOUT:-45}"
 stall_minutes="${SQUAD_WORKER_STALL:-10}"
@@ -96,10 +106,12 @@ stop_target=""
 worktree_mode="${SQUAD_WORKER_WORKTREE:-auto}"
 sandbox_mode="${SQUAD_WORKER_SANDBOX:-1}"
 sandbox_flag_set=""
+yolo="${SQUAD_DEVKIT_YOLO:-0}"
 id_pattern='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 while (( $# > 0 )); do
+  case "$1" in --models|--engine|--project) ;; *) catalog_incompatible=1 ;; esac
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--model|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff)
+    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -112,8 +124,9 @@ while (( $# > 0 )); do
         --brief-file) brief_file="$2" ;;
         --profile) profile="$2" ;;
         --model) model="$2" ;;
+        --model-tier) model_tier="$2" ;;
         --mcp) keep_mcp+=("$2") ;;
-        --manager) manager_id="$2" ;;
+        --manager) manager_id="$2"; required_split=1 ;;
         --project) project_directory="$2" ;;
         --timeout) timeout_minutes="$2" ;;
         --stop) action=stop; stop_target="$2" ;;
@@ -126,8 +139,10 @@ while (( $# > 0 )); do
     --all-mcp) all_mcp=1 ;;
     --worktree) worktree_mode=1 ;;
     --no-worktree) worktree_mode=0 ;;
+    --yolo) yolo=1 ;;
     --sandbox) sandbox_mode=1; sandbox_flag_set+=s ;;
     --no-sandbox) sandbox_mode=0; sandbox_flag_set+=n ;;
+    --models) models=1 ;;
     --list) action=list ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -164,6 +179,28 @@ find_workspace() {
   done
   printf '%s\n' "$directory"
 }
+
+source "$script_dir/lib/squad-worker-model.sh"
+
+if (( models == 1 )); then
+  if [[ -n "$project_directory" && ! -d "$project_directory" ]]; then
+    echo "Project directory does not exist: $project_directory" >&2; exit 2
+  fi
+  if (( catalog_incompatible == 1 )); then
+    echo '--models accepts only --engine and --project filters' >&2; exit 2
+  fi
+  catalog_engines=()
+  if [[ -n "$engine" ]]; then
+    catalog_engines=("$engine")
+  else
+    for candidate_engine in claude codex opencode grok agy ccr; do
+      command -v "$candidate_engine" >/dev/null 2>&1 && catalog_engines+=("$candidate_engine")
+    done
+  fi
+  squad_worker_model_catalog ${catalog_engines[@]+"${catalog_engines[@]}"}
+  exit $?
+fi
+
 
 status_get() {
   sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
@@ -244,6 +281,7 @@ if [[ "$action" == list || "$action" == stop ]]; then
     if [[ "$action" == list ]]; then
       printf '%-12s %-7s %-10s pid %-7s %s\n' "$id" "$(status_get "$file" engine)" \
         "$(status_get "$file" role)" "${pid:-?}" "$(status_get "$file" title)"
+      squad_worker_model_label "$file"; printf '\n'
       found=1
     elif [[ "$stop_target" == all || "$stop_target" == "$id" ]]; then
       if [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null; then
@@ -348,6 +386,21 @@ if [[ "$sandbox_flag_set" == *s* && "$sandbox_flag_set" == *n* ]]; then
   echo "--sandbox and --no-sandbox are mutually exclusive" >&2
   exit 2
 fi
+case "$yolo" in
+  0|1) ;;
+  *) echo 'SQUAD_DEVKIT_YOLO must be 0 or 1' >&2; exit 2 ;;
+esac
+if [[ "$yolo" == 1 ]]; then
+  case "$engine" in
+    claude|codex|agy) ;;
+    *) echo 'YOLO supports only claude, codex, and agy' >&2; exit 2 ;;
+  esac
+  if [[ "${SQUAD_WORKER_SANDBOX:-}" == 1 || "$sandbox_flag_set" == *s* ]]; then
+    echo 'YOLO and --sandbox (or SQUAD_WORKER_SANDBOX=1) are mutually exclusive' >&2
+    exit 2
+  fi
+  sandbox_mode=0
+fi
 case "$engine" in
   claude|codex|opencode|grok|agy|ccr) ;;
   *) echo "Unknown engine: $engine (use claude, codex, opencode, grok, agy, or ccr)" >&2; exit 2 ;;
@@ -356,6 +409,10 @@ if [[ ! "$timeout_minutes" =~ ^[0-9]+$ || "$timeout_minutes" =~ ^0+$ || ! "$stal
   echo "--timeout (at least 1) and SQUAD_WORKER_STALL take whole minutes" >&2
   exit 2
 fi
+squad_worker_select_model
+model_arguments=()
+[[ -z "$model" ]] || model_arguments=(--model "$model")
+
 if [[ -n "$brief_file" ]]; then
   if [[ "$brief_file" == - ]]; then
     brief="$(cat)"
@@ -527,9 +584,7 @@ started_at="$(date +%s)"
 process_started="$(LC_ALL=C ps -p "$$" -o lstart= | awk '{$1=$1; print}' || true)"
 run_profile=""
 [[ "$engine" == codex ]] && run_profile="$profile"
-if [[ "$engine" == claude ]]; then
-  model="${model:-${SQUAD_WORKER_CLAUDE_MODEL:-haiku}}"
-fi
+actual_model=unknown
 tokens_in=""
 tokens_cached=""
 tokens_out=""
@@ -543,6 +598,8 @@ write_status() {
   {
     printf 'worker=%s\nengine=%s\nprofile=%s\nmodel=%s\nrole=%s\n' \
       "$worker_id" "$engine" "$run_profile" "$model" "$role"
+    printf 'model_tier=%s\n' "$model_tier"
+    printf 'requested_model=%s\nmodel_source=%s\nactual_model=%s\n' "$model" "$model_source" "$actual_model"
     printf 'title=%s\ntask=%s\nstate=%s\nreason=%s\n' \
       "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state" "${failure_reason:-$stop_reason}"
     printf 'process_started=%s\n' "$process_started"
@@ -555,25 +612,56 @@ write_status() {
   } >"$status_file.tmp"
   mv "$status_file.tmp" "$status_file"
 }
+: >"$log_file"
+: >"$report_file"
 write_status running
+printf 'squad-worker: %s (%s) %s\n' "$worker_id" "$engine" "$(squad_worker_model_label "$status_file")" >&2
 
 # Live monitor for this run beside the manager (see lib/squad-panes.sh).
 open_monitor_pane() {
   local pane_script="$output_directory/$run_name.monitor.sh"
   local dashboard_script="$output_directory/dashboard.sh"
+  local ready_file
+  ready_file="$(mktemp "$workspace_root/$output_directory/.monitor-ready.XXXXXXXX")" || return 1
+  rm -f "$ready_file"
   # Pane shells start from the terminal, not from this process, so pass settings explicitly.
   {
     printf '#!/bin/bash\n'
     printf 'export SQUAD_WORKER_PANE_HOLD=%q\n' "${SQUAD_WORKER_PANE_HOLD:-60}"
+    if (( required_split == 1 )); then
+      printf 'export SQUAD_WORKER_MONITOR_READY=%q\n' "$ready_file"
+    fi
     printf 'exec %q %q\n' "$script_dir/squad-worker-monitor.sh" "$workspace_root/$status_file"
   } >"$pane_script"
   printf '#!/bin/bash\nexec %q --all %q\n' "$script_dir/squad-worker-monitor.sh" \
     "$workspace_root/$output_directory" >"$dashboard_script"
   chmod +x "$pane_script" "$dashboard_script"
   squad_open_monitor "$workspace_root/$pane_script" "$worker_id · $engine" "$workspace_root" \
-    "$workspace_root/$output_directory" "$workspace_root/$dashboard_script"
+    "$workspace_root/$output_directory" "$workspace_root/$dashboard_script" "$([[ "$required_split" == 1 ]] && printf required)" || return 1
+  (( required_split == 1 )) || return 0
+  local monitor_pid=""
+  for _ in $(seq 1 40); do
+    if [[ -f "$ready_file" ]]; then
+      IFS= read -r monitor_pid <"$ready_file" || true
+      if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+        rm -f "$ready_file"; return 0
+      fi
+    fi
+    sleep 0.25
+  done
+  rm -f "$ready_file"
+  echo "squad-worker: monitor did not render or exited; fix the terminal or use tmux" >&2
+  return 1
 }
-open_monitor_pane
+if ! failure_reason="$(open_monitor_pane 2>&1)"; then
+  failure_reason="${failure_reason:-required monitor split failed; fix the terminal or use tmux}"
+  failure_reason="$(printf '%s' "$failure_reason" | tr '\r\n' '  ')"
+  write_status failed 1
+  message="$worker_id ($engine) failed on task $task_id: $failure_reason"
+  squad send --task-id "$task_id" "$worker_id" "$manager_id" "$message" >/dev/null || true
+  echo "$message" >&2
+  exit 1
+fi
 
 ensure_ccr_server() {
   local port
@@ -656,9 +744,15 @@ case "$engine" in
     if [[ "$sandbox_mode" == 0 ]]; then
       sandbox_arguments=(--sandbox danger-full-access)
     fi
-    engine_command=(codex exec --json --cd "$engine_directory" --profile "$profile" --ephemeral
+    if [[ "$yolo" == 1 ]]; then
+      sandbox_arguments=(--dangerously-bypass-approvals-and-sandbox)
+    fi
+    profile_arguments=()
+    [[ -z "$profile" ]] || profile_arguments=(--profile "$profile")
+    [[ -z "$model_effort" ]] || model_arguments+=(-c "model_reasoning_effort=\"$model_effort\"")
+    engine_command=(codex exec --json --cd "$engine_directory" ${profile_arguments[@]+"${profile_arguments[@]}"} --ephemeral
       --skip-git-repo-check ${sandbox_arguments[@]+"${sandbox_arguments[@]}"} ${add_directory[@]+"${add_directory[@]}"}
-      ${mcp_arguments[@]+"${mcp_arguments[@]}"} --output-last-message "$absolute_report" "$prompt")
+      ${mcp_arguments[@]+"${mcp_arguments[@]}"} ${model_arguments[@]+"${model_arguments[@]}"} --output-last-message "$absolute_report" "$prompt")
     ;;
   claude)
     # Six core tools keep the prompt small. Edits are accepted in the project;
@@ -672,9 +766,11 @@ case "$engine" in
     if [[ -n "${SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS:-}" ]]; then
       claude_allowed_tools=(--allowedTools "$SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS")
     fi
+    permission_arguments=(--permission-mode "${SQUAD_WORKER_CLAUDE_PERMISSION_MODE:-acceptEdits}")
+    [[ "$yolo" == 1 ]] && permission_arguments=(--dangerously-skip-permissions)
     engine_command=(claude -p --model "$model" --strict-mcp-config --disable-slash-commands
       --no-session-persistence --tools "${SQUAD_WORKER_CLAUDE_TOOLS:-Read,Edit,Write,Glob,Grep,Bash}"
-      --permission-mode "${SQUAD_WORKER_CLAUDE_PERMISSION_MODE:-acceptEdits}"
+      "${permission_arguments[@]}"
       ${claude_allowed_tools[@]+"${claude_allowed_tools[@]}"} --settings "$claude_settings"
       --add-dir "$workspace_root" --output-format stream-json --verbose "$prompt")
     ;;
@@ -690,7 +786,9 @@ case "$engine" in
     [[ -n "$model" ]] && engine_command+=(--model "$model")
     ;;
   agy)
-    engine_command=(agy -p "$prompt" --mode accept-edits)
+    engine_command=(agy -p "$prompt" --mode accept-edits --output-format stream-json)
+    [[ "$yolo" == 1 ]] && engine_command+=(--dangerously-skip-permissions)
+    [[ -z "$model_effort" ]] || engine_command+=(--effort "$model_effort")
     [[ -n "$model" ]] && engine_command+=(--model "$model")
     ;;
   opencode)
@@ -699,18 +797,54 @@ case "$engine" in
     ;;
 esac
 
+# Native AGY streams end with {event:result,result:{status,response}} and may
+# interleave plain diagnostics (ignored); accept only one valid terminal SUCCESS. Claude-
+# shaped and plain-text output stay supported. Damaged or
+# non-object JSON is never plaintext.
+agy_extract_report() {
+  local verdict
+  verdict="$(jq -R -s -r '
+    [split("\n")[] | select(test("\\S")) | sub("^\\s+";"") | sub("\\s+$";"") | . as $s | (try {v: fromjson} catch null) as $p
+     | if $p == null then (if $s | test("^[{\\[]") then {bad: true} elif $s | test("^root agent idle; waiting for ") then {} else {text: true} end)
+       elif ($p.v | type) == "object" then {o: $p.v} else {bad: true} end] as $l
+    | [$l[] | .o // empty] as $objs
+    | if any($l[]; .bad) then "damaged JSON in stream"
+      elif any($objs[]; has("event")) then
+        [$objs[] | select(.event == "result")] as $r
+        | if any($objs[]; .event == "error" or has("error")) then "stream contains an error event"
+          elif ($r | length) != 1 then "expected exactly one terminal result, found \($r | length)"
+          elif ($objs[-1].event != "result") then "events follow the terminal result"
+          elif ($r[0].result.status // "") != "SUCCESS" then "terminal status \($r[0].result.status // "missing")"
+          elif (($r[0].result.response | type) != "string") or (($r[0].result.response | test("\\S")) | not) then "terminal SUCCESS has no response"
+          else "ok:" + $r[0].result.response end
+      elif any($objs[]; .type == "result") then
+        ([$objs[] | select(.type == "result") | .result // empty] | join("\n")) as $t
+        | if $t == "" then "result has no text" else "ok:" + $t end
+      elif ($objs | length) > 0 then "no result event in stream"
+      elif any($l[]; .text) then "plain:" else "no report in stream" end' "$absolute_log" 2>/dev/null || echo 'unparseable stream')"
+  case "$verdict" in
+    ok:*) printf '%s\n' "${verdict#ok:}" >"$absolute_report" ;;
+    plain:) cp "$absolute_log" "$absolute_report" ;;
+    *) printf '\nsquad-worker: AGY stream rejected: %s\n' "$verdict" >>"$absolute_log" ;;
+  esac
+}
+
 run_engine() {
   cd "$engine_directory"
   unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
   case "$engine" in
     ccr)
       eval "$(ccr activate 2>/dev/null)"
-      "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1
+      "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 || return $?
       jq -R -r 'fromjson? | select(.type == "result") | .result // empty' "$absolute_log" >"$absolute_report"
       ;;
     claude)
-      "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1
+      "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 || return $?
       jq -R -r 'fromjson? | select(.type == "result") | .result // empty' "$absolute_log" >"$absolute_report"
+      ;;
+    agy)
+      "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 || return $?
+      agy_extract_report
       ;;
     codex) "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 ;;
     *) "${engine_command[@]}" </dev/null >"$absolute_report" 2>"$absolute_log" ;;
@@ -737,7 +871,7 @@ output_age() {
 }
 
 if (( status == 0 )); then
-  if [[ "$engine" == ccr || "$engine" == claude ]] && ! command -v jq >/dev/null 2>&1; then
+  if [[ "$engine" == ccr || "$engine" == claude || "$engine" == agy ]] && ! command -v jq >/dev/null 2>&1; then
     echo "jq is required for the $engine engine" | tee -a "$log_file" >&2
     status=1
   fi
@@ -745,14 +879,22 @@ fi
 timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 stall_seconds="${SQUAD_WORKER_STALL_SECONDS:-$(( stall_minutes * 60 ))}"
 if (( status == 0 )); then
-  : >"$log_file"
-  : >"$report_file"
   run_engine &
   engine_pid=$!
   # Watchdog: stop runs that exceed the time limit or stop producing output,
   # so a stuck worker reports back instead of leaving its pane pending.
+  model_log_size=-1
   while kill -0 "$engine_pid" 2>/dev/null; do
     sleep 1
+    current_log_size="$(wc -c <"$log_file")"
+    if [[ "$current_log_size" != "$model_log_size" ]]; then
+      model_log_size="$current_log_size"
+      reported_model="$(squad_worker_reported_models "$engine" "$log_file")"
+      if [[ -n "$reported_model" && "$reported_model" != "$actual_model" ]]; then
+        actual_model="$reported_model"
+        write_status running
+      fi
+    fi
     if (( $(date +%s) - started_at > timeout_seconds )); then
       stop_reason="timed out after $(( timeout_seconds / 60 ))m"
     elif (( stall_seconds > 0 )) && (( $(output_age) > stall_seconds )); then
@@ -771,6 +913,9 @@ if (( status == 0 )); then
     printf '\nsquad-worker: %s\n' "$stop_reason" >>"$log_file"
   fi
 fi
+
+reported_model="$(squad_worker_reported_models "$engine" "$log_file")"
+[[ -z "$reported_model" ]] || actual_model="$reported_model"
 
 # Token usage, summed from the engine's JSON events, for the monitor and the
 # savings summary.
