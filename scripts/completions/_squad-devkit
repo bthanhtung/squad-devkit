@@ -93,10 +93,16 @@ _squad_worker() {
     '--yolo[Bypass engine permissions and sandbox (claude, codex, agy)]' \
     '--sandbox[Run shell commands in engine sandbox]' \
     '--no-sandbox[Disable engine sandbox]' \
+    '--plan[Plan file]:file:_files' \
+    '--no-plan[Reason for running without a plan]:reason:' \
+    '--clone[Clone repository URL]:url:' \
+    '--init[Initialize project repository]' \
+    '--override-review[Reason for overriding review]:reason:' \
     '--manager[Manager agent ID]:manager:' \
     '--list[Show running workers]' \
     '--stop[Stop a running worker]:worker:_squad_devkit_workers_running' \
     '--merge[Merge worker worktree]:worker:_squad_devkit_workers_unmerged' \
+    '--diff[Show worker worktree patch]:worker:_squad_devkit_workers_unmerged' \
     '--discard[Discard worker worktree]:worker:_squad_devkit_workers_unmerged' \
     '(-h --help)'{-h,--help}'[Show usage]' \
     '1:worker id:'

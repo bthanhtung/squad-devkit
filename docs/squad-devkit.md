@@ -234,7 +234,7 @@ The manager runs workers like this; you can also run them yourself from the
 project:
 
 ```sh
-squad-worker dev-1 --engine codex --role dev --brief-file - <<'BRIEF'
+squad-worker dev-1 --engine codex --role dev --plan .squad/plans/pager.md --brief-file - <<'BRIEF'
 Fix the off-by-one in src/pager.rs::page_count.
 Files you own: src/pager.rs, tests/pager_test.rs.
 Verify: cargo test pager
@@ -257,6 +257,9 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 | `--mcp NAME`, `--all-mcp` | Codex: keep one or all MCP servers enabled |
 | `--project DIR` | Repository the worker works in (default: the manager's workspace) |
 | `--manager ID` | Manager agent ID (default `manager`) |
+| `--plan FILE`, `--no-plan REASON` | Plan the run follows (validated), or why it runs without one; see [Plans and guardrails](#plans-and-guardrails) |
+| `--clone URL`, `--init` | Clone into, or create and `git init`, a missing `--project` directory |
+| `--override-review REASON` | With `--merge`: merge despite a missing review; recorded in the plan |
 | `--list` | Show running workers |
 | `--stop ID\|all` | Stop a running worker, which reports to the manager |
 | `--worktree`, `--no-worktree` | Force or skip the isolated git worktree |
@@ -296,6 +299,97 @@ edit them.)
   `SQUAD_WORKER_WORKTREE=0` turns isolation off.
 
 Housekeeping never removes runs whose worktree is still unmerged.
+
+## Plans and guardrails
+
+The manager workflow is enforced with tooling, not only with prompts.
+
+**Plan format.** A plan is a markdown file under `.squad/plans/`; copy
+`templates/devkit/plan.md.example`. Headings match case-insensitively.
+Validation requires the sections `Triage`, `Goal`, `Perspectives`, `Tasks`,
+and `Acceptance`; the Triage lines `- Risk:` and `- Complexity:` (first word
+`low`, `moderate`, or `high`) and `- squad-route:` (any value, e.g. `not
+configured`); and the five perspective labels (Principal engineer, Engineering
+manager, Technical lead, QA/QC, End user). `Findings`, `Decisions`,
+`Approvals`, and `Manual ops` are part of the template but not validated. A
+small follow-up goes in a `## Follow-up: <name>` section of the existing plan.
+
+**`--plan` and `--no-plan`.** `squad-worker --plan FILE` validates the plan and
+records it in the status file and the report. `--no-plan "REASON"` skips it for
+a genuine emergency and records the reason in both. The plan is required in
+manager context: `--manager`, `SQUAD_MANAGER_ID`, or `SQUAD_WORKER_REQUIRE_PLAN=1`;
+`SQUAD_WORKER_REQUIRE_PLAN=0` turns the requirement off.
+
+**New and empty repositories.** `--clone URL` clones into a missing `--project`
+directory; `--init` creates it and runs `git init`. A repository without
+commits has nothing to branch from, so the worker runs in place, without a
+worktree. `.claude/` is excluded from worktrees and patches automatically.
+
+**Merge review gate.** `squad-worker --merge` refuses a high-risk plan, or a
+patch touching sensitive paths (auth, secret, token, `.env`, `_headers`,
+`netlify.toml`, `vercel.json`, security) or lines (CSP, Authorization, API
+keys, private keys), unless a reviewer run on the same plan is newer than the
+worker. `--override-review "REASON"` merges anyway and appends the override to
+the plan's `## Approvals`.
+
+**Approvals.** Only the human grants them; the manager records them under
+`## Approvals` as `- commit: <repo|*> — <words, date>`, `- push: <repo|*> —
+...`, and `- review: <repo>` after a reviewer passes. High-risk pushes need the
+`review` line too.
+
+**Manager guard hook.** For a Claude manager, a PreToolUse hook blocks
+`git commit` and `git push` unless a plan approves them, and blocks Edit/Write
+outside `.squad/`. Allowed besides `.squad/`: the Claude memory directory
+(`$CLAUDE_CONFIG_DIR/projects/`), temporary directories, and paths listed in
+`SQUAD_DEVKIT_GUARD_ALLOW`. Set `SQUAD_DEVKIT_GUARD=0` to disable it, only as a
+logged human decision. The guard does not see shell file writes (`sed -i`,
+redirects), so the manager must not use them on project files. A wrapped
+commit or push that cannot be verified is denied; run it as plain
+`git -C <repo> <op>`.
+
+**Installed commands.** The installer links `squad-devkit`, `squad-worker`,
+`squad-monitor`, `squad-route` (the advisory router, see below), and
+`squad-ask` (questions between workers).
+
+### Limitations
+
+- The guard fails open on internal errors (bad JSON, missing `jq`) and warns on
+  stderr; the `squad-worker` plan gate is the hard gate.
+- The guard does not see shell-based file writes (`sed -i`, redirects, `cp`);
+  the manager must not use them on project files.
+- An explicit target that cannot be resolved (`-C $VAR`, `cd $VAR`,
+  `--git-dir`/`GIT_DIR` with variables, nonexistent paths) is denied. Only a
+  `git commit` or `git push` wrapped in `bash -c`, `sh -c`, `eval` or `xargs`
+  falls back to the session's current repo; otherwise run a plain
+  `git -C <repo> <op>`.
+- False denies are possible when a commit message mentions `git push` or
+  contains quoted `;`, `&&`, or `|`, and for `git log --grep push`.
+- Git invoked through a shell variable (`G=git; $G push`) or a git alias
+  (`git ci`) is not detected.
+- Concurrent approval appends can race, and a symlinked plan file is replaced
+  by a regular file on append.
+- An approval with a bare repo basename matches every repo with that name;
+  prefer the absolute path form `- push: /abs/path/to/repo`.
+- When several plans approve the same push, any high-risk plan among them
+  requires `- review:`.
+- The manager can write plans, so an approval line is only as trustworthy as
+  the manager's honesty. Humans should review `## Approvals`, which the plan
+  summary shows.
+- Approvals do not expire; the newest approving plan wins. Remove or edit
+  approval lines when the work is done.
+- A reviewer run that "completed" means it ran, not that it approved; the
+  manager must read its verdict before merging.
+- `.claude/` is excluded from worker patches and added to `.git/info/exclude`;
+  tracked `.claude/**` changes by workers are dropped.
+- Only `*.md`, `*.mdx` and `*.rst` files count as docs: they skip the
+  Content-Security-Policy, Authorization, API-key and `security` checks.
+  Secret-looking paths (`secret`, `credential`, `password`, `private_key`,
+  `token`, `.env`, auth-named files, `_headers`, `netlify.toml`,
+  `vercel.json`) and private keys are checked in every file, `.txt` included.
+- The manager's edit allow-list is `.squad/` inside the project,
+  `$CLAUDE_CONFIG_DIR/projects/` (memory), temporary directories, and
+  `SQUAD_DEVKIT_GUARD_ALLOW`. Other paths inside the project are never allowed,
+  even if the project lives under a temp directory.
 
 ### Questions between workers
 
@@ -482,6 +576,13 @@ The session boolean `SQUAD_DEVKIT_YOLO=1` carries opt-in through here, tmux,
 Ghostty, and manager fallback; `0` disables inheritance. It is never saved to
 configuration. Unsupported engines reject YOLO. YOLO conflicts with worker
 `--sandbox` and `SQUAD_WORKER_SANDBOX=1`; omit YOLO to use sandboxing.
+YOLO bypasses engine permission prompts and sandboxing only. The squad-worker
+plan gate and merge review gate still apply to every engine. The manager guard
+hook is installed only for Claude managers on machines with jq; it relies on
+Claude Code honoring PreToolUse denies in bypass mode, which squad-devkit does
+not test. Codex and AGY managers have no guard hook. A YOLO manager cannot start
+workers on engines without YOLO support (opencode, grok, ccr) unless
+SQUAD_DEVKIT_YOLO=0.
 Claude uses `--dangerously-skip-permissions` with session sandboxing disabled,
 Codex uses `--dangerously-bypass-approvals-and-sandbox`, and AGY uses
 `--dangerously-skip-permissions` without `--sandbox`.

@@ -40,7 +40,7 @@ cd "$tmp/project"
 for detection in flag env; do
   args=()
   if [[ "$detection" == flag ]]; then args=(--manager boss); unset SQUAD_MANAGER_ID; else export SQUAD_MANAGER_ID=boss; fi
-  if "$root/scripts/squad-worker.sh" "$detection" --engine grok --no-worktree --brief test ${args[@]+"${args[@]}"} >"$tmp/out" 2>&1; then
+  if "$root/scripts/squad-worker.sh" "$detection" --engine grok --no-plan "split smoke" --no-worktree --brief test ${args[@]+"${args[@]}"} >"$tmp/out" 2>&1; then
     echo "manager $detection ran without split" >&2; exit 1
   fi
   [[ ! -e "$TEST_ENGINE" ]]
@@ -127,7 +127,7 @@ export PATH="$tmp/fakes:$PATH"
 check_failure() {
   local name="$1" reason="$2"
   rm -f "$TEST_ENGINE" "$TEST_MESSAGES"
-  if "$root/scripts/squad-worker.sh" "$name" --engine grok --manager boss --no-worktree --brief test >"$tmp/out" 2>&1; then
+  if "$root/scripts/squad-worker.sh" "$name" --engine grok --manager boss --no-plan "split smoke" --no-worktree --brief test >"$tmp/out" 2>&1; then
     echo "$name unexpectedly succeeded" >&2; exit 1
   fi
   [[ ! -e "$TEST_ENGINE" ]]
@@ -186,7 +186,7 @@ TMUX_PANE="$(tmux display-message -p '#{pane_id}')"
 export TMUX_PANE
 manager_pane="$TMUX_PANE"
 export SQUAD_WORKER_PANE_HOLD=20
-"$root/scripts/squad-worker.sh" visible --engine grok --manager boss --no-worktree --brief 'Visible task' >"$tmp/out" 2>&1
+"$root/scripts/squad-worker.sh" visible --engine grok --manager boss --no-plan "split smoke" --no-worktree --brief 'Visible task' >"$tmp/out" 2>&1
 [[ -s "$TEST_ENGINE" ]]
 grep -q RUNNING "$TEST_FRAME_AT_ENGINE"
 grep -q 'Visible task' "$TEST_FRAME_AT_ENGINE"
@@ -199,7 +199,7 @@ grep -q 'COMPLETED' "$tmp/frame"
 [[ "$(tmux display-message -p '#{pane_id}')" == "$manager_pane" ]]
 # A quiet worker has already rendered RUNNING above; failure must remain visible.
 export TEST_ENGINE_FAIL=1
-if "$root/scripts/squad-worker.sh" failed-visible --engine grok --manager boss --no-worktree --brief 'Failing task' >"$tmp/out" 2>&1; then
+if "$root/scripts/squad-worker.sh" failed-visible --engine grok --manager boss --no-plan "split smoke" --no-worktree --brief 'Failing task' >"$tmp/out" 2>&1; then
   echo 'failing engine unexpectedly succeeded' >&2; exit 1
 fi
 failed_pane="$(tmux list-panes -F '#{pane_id} #{pane_title}' | awk '/failed-visible/ {print $1}')"

@@ -15,7 +15,7 @@ Classify every request before planning, and record it at the top of the plan:
 - **Risk**: low, moderate, or high. High means a wrong result is costly: security, authentication, payments, data loss or migration, public APIs, production operations, or anything hard to roll back.
 - **Complexity**: low (a few lines, clear spec), moderate (one component, known pattern), or high (cross-cutting, new design, unclear cause).
 - **Needs human**: yes when a product, contract, or irreversible decision is open.
-If `squad-route` is configured, run it once with a short redacted digest (request, plan summary, target files, risks; never source, secrets, logs, or personal data) and record its answer next to yours. It is advisory: use your own judgment when it disagrees, its confidence is below 0.85, or it says a human is needed. Use code-intelligence tools you have (code graphs, indexers) before reading raw source.
+If `squad-route` is configured (the installer links it), run it once with a short redacted digest (request, plan summary, target files, risks; never source, secrets, logs, or personal data) and record its answer next to yours as `- squad-route: <answer>`; if it is not configured, record `- squad-route: not configured`. It is advisory: use your own judgment when it disagrees, its confidence is below 0.85, or it says a human is needed. Use code-intelligence tools you have (code graphs, indexers) before reading raw source.
 
 ## 2. Investigate
 Before planning, read the code you will change and the code that calls it. Note exact paths, symbols, and line numbers, existing patterns to follow, how the project builds and tests, and what could break. Do not guess about code you have not read.
@@ -27,7 +27,10 @@ Write `.squad/plans/<short-name>.md`. Review the approach as each of these befor
 - **Technical lead**: concrete tasks, file ownership, interfaces between tasks, code conventions, and the build and test commands.
 - **QA/QC**: acceptance criteria, edge cases, negative paths, regression risk, and the exact verification for each task and for the whole change.
 - **End user**: the actual workflow, clarity of behaviour and messages, accessibility, and UI that follows Apple Human Interface Guidelines and Material Design where there is UI.
-The plan contains: **Triage**, **Goal** (outcome and how you will know it is done), **Findings** (`path:line`), **Decisions** (and why), **Tasks** (one per worker, disjoint file ownership, dependencies), and **Acceptance**. Show the human a short summary of tasks, owners, and order, then continue unless something needs their decision.
+The plan contains: **Triage**, **Goal** (outcome and how you will know it is done), **Findings** (`path:line`), **Decisions** (and why), **Tasks** (one per worker, disjoint file ownership, dependencies), and **Acceptance**, plus **Approvals** and **Manual ops** (below). Copy `templates/devkit/plan.md.example`; `squad-worker` validates the plan and requires the Triage lines `Risk`, `Complexity` (low|moderate|high) and `squad-route`, the sections Triage, Goal, Perspectives, Tasks, Acceptance, and all five perspective labels. Show the human a short summary of tasks, owners, and order before starting any worker, then continue unless something needs their decision.
+- **Follow-ups**: for a small follow-up, add a `## Follow-up: <name>` section (request, files, acceptance) to the existing plan instead of writing a new plan.
+- **Manual ops**: browser, dashboard, and DNS actions that no worker can do go under `## Manual ops`, with why; you do them by hand.
+- **Approvals**: only the human grants them. After the human approves, record `- commit: <repo>` or `- push: <repo>` (with their words and the date) under `## Approvals`, preferably with the absolute path (`- push: /abs/path/to/repo`), since a bare basename matches every repo with that name; after a reviewer passes a high-risk change, record `- review: <repo>`. Remove these lines when the work is done; approvals do not expire. The Claude manager guard hook blocks commit and push without the line, and blocks Edit/Write outside `.squad/`, `$CLAUDE_CONFIG_DIR/projects/` (memory), temp dirs, and paths in `SQUAD_DEVKIT_GUARD_ALLOW`; never other project paths. A wrapped commit or push that cannot be verified is denied: run plain `git -C <repo> …`. `SQUAD_DEVKIT_GUARD=0` disables the guard: only on a logged human decision. The guard does not catch shell file writes (`sed -i`, redirects); never use them on project files. Read the reviewer's verdict before merging: `completed` means it ran, not that it approved.
 
 ## 4. Choose the worker for each task
 Triage task, risk and complexity **before** selecting a model:
@@ -58,7 +61,7 @@ Workers see only their brief, not this chat or the plan file. A brief is complet
 Start each worker as a background command, and start independent workers together so they run in parallel:
 
 ```sh
-squad-worker dev-1 --manager MANAGER_ID --engine codex --model-tier balanced --role dev --brief-file - <<'BRIEF'
+squad-worker dev-1 --manager MANAGER_ID --engine codex --model-tier balanced --role dev --plan .squad/plans/<name>.md --brief-file - <<'BRIEF'
 <complete brief>
 BRIEF
 ```
@@ -66,6 +69,7 @@ BRIEF
 Every manager worker must open a live split monitor before its engine starts. Never disable panes or use a headless override. If the split fails, report the failure and fix the terminal or use tmux; do not retry hidden.
 
 Replace `MANAGER_ID` with the literal manager ID shown in startup guidance on every worker launch; do not rely on inherited environment variables, which child shells may filter.
+Every run needs `--plan` (validated; shown in the status file and report). `--no-plan "<reason>"` is only for genuine emergencies; the reason is recorded in the status file and report. For a new or empty repository do not run git yourself: use `--clone <url>` or `--init` with `--project`; a repository without commits runs in place, without a worktree. `.claude/` is excluded from worktrees and patches automatically.
 
 In Claude Code, use one Bash call per worker with `run_in_background: true`; you are notified with the report when it exits. In other CLIs, detach it (`squad-worker ... >.squad/workers/<id>.out 2>&1 &`).
 
@@ -78,7 +82,7 @@ A report is a claim, not proof. For each finished worker:
 - Read its report and its diff (`git -C <worktree> diff <base>`, both given in the report). Check every acceptance criterion against the code.
 - Run the verification commands yourself, in the worktree.
 - Check that it touched only its own files, followed the existing patterns, and kept the security and quality bar.
-- When it passes, `squad-worker --merge <id>` applies the changes to the project (uncommitted, three-way) and removes the worktree. Merge one worker at a time and re-run the checks after each merge. On conflicts, the markers stay in the listed files: give their resolution to a worker with `--no-worktree`. `squad-worker --discard <id>` drops a worktree; `squad-worker --list` shows unmerged ones.
+- When it passes, `squad-worker --merge <id>` applies the changes to the project (uncommitted, three-way) and removes the worktree. Merge one worker at a time and re-run the checks after each merge. `--merge` refuses a high-risk plan or a sensitive patch (auth, secret, token, `.env`, `_headers`, `netlify.toml`, `vercel.json`, security paths; CSP, Authorization, API-key, or private-key lines) unless a reviewer run on the same plan is newer than the worker's; `--override-review "<reason>"` merges anyway and records the override in the plan. High-risk pushes also need `- review: <repo>`. On conflicts, the markers stay in the listed files: give their resolution to a worker with `--no-worktree`. `squad-worker --discard <id>` drops a worktree; `squad-worker --list` shows unmerged ones.
 
 ## 8. Fix what is wrong
 For each failed check, start a fix run with the same worker ID; before merging, it continues in the same worktree. The fix brief quotes the original acceptance criteria and lists each defect with `path:line`: what is wrong, what is expected instead, and the failing output. Fix only what is wrong; do not reassign work that passed. After two failed fix rounds on the same task, change approach: escalate to a mapped higher capability tier or another capable enabled engine, split the task, or ask the human with your analysis.

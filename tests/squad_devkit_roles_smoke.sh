@@ -155,7 +155,7 @@ squad join manager --role manager-devkit --client codex --protocol-version 2 >/d
 worker="$repo_root/scripts/squad-worker.sh"
 run_worker() {
   local id="$1" role="$2" brief="$3"
-  "$worker" "$id" --engine codex --role "$role" --brief "$brief" >"$temp_directory/worker-$id.out" 2>&1 </dev/null ||
+  "$worker" "$id" --engine codex --no-plan "roles smoke" --role "$role" --brief "$brief" >"$temp_directory/worker-$id.out" 2>&1 </dev/null ||
     { cat "$temp_directory/worker-$id.out" >&2; fail "worker $id exited non-zero"; }
 }
 last_codex_call() {
@@ -172,7 +172,7 @@ check_in_place() {
   grep -qx 'worktree=' "$status_file" || fail
   grep -qx 'repository=' "$status_file" || fail
   call="$(last_codex_call)"
-  [[ "$call" == *"$2"* && "$call" == *'--cd '* && "$call" != *'.squad/worktrees'* ]] || fail
+  [[ "$call" == *"$2"* && "$call" == *"--cd $project_directory "* ]] || fail
   [[ "$call" != *'squad-devkit template'* ]] || fail
 }
 run_worker sec-1 security 'Audit the auth module'

@@ -7,7 +7,38 @@ releases.
 ## [Unreleased]
 
 ### Added
+- Worker model tiers, local catalog and requested/actual model provenance.
+- Herdr desktop and Orca monitor panes, with a required live split for manager workers.
+- AGY stream-json lifecycle and model evidence.
 - Add session-only `--yolo` for Claude, Codex, and AGY managers/workers, with explicit backend/fallback inheritance and sandbox conflict checks.
+- Plan guardrails: `squad-worker --plan FILE` validates a plan
+  (`templates/devkit/plan.md.example`) and records it in the status file and
+  report; manager context requires it unless `--no-plan "REASON"` or
+  `SQUAD_WORKER_REQUIRE_PLAN=0`.
+- `squad-worker --clone URL` and `--init` for new repositories; a repository
+  without commits runs in place. `.claude/` is excluded from worktrees and patches.
+- `squad-worker --merge` refuses high-risk plans and sensitive patches without
+  a newer reviewer run; `--override-review "REASON"` records an override.
+- Claude manager guard hook: blocks commit/push without a plan approval and
+  Edit/Write outside `.squad/` (`SQUAD_DEVKIT_GUARD`, `SQUAD_DEVKIT_GUARD_ALLOW`).
+- The installer links `squad-route` and `squad-ask`.
+- Approvals accept an absolute repo path (`- push: /abs/path/to/repo`), which
+  avoids matching every repo that shares a basename.
+
+### Changed
+- The sensitive-patch doc skip is narrowed to `*.md`, `*.mdx` and `*.rst`;
+  secret-looking paths and private keys are checked in every file, and both
+  sides of a rename are checked.
+- The "squad-route is not configured" notice prints once per project.
+- The manager role and the `squad-devkit` skill describe the plan, approval,
+  follow-up, and manual-ops workflow.
+- `squad-worker --manager <id>` (or `SQUAD_MANAGER_ID`) now requires `--plan`
+  or `--no-plan "REASON"`; set `SQUAD_WORKER_REQUIRE_PLAN=0` to opt out.
+- `squad-worker --merge` now refuses high-risk plans and sensitive (non-doc)
+  patches without a newer reviewer run on the same plan, including for solo
+  human merges; `--override-review "REASON"` records an override.
+- The Claude manager always gets a settings file with the PreToolUse guard,
+  unless `SQUAD_DEVKIT_GUARD=0`.
 
 ## [1.0.2] - 2026-11-02
 

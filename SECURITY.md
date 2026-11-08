@@ -43,6 +43,13 @@ The session boolean `SQUAD_DEVKIT_YOLO=1` carries opt-in through here, tmux,
 Ghostty, and manager fallback; `0` disables inheritance. It is never saved to
 configuration. Unsupported engines reject YOLO. YOLO conflicts with worker
 `--sandbox` and `SQUAD_WORKER_SANDBOX=1`; omit YOLO to use sandboxing.
+YOLO bypasses engine permission prompts and sandboxing only. The squad-worker
+plan gate and merge review gate still apply to every engine. The manager guard
+hook is installed only for Claude managers on machines with jq; it relies on
+Claude Code honoring PreToolUse denies in bypass mode, which squad-devkit does
+not test. Codex and AGY managers have no guard hook. A YOLO manager cannot start
+workers on engines without YOLO support (opencode, grok, ccr) unless
+SQUAD_DEVKIT_YOLO=0.
 Claude uses `--dangerously-skip-permissions` with session sandboxing disabled,
 Codex uses `--dangerously-bypass-approvals-and-sandbox`, and AGY uses
 `--dangerously-skip-permissions` without `--sandbox`.
