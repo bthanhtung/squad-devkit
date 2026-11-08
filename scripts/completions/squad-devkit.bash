@@ -58,7 +58,7 @@ _squad_worker() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--engine --role --title --brief --brief-file --project --profile --model --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --discard -h --help"
+  local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review -h --help"
   local engines="claude codex opencode grok agy ccr"
   local roles="dev tester reviewer researcher ui-ux security manager-devkit"
   local profiles="high medium max"
@@ -74,12 +74,21 @@ _squad_worker() {
       COMPREPLY=( $(compgen -W "$roles" -- "$cur") )
       return 0
       ;;
+    --model-tier)
+      # shellcheck disable=SC2207
+      COMPREPLY=( $(compgen -W "fast balanced strong" -- "$cur") )
+      return 0
+      ;;
+    --model)
+      # Model names belong to the installed engine/provider, not a fixed catalog.
+      return 0
+      ;;
     --profile)
       # shellcheck disable=SC2207
       COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
       return 0
       ;;
-    --project|--brief-file)
+    --project|--brief-file|--plan)
       # shellcheck disable=SC2207
       COMPREPLY=( $(compgen -f -- "$cur") )
       return 0
@@ -101,7 +110,7 @@ _squad_worker() {
       COMPREPLY=( $(compgen -W "$running_ids" -- "$cur") )
       return 0
       ;;
-    --merge|--discard)
+    --merge|--diff|--discard)
       local ws unmerged_ids="all"
       if ws="$(_squad_devkit_find_workspace)"; then
         local sf id wt seen=" "

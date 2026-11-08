@@ -23,7 +23,7 @@ trap cleanup EXIT
 unset TMUX TMUX_PANE SQUAD_DEVKIT_GHOSTTY_TERMINAL SQUAD_MANAGER_ID SQUAD_DEVKIT_WORKSPACE \
   SQUAD_DEVKIT_BACKEND SQUAD_DEVKIT_MANAGER SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS \
   SQUAD_DEVKIT_PROJECT_ROOT SQUAD_DEVKIT_ALLOW_HOME SQUAD_DEVKIT_TASK SQUAD_DEVKIT_NO_PROMPT \
-  HERDR_PANE_ID HERDR_ENV HERDR_SOCKET_PATH WEZTERM_PANE KITTY_WINDOW_ID ITERM_SESSION_ID \
+  HERDR_PANE_ID HERDR_ENV HERDR_SOCKET_PATH HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE WEZTERM_PANE KITTY_WINDOW_ID ITERM_SESSION_ID \
   ZELLIJ ZELLIJ_SESSION_NAME DISPLAY WAYLAND_DISPLAY
 export TERM_PROGRAM=test-terminal SQUAD_WORKER_PANES=0 SQUAD_WORKER_DASHBOARD=0
 
@@ -151,11 +151,11 @@ pass 'zsh completion offers exactly the seven roles for squad-worker --role'
 # Run every squad command inside the temp project: its database must not be the repo's.
 cd "$project_directory"
 [[ "$(pwd -P)" == "$resolved_project" ]] || fail
-squad join lead --role manager-devkit --client codex --protocol-version 2 >/dev/null
+squad join manager --role manager-devkit --client codex --protocol-version 2 >/dev/null
 worker="$repo_root/scripts/squad-worker.sh"
 run_worker() {
   local id="$1" role="$2" brief="$3"
-  "$worker" "$id" --engine codex --manager lead --no-plan 'roles smoke' --role "$role" --brief "$brief" >"$temp_directory/worker-$id.out" 2>&1 </dev/null ||
+  "$worker" "$id" --engine codex --no-plan "roles smoke" --role "$role" --brief "$brief" >"$temp_directory/worker-$id.out" 2>&1 </dev/null ||
     { cat "$temp_directory/worker-$id.out" >&2; fail "worker $id exited non-zero"; }
 }
 last_codex_call() {
@@ -172,7 +172,7 @@ check_in_place() {
   grep -qx 'worktree=' "$status_file" || fail
   grep -qx 'repository=' "$status_file" || fail
   call="$(last_codex_call)"
-  [[ "$call" == *"$2"* && "$call" == *'--cd '* && "$call" != *'.squad/worktrees'* ]] || fail
+  [[ "$call" == *"$2"* && "$call" == *"--cd $project_directory "* ]] || fail
   [[ "$call" != *'squad-devkit template'* ]] || fail
 }
 run_worker sec-1 security 'Audit the auth module'

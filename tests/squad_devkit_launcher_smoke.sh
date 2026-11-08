@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE
 # Fixtures must not inherit the invoking squad session.
+unset SQUAD_DEVKIT_ORCA_TERMINAL ORCA_PANE_KEY ORCA_CLI_COMMAND ORCA_DEV_REPO_ROOT
 unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_DEVKIT_YOLO
 # Name the failing command, so CI logs show where a test stopped.
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -61,6 +63,10 @@ dry_run="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry
 [[ "$dry_run" == *'manager:'* && "$dry_run" == *"Workers: $repo_root/scripts/squad-worker.sh"* ]] || fail
 [[ "$dry_run" != *'dev-1:'* && "$dry_run" != *'--profile max'* ]] || fail
 [[ ! -d "$project_directory/.squad" ]] || fail
+filtered="$(cd "$project_directory" && SQUAD_WORKER_CODEX_MODEL_STRONG=enabled-choice SQUAD_WORKER_CLAUDE_MODEL_STRONG=disabled-choice "$repo_root/scripts/squad-devkit.sh" --dry-run --workers codex)"
+[[ "$filtered" == *enabled-choice* && "$filtered" != *disabled-choice* && "$filtered" == *unverified* ]] || fail
+no_workers="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --disable-workers claude,codex,opencode,grok,agy,ccr)"
+[[ "$no_workers" != *provider_availability* ]] || fail
 session_name="$(printf '%s\n' "$dry_run" | awk '/^Session: / { print $2 }')"
 
 named_dry_run="$(cd "$HOME" && "$repo_root/scripts/squad-devkit.sh" 'demo project' --dry-run)"
@@ -159,6 +165,7 @@ rg -q '## Your role \(.squad/roles/manager-devkit.md\).*You do not write code' "
 rg -q '^  manager \(role: manager-devkit\)' <<<"$(cd "$project_directory" && squad agents)"
 [[ -f "$project_directory/.squad/managers/manager.pid" ]] || fail
 rg -Fq "squad-worker is: $repo_root/scripts/squad-worker.sh" "$DEVKIT_TEST_LOG"
+rg -q -- "--manager [^ ]+" "$DEVKIT_TEST_LOG"
 rg -q 'Do not repeat these instructions to the human\.\\n\\n## Your role' "$DEVKIT_TEST_LOG"
 [[ "$(cat "$DEVKIT_TEST_LOG")" != *ERROR* ]] || fail
 for role in manager-devkit dev tester reviewer researcher ui-ux security; do
@@ -224,6 +231,40 @@ rg -q "^here:.*--append-system-prompt You are the Claude Code manager.* check th
 cmp -s "$repo_root/templates/devkit/manager-devkit.md" "$project_directory/.squad/roles/manager-devkit.md"
 [[ "$(cat "$project_directory/.squad/roles/dev.md")" == 'my own dev role' ]] || fail
 rg -q 'keeping customized .*/dev.md' "$temp_directory/here-log"
+
+# Orca captures this shell's exact pane, never the active/unrelated terminal.
+cat >"$test_bin/orca-fake" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$DEVKIT_ORCA_LOG"
+[[ "$1 $2" == 'terminal list' ]] || exit 1
+printf '{"ok":true,"result":{"terminals":[{"handle":"unrelated","tabId":"other","leafId":"leaf"},{"handle":"manager-handle","tabId":"tab","leafId":"leaf"}]}}\n'
+EOF
+chmod +x "$test_bin/orca-fake"
+export DEVKIT_ORCA_LOG="$temp_directory/orca-log"
+cat >"$test_bin/claude" <<'EOF'
+#!/usr/bin/env bash
+printf 'orca-manager:%s\n' "${SQUAD_DEVKIT_ORCA_TERMINAL:-none}" >>"$DEVKIT_TEST_LOG"
+EOF
+(cd "$project_directory" && ORCA_PANE_KEY=tab:leaf ORCA_CLI_COMMAND="$test_bin/orca-fake" \
+  "$repo_root/scripts/squad-devkit.sh" --here)
+rg -q '^orca-manager:manager-handle$' "$DEVKIT_TEST_LOG"
+rg -Fq "terminal list --worktree path:$resolved_project_directory --json" "$DEVKIT_ORCA_LOG"
+(cd "$project_directory" && ORCA_PANE_KEY=missing:leaf ORCA_CLI_COMMAND="$test_bin/orca-fake" \
+  "$repo_root/scripts/squad-devkit.sh" --here)
+rg -q '^orca-manager:none$' "$DEVKIT_TEST_LOG"
+: >"$DEVKIT_ORCA_LOG"
+(cd "$project_directory" && SQUAD_DEVKIT_ORCA_TERMINAL=explicit-manager ORCA_PANE_KEY=tab:leaf \
+  ORCA_CLI_COMMAND="$test_bin/orca-fake" "$repo_root/scripts/squad-devkit.sh" --here)
+rg -q '^orca-manager:explicit-manager$' "$DEVKIT_TEST_LOG"
+[[ ! -s "$DEVKIT_ORCA_LOG" ]] || fail
+
+orca_doctor="$(ORCA_PANE_KEY=tab:leaf ORCA_CLI_COMMAND="$test_bin/orca-fake" "$repo_root/scripts/squad-devkit.sh" --doctor)"
+[[ "$orca_doctor" == *'Orca split-pane (explicit manager terminal)'* ]] || fail
+# Restore the manager fixture used by the remaining launcher checks.
+cat >"$test_bin/claude" <<'EOF'
+#!/usr/bin/env bash
+printf 'here:%s:%s:%s\n' "$PWD" "${SQUAD_DEVKIT_GHOSTTY_TERMINAL:-none}" "${*//$'\n'/\\n}" >>"$DEVKIT_TEST_LOG"
+EOF
 
 cat >"$test_bin/osascript" <<'EOF'
 #!/usr/bin/env bash

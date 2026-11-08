@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-unset HC_TERMINAL_ID
+unset HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE SQUAD_WORKER_PANES SQUAD_WORKER_PANE_HOLD
 # Fixtures must not inherit the invoking squad session.
-unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_DEVKIT_YOLO
+unset SQUAD_DEVKIT_ORCA_TERMINAL ORCA_PANE_KEY ORCA_CLI_COMMAND ORCA_DEV_REPO_ROOT
+unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_DEVKIT_YOLO SQUAD_WORKER_CODEX_PROFILE
 # Name the failing command, so CI logs show where a test stopped.
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
@@ -47,6 +48,7 @@ if [[ -n "${FAKE_CODEX_FAIL:-}" ]]; then
   echo 'model error' >&2
   exit 3
 fi
+[[ -z "${FAKE_MODEL_EVENT:-}" ]] || printf '%s\n' "$FAKE_MODEL_EVENT"
 work_directory=""
 while (( $# > 0 )); do
   [[ "$1" == --cd ]] && work_directory="$2"
@@ -69,6 +71,7 @@ cat >"$test_bin/claude" <<'EOF'
 #!/usr/bin/env bash
 printf 'claude:%s:%s\n' "$ANTHROPIC_BASE_URL" "${*//$'\n'/\\n}" >>"$WORKER_TEST_LOG"
 printf 'claude-pwd:%s\n' "$PWD" >>"$WORKER_TEST_LOG"
+[[ -z "${FAKE_MODEL_EVENT:-}" ]] || printf '%s\n' "$FAKE_MODEL_EVENT"
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"README.md"}}]}}'
 echo '{"type":"result","num_turns":2,"usage":{"input_tokens":1200,"output_tokens":80},"result":"Wrote README.md. Verification: re-read the file."}'
 EOF
@@ -85,7 +88,12 @@ if [[ -n "${FAKE_PLAIN_BEATS:-}" ]]; then
   for _ in $(seq "$FAKE_PLAIN_BEATS"); do echo 'progress'; sleep 1; done
 fi
 if [[ -n "${FAKE_PLAIN_SLEEP:-}" ]]; then sleep "$FAKE_PLAIN_SLEEP"; fi
-echo 'Done. Files: none. Verification: ok.'
+if [[ -n "${FAKE_AGY_JSON:-}" ]]; then
+  echo '{"type":"assistant","message":{"model":"agy-reported"}}'
+  echo '{"type":"result","result":"Done. Verification: ok."}'
+else
+  echo 'Done. Files: none. Verification: ok.'
+fi
 EOF
 sed 's/^printf .grok:/printf '"'"'agy:/' "$test_bin/grok" >"$test_bin/agy"
 sed 's/^printf .grok:/printf '"'"'gemini:/' "$test_bin/grok" >"$test_bin/gemini"
@@ -101,6 +109,56 @@ cp "$repo_root/templates/devkit/dev.md" .squad/roles/dev.md
 squad join manager --role manager-devkit --client claude --protocol-version 2 >/dev/null
 worker="$repo_root/scripts/squad-worker.sh"
 
+# Model selection crosses the CLI boundary, not just the status display.
+for engine in codex claude opencode grok agy; do
+  key="SQUAD_WORKER_$(printf '%s' "$engine" | tr '[:lower:]' '[:upper:]')_MODEL"
+  for selection in override environment default; do
+    expected=env-choice
+    opts=()
+    case "$selection" in
+      override) opts=(--model explicit-choice); expected=explicit-choice ;;
+      default) expected=''; [[ "$engine" != claude ]] || expected=haiku ;;
+    esac
+    value=env-choice; [[ "$selection" != default ]] || value=''
+    id="model-$engine-$selection"
+    env "$key=$value" FAKE_MODEL_EVENT='{"type":"assistant","message":{"model":"observed-model"}}' \
+      "$worker" "$id" --engine "$engine" --no-worktree ${opts[@]+"${opts[@]}"} --brief 'Model check' >/dev/null 2>"$temp_directory/model-stderr"
+    sf="$(ls .squad/workers/"$id"-*.status)"
+    grep -qx "requested_model=$expected" "$sf"
+    grep -q 'requested=' "$temp_directory/model-stderr"
+    call="$(grep "^$engine:" "$WORKER_TEST_LOG" | tail -n 1)"
+    if [[ -n "$expected" ]]; then [[ "$call" == *"--model $expected"* ]] || fail
+    else [[ "$call" != *'--model '* ]] || fail; fi
+    actual=unknown; [[ "$engine" != claude ]] || actual=observed-model
+    grep -qx "actual_model=$actual" "$sf"
+  done
+done
+# Saved effort is forwarded only when that selection wins.
+cat > .squad/worker-models.json <<'JSON'
+{"version":1,"engines":{"codex":{"strong":{"model":"saved-code","effort":"high"}},"agy":{"strong":{"model":"saved-agy","effort":"low"}}}}
+JSON
+"$worker" saved-code --engine codex --model-tier strong --no-worktree --brief check >/dev/null
+[[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--model saved-code -c model_reasoning_effort="high"'* ]] || fail
+[[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" != *'--profile '* ]] || fail
+"$worker" saved-agy --engine agy --model-tier strong --no-worktree --brief check >/dev/null
+[[ "$(grep '^agy:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--effort low --model saved-agy'* ]] || fail
+SQUAD_WORKER_CODEX_PROFILE=custom "$worker" saved-profile --engine codex --model-tier strong --no-worktree --brief check >/dev/null
+[[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--profile custom'* ]] || fail
+"$worker" flag-profile --engine codex --profile chosen --model explicit --model-tier strong --no-worktree --brief check >/dev/null
+[[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--profile chosen'* ]] || fail
+[[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" != *'model_reasoning_effort'* ]] || fail
+rm .squad/worker-models.json
+SQUAD_WORKER_CODEX_MODEL_STRONG=tier-choice "$worker" tier-codex --engine codex --model-tier strong --no-worktree --brief '--models' >/dev/null
+grep -qx 'model_tier=strong' .squad/workers/tier-codex-*.status
+grep -qx 'requested_model=tier-choice' .squad/workers/tier-codex-*.status
+FAKE_AGY_JSON=1 "$worker" model-agy-json --engine agy --no-worktree --brief 'AGY JSON' >/dev/null
+grep -qx 'actual_model=agy-reported' .squad/workers/model-agy-json-*.status
+if "$worker" model-ccr --engine ccr --model explicit --brief check >/dev/null 2>"$temp_directory/model-stderr"; then fail; fi
+grep -q 'router' "$temp_directory/model-stderr"
+if SQUAD_WORKER_CCR_MODEL=env "$worker" model-ccr-env --engine ccr --brief check >/dev/null 2>&1; then fail; fi
+if "$worker" model-bad --engine codex --model $'bad\nstate=completed' --brief check >/dev/null 2>&1; then fail; fi
+: >"$WORKER_TEST_LOG"
+
 if "$worker" dev-1 --engine codex >/dev/null 2>"$temp_directory/error"; then
   echo 'Expected an empty brief to fail' >&2
   exit 1
@@ -112,7 +170,7 @@ codex_output="$(cd src && printf 'Fix add() in calc.py\nFiles you own: calc.py\n
 [[ "$codex_output" == '[dev-1 · codex · task '* ]] || fail
 [[ "$codex_output" == *'Fixed add(). Files: calc.py. Verification: ok.'* ]] || fail
 codex_call="$(grep '^codex:' "$WORKER_TEST_LOG")"
-[[ "$codex_call" == *"exec --json --cd $PWD --profile high --ephemeral --skip-git-repo-check --sandbox workspace-write"* ]] || fail
+[[ "$codex_call" == *"exec --json --cd $PWD --ephemeral --skip-git-repo-check --sandbox workspace-write"* ]] || fail
 [[ "$codex_call" == *'-c mcp_servers.figma.enabled=false'* ]] || fail
 [[ "$codex_call" != *'mcp_servers.sentry'* ]] || fail
 [[ "$codex_call" == *'You are dev-1, a dev worker in a squad led by manager.'* ]] || fail
@@ -124,23 +182,23 @@ ls .squad/workers/dev-1-*.md >/dev/null
 dev_one_status="$(ls .squad/workers/dev-1-*.status)"
 grep -qx 'state=completed' "$dev_one_status"
 grep -qx 'exit=0' "$dev_one_status"
-grep -qx 'profile=high' "$dev_one_status"
+grep -qx 'profile=' "$dev_one_status"
 grep -qx 'title=Fix add() in calc.py' "$dev_one_status"
 monitor_frame="$("$repo_root/scripts/squad-worker-monitor.sh" "$dev_one_status" --once)"
-[[ "$monitor_frame" == *'dev-1'*'codex (high)'*'COMPLETED'* ]] || fail
+[[ "$monitor_frame" == *'dev-1'*'codex'*'COMPLETED'* ]] || fail
 [[ "$monitor_frame" == *'Fixed add(). Files: calc.py. Verification: ok.'* ]] || fail
-[[ "$monitor_frame" == *'dev-1 · codex (high) · role dev'*'Task: Fix add() in calc.py'* ]] || fail
-[[ "$("$repo_root/scripts/squad-worker-monitor.sh" --all --once)" == *'dev-1'*'codex/high'*'completed'* ]] || fail
+[[ "$monitor_frame" == *'dev-1 · codex · role dev'*'Task: Fix add() in calc.py'* ]] || fail
+[[ "$("$repo_root/scripts/squad-worker-monitor.sh" --all --once)" == *'dev-1'*'codex'*'completed'* ]] || fail
 [[ ! -e .squad/workers/.pane.lock ]] || fail
 grep -q 'dev-1 (codex) completed task .* Report: .*/.squad/workers/dev-1-' <<<"$(squad receive manager)"
 
 "$worker" dev-ns --engine codex --no-sandbox --brief 'No sandbox codex' >/dev/null
 codex_ns_call="$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)"
-[[ "$codex_ns_call" == *"exec --json --cd $PWD --profile high --ephemeral --skip-git-repo-check --sandbox danger-full-access"* ]] || fail
+[[ "$codex_ns_call" == *"exec --json --cd $PWD --ephemeral --skip-git-repo-check --sandbox danger-full-access"* ]] || fail
 
 SQUAD_WORKER_SANDBOX=0 "$worker" dev-env-ns --engine codex --brief 'Env no sandbox codex' >/dev/null
 codex_env_ns_call="$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)"
-[[ "$codex_env_ns_call" == *"exec --json --cd $PWD --profile high --ephemeral --skip-git-repo-check --sandbox danger-full-access"* ]] || fail
+[[ "$codex_env_ns_call" == *"exec --json --cd $PWD --ephemeral --skip-git-repo-check --sandbox danger-full-access"* ]] || fail
 
 ccr_output="$("$worker" doc-1 --engine ccr --role writer --title 'Write README' \
   --brief 'Create README.md. Files you own: README.md')"
@@ -181,7 +239,7 @@ mkdir -p "$other_project"
 resolved_other="$(cd "$other_project" && pwd)"
 (cd "$temp_directory" && SQUAD_DEVKIT_WORKSPACE="$project_directory" \
   "$worker" far-1 --engine codex --project "$other_project" --brief 'Work elsewhere' >/dev/null)
-grep -q "^codex:exec --json --cd $resolved_other --profile high" "$WORKER_TEST_LOG"
+grep -q "^codex:exec --json --cd $resolved_other --ephemeral" "$WORKER_TEST_LOG"
 grep -q "Working directory: $resolved_other" "$WORKER_TEST_LOG"
 grep -q 'assigned_to: far-1' <<<"$(squad task list --status completed)"
 ls .squad/workers/far-1-*.md >/dev/null
@@ -429,6 +487,78 @@ grep -q "codex:exec --json --cd $(cd "$repo" && pwd) " "$WORKER_TEST_LOG"
 status=0
 "$worker" nogit-1 --engine codex --worktree --project "$other_project" --brief 'x' >/dev/null 2>"$temp_directory/error" || status=$?
 [[ "$status" == 2 ]] && grep -q -- '--worktree needs a git repository' "$temp_directory/error" || fail
+# Orca tests use only a fake CLI; never discover or mutate the real desktop.
+(
+  source "$repo_root/scripts/lib/squad-panes.sh"
+  export ORCA_CLI_COMMAND="$test_bin/orca-fake" ORCA_TEST_LOG="$temp_directory/orca.log"
+  cat >"$ORCA_CLI_COMMAND" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ORCA_TEST_LOG"
+case "$2" in
+  list) printf '{"ok":true,"result":{"terminals":[{"handle":"manager","tabId":"tab","leafId":"leaf"},{"handle":"unrelated","tabId":"other","leafId":"leaf"}]}}\n' ;;
+  show)
+    [[ "$4" != stale ]] || exit 1
+    [[ "$4" != unrelated ]] || { echo '{"ok":true,"result":{"terminal":{"tabId":"other"}}}'; exit 0; }
+    printf '{"ok":true,"result":{"terminal":{"handle":"%s","connected":true,"writable":true,"orphaned":false,"tabId":"tab"}}}\n' "$4" ;;
+  split)
+    printf '%s' "$8" >"$ORCA_TEST_LOG.command"
+    [[ "${ORCA_TEST_MALFORMED:-0}" != 1 ]] || { echo '{"ok":true,"result":{"split":{"handle":null}}}'; exit 0; }
+    [[ "${ORCA_TEST_TIMEOUT:-0}" != 1 ]] || { echo '{"ok":false,"error":{"code":"runtime_error","data":{"leafId":"pending"}}}'; exit 1; }
+    echo '{"ok":true,"result":{"split":{"handle":"worker-pane","tabId":"tab"}}}' ;;
+esac
+EOF
+  chmod +x "$ORCA_CLI_COMMAND"
+  mkdir -p "$temp_directory/orca-state"
+  unset TMUX TMUX_PANE HERDR_PANE_ID
+  export ORCA_PANE_KEY=tab:leaf
+  [[ "$(squad_panes_orca_manager "$PWD")" == manager ]] || fail
+  export ORCA_PANE_KEY=missing:leaf
+  [[ -z "$(squad_panes_orca_manager "$PWD")" ]] || fail
+  export SQUAD_DEVKIT_ORCA_TERMINAL=manager
+  mkdir -p "$temp_directory/workspace 'quoted'"
+  printf '#!/bin/sh\nprintf quoted-ok\n' >"$temp_directory/worker 'quoted' script"
+  chmod +x "$temp_directory/worker 'quoted' script"
+  squad_open_monitor "$temp_directory/worker 'quoted' script" 'worker · codex' "$temp_directory/workspace 'quoted'" "$temp_directory/orca-state" ''
+  [[ "$(bash -c "$(cat "$ORCA_TEST_LOG.command")")" == quoted-ok ]] || fail
+  squad_open_monitor /tmp/next 'next · codex' "$PWD" "$temp_directory/orca-state" ''
+  grep -q '^terminal split --terminal manager --direction vertical --command ' "$ORCA_TEST_LOG"
+  grep -q '^terminal split --terminal worker-pane --direction horizontal --command ' "$ORCA_TEST_LOG"
+  grep -q '^terminal set-pane-title --terminal worker-pane --title worker · codex --json$' "$ORCA_TEST_LOG"
+  grep -q '^terminal focus --terminal manager --json$' "$ORCA_TEST_LOG"
+  printf 'unrelated\n' >"$temp_directory/orca-state/.orca-manager.last"
+  : >"$ORCA_TEST_LOG"
+  squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
+  grep -q '^terminal split --terminal manager --direction vertical ' "$ORCA_TEST_LOG"
+  printf 'stale\n' >"$temp_directory/orca-state/.orca-manager.last"
+  : >"$ORCA_TEST_LOG"
+  squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
+  grep -q '^terminal split --terminal manager --direction vertical ' "$ORCA_TEST_LOG"
+  : >"$ORCA_TEST_LOG"
+  osascript_orca_test() { echo dashboard >>"$ORCA_TEST_LOG"; }
+  TERM_PROGRAM=Apple_Terminal SQUAD_DEVKIT_OSASCRIPT=osascript_orca_test ORCA_TEST_TIMEOUT=1 \
+    squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" /tmp/dashboard
+  [[ "$(grep -c '^terminal split ' "$ORCA_TEST_LOG")" == 2 ]] || fail
+  [[ "$(grep '^terminal split ' "$ORCA_TEST_LOG" | sed -n 2p)" == *'--retry-split pending'* ]] || fail
+  ! grep -q dashboard "$ORCA_TEST_LOG" || fail
+  [[ "$(cat "$temp_directory/orca-state/.orca-manager.last")" == worker-pane ]] || fail
+  : >"$ORCA_TEST_LOG"
+  ORCA_TEST_MALFORMED=1 squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
+  [[ "$(cat "$temp_directory/orca-state/.orca-manager.last")" == worker-pane ]] || fail
+  : >"$ORCA_TEST_LOG"
+  SQUAD_DEVKIT_ORCA_TERMINAL=stale squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
+  ! grep -q '^terminal split ' "$ORCA_TEST_LOG" || fail
+  : >"$ORCA_TEST_LOG"
+  tmux() { printf 'tmux-pane\n'; }
+  TMUX=fake TMUX_PANE=%1 squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
+  [[ ! -s "$ORCA_TEST_LOG" ]] || fail
+  unset -f tmux
+  unset SQUAD_DEVKIT_ORCA_TERMINAL
+  squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
+  [[ ! -s "$ORCA_TEST_LOG" ]] || fail
+  export SQUAD_DEVKIT_ORCA_TERMINAL=manager
+  ORCA_CLI_COMMAND=missing-orca squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
+  [[ ! -s "$ORCA_TEST_LOG" ]] || fail
+)
 # Other terminals: split APIs where they exist, otherwise one dashboard window.
 export PANES_LOG="$temp_directory/panes"
 for tool in wezterm kitten zellij x-terminal-emulator; do
@@ -585,5 +715,7 @@ if SQUAD_WORKER_SANDBOX=1 "$worker" yolo-conflict --engine claude --yolo --brief
 for engine in grok opencode ccr; do
   if "$worker" yolo-unsupported --engine "$engine" --yolo --brief test >/dev/null 2>&1; then fail; fi
 done
+
+bash "$repo_root/tests/squad_worker_agy_lifecycle_smoke.sh"
 
 echo 'PASS: squad-worker engines, worktrees, panes in every terminal, flicker-free monitor, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'

@@ -20,6 +20,8 @@ check_bash _squad_devkit --doctor squad-devkit --doc
 check_bash _squad_devkit codex squad-devkit --manager co
 check_bash _squad_devkit agy squad-devkit --workers ag
 check_bash _squad_devkit ccr squad-devkit --disable-workers cc
+check_bash _squad_worker strong squad-worker dev-1 --model-tier st
+check_bash _squad_worker --models squad-worker --models
 check_bash _squad_worker opencode squad-worker worker-1 --engine open
 
 command -v zsh >/dev/null || fail 'zsh is required for completion checks'

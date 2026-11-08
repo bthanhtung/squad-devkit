@@ -9,11 +9,12 @@ export HOME="$tmpdir/home"
 # Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
 export XDG_CONFIG_HOME="$HOME/.config"
 export SQUAD_DEVKIT_CONFIG="$HOME/.config/squad-devkit/config"
-unset SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS SQUAD_DEVKIT_MANAGER
+unset SQUAD_DEVKIT_WORKERS SQUAD_DEVKIT_DISABLE_WORKERS SQUAD_DEVKIT_MANAGER SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE HERDR_ENV HERDR_PANE_ID
 # Only explicitly selected utilities and fake CLIs are visible to the launcher.
 for tool in bash dirname cksum cut head tail cat mkdir sed awk grep wc tr sort find date readlink basename; do
   ln -s "$(command -v "$tool")" "$tmpdir/bin/$tool"
 done
+real_jq=$(command -v jq)
 real_git=$(command -v git)
 ln -s "$real_git" "$tmpdir/bin/git"
 export PATH="$tmpdir/bin"
@@ -82,15 +83,28 @@ grep -q "grok.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "claude.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
 echo "PASS: Test 6"
 
+/bin/ln -sf "$real_jq" "$tmpdir/bin/jq"
 echo "=== Test 7: Dry-run worker prompt verification ==="
 # Check worker line generated for manager in dry-run
 mkdir -p "$tmpdir/proj"
 cd "$tmpdir/proj"
 git init -q
 [[ -d .git ]] || fail "git fixture was not initialized"
-out=$("$DEVKIT" --dry-run --manager codex --workers agy --disable-workers claude,ccr)
+out=$("$DEVKIT" --dry-run --manager codex --workers agy --disable-workers claude,ccr 2>"$tmpdir/warnings")
 echo "$out"
 grep -q "Installed worker engines, most trusted first: agy" <<<"$out" || fail "unexpected output: $out"
+grep -q 'SQUAD_WORKER_AGY_MODEL_FAST' "$tmpdir/warnings" || fail 'missing fast tier warning'
+grep -q 'squad config workers' "$tmpdir/warnings" || fail 'missing setup guidance'
+if grep -Eq 'CODEX|CLAUDE|CCR' "$tmpdir/warnings"; then fail 'unselected engines warned'; fi
+mkdir -p .squad
+cat > .squad/worker-models.json <<'JSON'
+{"version":1,"engines":{"agy":{"fast":{"model":"f"},"balanced":{"model":"b"},"strong":{"model":"s"}}}}
+JSON
+"$DEVKIT" --dry-run --manager codex --workers agy >"$tmpdir/saved-output" 2>"$tmpdir/warnings"
+[[ ! -s "$tmpdir/warnings" ]] || fail 'saved tiers warned'
+grep -q 'saved' "$tmpdir/saved-output" || fail 'saved catalog missing'
+"$DEVKIT" --dry-run --manager codex --workers claude,ccr > /dev/null 2>"$tmpdir/warnings"
+[[ ! -s "$tmpdir/warnings" ]] || fail 'builtins or unsupported CCR tiers warned'
 echo "PASS: Test 7"
 
 # Missing required tools must make doctor fail even when managers are installed.

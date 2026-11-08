@@ -7,6 +7,33 @@ releases.
 ## [Unreleased]
 
 ### Added
+- Worker model tiers: `squad-worker --model-tier fast|balanced|strong` resolves
+  `SQUAD_WORKER_<ENGINE>_MODEL_<TIER>`, saved project selections in
+  `.squad/worker-models.json`, and built-in aliases (`haiku`, `sonnet`, `opus`
+  for Claude). Only the balanced tier falls back to the generic engine model
+  (`SQUAD_WORKER_<ENGINE>_MODEL`); missing tier mappings fail early with no
+  silent downgrade.
+- Local model catalog and configuration: `squad-worker --models [--engine NAME]`
+  inspects local model candidates as JSON without invoking providers or
+  inspecting credentials, while `squad config workers` interactively configures
+  saved worker model tiers per installed engine.
+- Model provenance tracking: worker status records and monitor dashboards track
+  `requested_model`, `model_source`, `actual_model`, and `model_tier`. The
+  `actual_model` field is only populated from engine-reported JSON evidence
+  (Claude, CCR, and AGY structured events) and remains `unknown` otherwise;
+  Codex `--profile` is treated as configuration, not a model.
+- Herdr desktop and Orca monitor panes: workers open live monitor panes via
+  `herdr-app` (resolved from local `HC_TERMINAL_ID` panes) and Orca
+  (`SQUAD_DEVKIT_ORCA_TERMINAL` or `ORCA_PANE_KEY`, using `orca-ide` CLI on
+  Linux). `squad-devkit --doctor` reports the active Herdr desktop pane mode.
+- Required live monitor split for manager workers: workers launched in manager
+  context (`--manager` or `SQUAD_MANAGER_ID`) require a confirmed live split
+  monitor and fail immediately instead of running hidden. Setting
+  `SQUAD_WORKER_PANES=0` is refused in manager context, and Zellij is rejected
+  because it cannot confirm a split.
+- AGY stream-json lifecycle and model evidence: native AGY workers parse
+  structured stream JSON, verifying a single terminal `SUCCESS` event and
+  extracting assistant/result model usage evidence.
 - Add session-only `--yolo` for Claude, Codex, and AGY managers/workers, with explicit backend/fallback inheritance and sandbox conflict checks.
 - Plan guardrails: `squad-worker --plan FILE` validates a plan
   (`templates/devkit/plan.md.example`) and records it in the status file and

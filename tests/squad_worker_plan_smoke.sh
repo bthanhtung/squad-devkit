@@ -170,6 +170,18 @@ EOF
 chmod +x "$tmp/bin/agy"
 export PATH="$repo_root/target/debug:$tmp/bin:$PATH"
 export WORKER_TEST_LOG="$tmp/invocations"
+cat >"$tmp/bin/herdr" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$WORKER_HERDR_LOG"
+if [[ "$1 $2" == 'pane split' ]]; then
+  printf '{"result":{"pane":{"pane_id":"w1:p%s","focused":false}}}\n' "$(grep -c '^pane split' "$WORKER_HERDR_LOG")"
+elif [[ "$1 $2" == 'pane run' ]]; then
+  bash -c "$4" >/dev/null 2>&1 &
+fi
+EOF
+chmod +x "$tmp/bin/herdr"
+export WORKER_HERDR_LOG="$tmp/herdr"
+export HERDR_ENV=1 HERDR_PANE_ID=w1:pM SQUAD_WORKER_PANE_HOLD=0
 worker="$repo_root/scripts/squad-worker.sh"
 git_q() { git -c user.name=t -c user.email=t@t "$@"; }
 
