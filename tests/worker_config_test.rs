@@ -1,8 +1,13 @@
+#[cfg(unix)]
 use assert_cmd::Command;
+#[cfg(unix)]
 use predicates::prelude::*;
 use squad::worker_config::{parse_agy_models, parse_codex_models, parse_config};
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use tempfile::TempDir;
 
 #[test]

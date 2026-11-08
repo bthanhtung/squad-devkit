@@ -5,7 +5,7 @@ temp="$(mktemp -d /tmp/squad-routing.XXXXXX)"
 trap 'rm -rf "$temp"' EXIT
 mkdir -p "$temp/bin" "$temp/state"
 export ROUTING_LOG="$temp/log"
-for cli in herdr tmux orca; do
+for cli in herdr tmux orca orca-ide; do
   cat >"$temp/bin/$cli" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$0 $*" >>"$ROUTING_LOG"
@@ -22,7 +22,7 @@ FAKE
 chmod +x "$temp/bin/herdr-app"
 export PATH="$temp/bin:$PATH"
 unset TMUX TMUX_PANE SQUAD_DEVKIT_ORCA_TERMINAL HERDR_ENV HERDR_PANE_ID HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE
-unset ORCA_PANE_KEY ZELLIJ WEZTERM_PANE KITTY_WINDOW_ID ITERM_SESSION_ID SQUAD_DEVKIT_GHOSTTY_TERMINAL
+unset ORCA_PANE_KEY ORCA_CLI_COMMAND ORCA_DEV_REPO_ROOT ZELLIJ WEZTERM_PANE KITTY_WINDOW_ID ITERM_SESSION_ID SQUAD_DEVKIT_GHOSTTY_TERMINAL
 source "$repo/scripts/lib/squad-panes.sh"
 squad_panes_tmux() { echo tmux >>"$ROUTING_LOG"; echo tmux-created; }
 squad_panes_orca() { echo orca >>"$ROUTING_LOG"; echo orca-created; }
