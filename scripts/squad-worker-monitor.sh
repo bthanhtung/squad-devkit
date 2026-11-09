@@ -108,7 +108,7 @@ elapsed_seconds() {
   printf '%d' $(( ${finished:-$(date +%s)} - started ))
 }
 
-# Summarises a codex --json or claude stream-json log as tab-separated
+# Summarises a codex --json, claude stream-json, or agy stream-json log as tab-separated
 # metrics on the first line, then one activity line per event.
 summarise_log() {
   local log="$1"
@@ -121,28 +121,55 @@ summarise_log() {
   jq -R -r -s --arg root "$root" '
     def short: tostring | split($root) | join("") | gsub("[\r\n]+"; " ") | .[0:160];
     def cmd: tostring | sub("^/bin/(ba|z)?sh -l?c "; "") | short;
+    def clean_out:
+      split("\n")
+      | map(gsub("\r"; ""))
+      | map(select(length > 0
+          and (startswith("Command exited with code") | not)
+          and (startswith("Command output:") | not)
+          and (startswith("Reading additional input") | not)
+          and (startswith("The tool\u0027s output was truncated") | not)))
+      | first // "";
+    def out_line:
+      if . != null and . != "" then
+        (clean_out | if length > 0 then "\t  ↳ " + short else "" end)
+      else "" end;
+
     [split("\n")[] | fromjson? | select(type == "object")] as $events
     | [$events[] | select(.type == "item.completed") | .item] as $done
     | [$events[] | select(.type == "item.started") | .item] as $started
     | ([$done[] | .id]) as $done_ids
     | [$events[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")] as $tools
     | [$events[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true)] as $tool_errors
+    | (reduce $events[] as $e ({};
+        if $e.type == "user" then
+          reduce ($e.message.content[]? | select(.type == "tool_result")) as $tr (.;
+            .[$tr.tool_use_id] = $tr
+          )
+        else . end
+      )) as $claude_results
+    | [$events[] | select(.event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "DONE") | .step_update] as $agy_tools
+    | [$events[] | select(.event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "ACTIVE") | .step_update] as $agy_active_tools
+    | [$events[] | select(.event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "DONE" and ((.step_update.tool_info.output // "") | test("exit code [1-9]|status FAILED|failed"; "i")))] as $agy_tool_errors
     | ([$events[] | select(.type == "turn.completed") | .usage]
-       + [$events[] | select(.type == "result") | .usage | select(. != null)]) as $usage
+       + [$events[] | select(.type == "result") | .usage | select(. != null)]
+       + [$events[] | select(.event == "result") | .result.usage | select(. != null)]) as $usage
     | [
-        ([$done[] | select(.type == "command_execution" or .type == "mcp_tool_call")] | length) + ($tools | length),
-        ([$done[] | select((.type == "command_execution" and .exit_code != 0) or (.type == "mcp_tool_call" and .status != "completed"))] | length) + ($tool_errors | length),
+        ([$done[] | select(.type == "command_execution" or .type == "mcp_tool_call")] | length) + ($tools | length) + ($agy_tools | length),
+        ([$done[] | select((.type == "command_execution" and .exit_code != 0) or (.type == "mcp_tool_call" and .status != "completed"))] | length) + ($tool_errors | length) + ($agy_tool_errors | length),
         ([$done[] | select(.type == "file_change") | .changes[]?] | length)
-          + ([$tools[] | select(.name == "Edit" or .name == "Write")] | length),
-        ([$usage[] | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)] | add // ""),
-        ([$usage[] | (.cached_input_tokens // .cache_read_input_tokens // 0)] | add // ""),
+          + ([$tools[] | select(.name == "Edit" or .name == "Write")] | length)
+          + ([$agy_tools[] | select(.tool_name == "write_to_file" or .tool_name == "replace_file_content" or .tool_name == "multi_replace_file_content" or .tool_name == "notebook_edit")] | length),
+        ([$usage[] | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_tokens // 0)] | add // ""),
+        ([$usage[] | (.cached_input_tokens // .cache_read_input_tokens // .cache_read_tokens // 0)] | add // ""),
         ([$usage[] | .output_tokens // 0] | add // ""),
-        ([$events[] | select(.type == "result") | .num_turns] | last // "")
+        ([$events[] | select(.type == "result") | .num_turns] + [$events[] | select(.event == "result") | .result.num_turns] | last // "")
       ] | map(tostring) | join("\t"),
     ( $events[]
       | if .type == "item.completed" then .item
           | if .type == "command_execution" then
               (if .exit_code == 0 then "✓ " else "✗ " end) + (.command | cmd) + (if .exit_code == 0 then "" else "  (exit \(.exit_code))" end)
+              + (.aggregated_output | out_line)
             elif .type == "mcp_tool_call" then
               (if .status == "completed" then "⚙ " else "✗ " end) + "\(.server)/\(.tool)"
             elif .type == "file_change" then "✎ " + ([.changes[]? | .path] | join(", ") | short)
@@ -151,14 +178,33 @@ summarise_log() {
             else empty end
         elif .type == "assistant" then .message.content[]?
           | if .type == "tool_use" then
-              "→ " + .name + " " + ((.input.file_path // .input.path // .input.pattern // .input.command // "") | short)
+              (if .id != null and $claude_results[.id].is_error == true then "✗ " else "→ " end)
+              + .name + " " + ((.input.file_path // .input.path // .input.pattern // .input.command // "") | short)
+              + (if .id != null then ($claude_results[.id].content | out_line) else "" end)
             elif .type == "text" and (.text | length) > 0 then "» " + (.text | short)
             else empty end
         elif .type == "user" then .message.content[]?
-          | select(.type == "tool_result" and .is_error == true) | "✗ tool error: " + (.content | short)
+          | if .type == "tool_result" and .is_error == true then
+              "✗ tool error: " + (.content | short)
+            else empty end
+        elif .event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "DONE" then
+          .step_update |
+          (if .tool_name == "read_file" then
+            "✓ read " + (.tool_info.parameters.Path // "" | short)
+           elif .tool_name == "run_command" then
+            "✓ " + (.tool_info.parameters.CommandLine // "" | cmd)
+           elif .tool_name == "write_to_file" or .tool_name == "replace_file_content" or .tool_name == "multi_replace_file_content" or .tool_name == "notebook_edit" then
+            "✎ " + (.tool_info.parameters.Path // "" | short)
+           else
+            "⚙ " + .tool_name + " " + ((.tool_info.parameters | tostring) | short)
+           end)
+          + (.tool_info.output | out_line)
+        elif .event == "error" then "! " + (.error.message // .error | short)
         else empty end ),
     ( [$started[] | select(.type == "command_execution") | select(.id as $id | $done_ids | index($id) | not)]
-      | last | select(. != null) | "… running: " + (.command | cmd) )
+      | last | select(. != null) | "… running: " + (.command | cmd) ),
+    ( [$agy_active_tools[] | select(.tool_name != null)]
+      | last | select(. != null) | "… running: " + (.tool_name + " " + ((.tool_info.parameters.CommandLine // .tool_info.parameters.Path // "") | short)) )
   ' "$log" 2>/dev/null || { printf '\t\t\t\t\t\t\n'; tail -n 40 "$log"; }
 }
 
@@ -189,16 +235,28 @@ file_size() {
 }
 
 # Prints one activity line, coloured by its marker and cut to the pane width.
+# If an output/result preview is present after a tab, it prints indented and dimmed.
 print_activity() {
-  local line="$1" width color=""
+  local line="$1" width color="" tab main detail
+  tab="$(printf '\t')"
   width=$(( $(terminal_columns) - 1 ))
-  case "$line" in
+  if [[ "$line" == *"$tab"* ]]; then
+    main="${line%%${tab}*}"
+    detail="${line#*${tab}}"
+  else
+    main="$line"
+    detail=""
+  fi
+  case "$main" in
     "✓ "*) color="$green" ;;
     "✗ "*) color="$red" ;;
     "! "*) color="$yellow" ;;
     "⚙ "*|"→ "*|"✎ "*) color="$cyan" ;;
   esac
-  printf '%s%s%s\n' "$color" "${line:0:$width}" "$reset"
+  printf '%s%s%s\n' "$color" "${main:0:$width}" "$reset"
+  if [[ -n "$detail" ]]; then
+    printf '%s%s%s\n' "$dim" "${detail:0:$width}" "$reset"
+  fi
 }
 
 count_label() {
