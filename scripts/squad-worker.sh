@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Background jobs share the launcher's process group, which CLIs kill when their command ends.
+# Start a separate session; exec keeps the PID used by notifications and status files.
+if [[ -z "${SQUAD_WORKER_DETACHED:-}" && ! -t 1 ]] && command -v perl >/dev/null 2>&1; then
+  export SQUAD_WORKER_DETACHED=1
+  exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!\n"' -- "$0" "$@"
+fi
 
 source_file="${BASH_SOURCE[0]}"
 while [[ -L "$source_file" ]]; do

@@ -101,6 +101,7 @@ jobs:
           bash tests/squad_worker_required_split_smoke.sh
           bash tests/squad_worker_model_smoke.sh
           bash tests/squad_worker_smoke.sh
+          bash tests/squad_worker_detach_smoke.sh
           bash tests/squad_worker_noop_smoke.sh
           bash tests/squad_worker_validation_smoke.sh
           bash tests/squad_devkit_roles_smoke.sh
