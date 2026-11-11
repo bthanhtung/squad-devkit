@@ -23,6 +23,14 @@ fn main() -> Result<()> {
     let command = args.next().unwrap_or_else(|| "help".to_string());
 
     match command.as_str() {
+        "run" => squad::runs::command(&args.collect::<Vec<_>>(), find_workspace),
+        "guard" => squad::guard::command(&args.collect::<Vec<_>>()),
+        "plan" => {
+            if !squad::plan::command(&args.collect::<Vec<_>>())? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         "init" => cmd_init(args.collect()),
         "config" => cmd_config(args.collect()),
         "join" => {
@@ -1344,6 +1352,15 @@ fn print_usage() {
 const HELP_TEXT: &str = r#"squad — Multi-AI-agent terminal collaboration
 
 COMMANDS
+  squad plan validate|context|check-patch <file>
+                                             Validate plans, extract shared context or flag sensitive patches
+  squad plan approves <dir> <action> <repo> [<repo_path>]
+                                             List approving plans, newest first
+  squad guard pre-tool-use <project_dir>    Evaluate manager hook JSON from stdin
+  squad run record --status-file <file> [--workspace <dir>]
+                                             Upsert a worker status into SQLite
+  squad run list --json [--workspace <dir>] [--directory <dir>] [--metrics]
+                                             List indexed runs; optionally import changed legacy status files
   squad init [--refresh-roles]              Initialize workspace (`--refresh-roles` rewrites builtin roles only)
   squad config workers [--timeout <secs>]   Choose worker models per tier from installed CLIs (saved in .squad/worker-models.json)
   squad join <id> [--role <role>] [--client <claude|codex|gemini|opencode|grok|agy|ccr>] [--protocol-version <n>]
