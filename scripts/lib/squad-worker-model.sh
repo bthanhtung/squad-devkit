@@ -94,9 +94,16 @@ squad_worker_select_model() {
   fi
 }
 
+# Kept for callers without an engine adapter; adapters call squad_worker_stream_models.
 squad_worker_reported_models() {
   local engine="$1" log="$2"
   [[ "$engine" == claude || "$engine" == ccr || "$engine" == agy ]] || return 0
+  squad_worker_stream_models "$log"
+}
+
+# Models named in a Claude-shaped stream-json log (claude, ccr, agy).
+squad_worker_stream_models() {
+  local log="$1"
   [[ -s "$log" ]] && command -v jq >/dev/null 2>&1 || return 0
   # Only documented structured Claude fields, never prompt text or router config.
   jq -Rrs '

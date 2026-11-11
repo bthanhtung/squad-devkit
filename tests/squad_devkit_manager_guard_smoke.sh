@@ -31,6 +31,14 @@ git -C "$repo_a" -c user.name=t -c user.email=t@example.com commit -q --allow-em
 run_guard() {
   out="$(printf '%s' "$1" | "$guard" "${guard_project:-$project}" 2>"$temp_directory/err")"
   err="$(cat "$temp_directory/err")"
+  if [[ "${PHASE4_GUARD_PARITY:-0}" == 1 ]]; then
+    local legacy
+    legacy="$(printf '%s' "$1" | SQUAD_RUST_DISABLE=1 "$guard" "${guard_project:-$project}" 2>"$temp_directory/legacy.err")"
+    [[ "$(printf '%s' "$legacy" | jq -S -c .)" == "$(printf '%s' "$out" | jq -S -c .)" ]] || {
+      printf 'guard parity mismatch: %s\nlegacy: %s\nrust: %s\n' "$1" "$legacy" "$out" >&2
+      fail
+    }
+  fi
 }
 edit_payload() { jq -nc --arg tool "$1" --arg path "$2" --arg cwd "${3:-$project}" '{cwd: $cwd, hook_event_name: "PreToolUse", tool_name: $tool, tool_input: {file_path: $path}}'; }
 bash_payload() { jq -nc --arg command "$1" --arg cwd "${2:-$project}" '{cwd: $cwd, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $command}}'; }
@@ -199,10 +207,12 @@ target_denied 'git --git-dir push'
 target_denied "pushd $repo_a; popd; git push"
 target_denied 'gh pr merge 1 -R owner/other'
 target_denied 'env -C / git push'
+target_denied "env -u UNUSED -C $repo_b bash -c 'git push'"
 # Wrappers keep the cwd fallback only when they name no other target.
 expect_allow "$(bash_payload 'eval git push' "$repo_a")"
 expect_allow "$(bash_payload 'xargs git push' "$repo_a")"
 target_denied "bash -c 'cd /x && git push'"
+target_denied "bash -c 'true;cd /x && git push'"
 target_denied "bash -c 'git -C \$X push'"
 target_denied "sh -c 'GIT_DIR=$repo_b/.git git push'"
 target_denied "zsh -c 'git --git-dir=$repo_b/.git push'"
@@ -244,6 +254,11 @@ write_plan old.md high '- push: repo-a' "- review: $repo_a"
 expect_allow "$(bash_payload "git -C $repo_a push")"
 rm "$plans/p.md" "$plans/old.md" "$plans/new.md"
 
+# Non-UTF8 plan bytes must never turn a missing approval into an internal-error allow.
+printf '## Approvals\n- unrelated: x\377\n' >"$plans/non-utf8.md"
+expect_deny "$(bash_payload "git -C $repo_a push")"
+rm "$plans/non-utf8.md"
+
 # Unrelated commands and a directory that is not a git repository.
 expect_allow "$(bash_payload 'ls -la')"
 expect_allow "$(bash_payload 'git status')"
@@ -274,7 +289,7 @@ chmod +x "$bin/claude"
 run_manager() {
   (
     cd "$manager_project"
-    env -u SQUAD_MANAGER_ID -u SQUAD_DEVKIT_ROUTER_URL -u SQUAD_DEVKIT_GUARD \
+    env -u SQUAD_MANAGER_ID -u SQUAD_DEVKIT_ROUTER_URL -u SQUAD_DEVKIT_GUARD -u SQUAD_DEVKIT_YOLO \
       PATH="$bin:/usr/bin:/bin:$(dirname "$(command -v jq)")" HOME="$temp_directory/home" \
       SQUAD_DEVKIT_FALLBACK_MANAGER=none SQUAD_DEVKIT_STATUSLINE=0 "$@" \
       "$repo_root/scripts/lib/squad-devkit-manager.sh" claude instructions hello 2>"$temp_directory/manager.err"

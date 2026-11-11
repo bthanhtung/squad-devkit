@@ -122,7 +122,7 @@ worktree_patch() {
   home="$(worktree_home "$root")" || return 1
   base="$(worktree_base "$root" "$id")" || return 1
   # Agent settings under .claude/ are never part of a worker's deliverable.
-  git -C "$home/$id" diff --binary "$base" HEAD -- . ':(exclude).claude' ':(exclude,glob)**/.claude/**'
+  git -C "$home/$id" diff --binary --no-renames "$base" HEAD -- . ':(exclude).claude' ':(exclude,glob)**/.claude/**'
 }
 
 # Applies a patch to the repository's working tree with a three-way merge.

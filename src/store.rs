@@ -38,17 +38,32 @@ pub struct MessageRecord {
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open database: {}", path.display()))?;
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA busy_timeout=5000;",
-        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Concurrent first opens can return BUSY while enabling WAL without invoking its handler.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match conn.execute_batch("PRAGMA journal_mode=WAL;") {
+                Ok(()) => break,
+                Err(error)
+                    if matches!(
+                        error.sqlite_error_code(),
+                        Some(
+                            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                        )
+                    ) && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error).context("failed to configure database journal"),
+            }
+        }
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
@@ -69,6 +84,23 @@ impl Store {
                  created_at INTEGER NOT NULL,
                  read INTEGER NOT NULL DEFAULT 0
              );
+             CREATE TABLE IF NOT EXISTS worker_runs (
+                 workspace TEXT NOT NULL,
+                 run_name TEXT NOT NULL,
+                 worker_id TEXT NOT NULL,
+                 engine TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 verdict TEXT,
+                 tokens_in INTEGER CHECK(tokens_in >= 0),
+                 tokens_cached INTEGER CHECK(tokens_cached >= 0),
+                 tokens_out INTEGER CHECK(tokens_out >= 0),
+                 worktree TEXT,
+                 status_file TEXT NOT NULL,
+                 status_mtime TEXT NOT NULL,
+                 status_size INTEGER NOT NULL,
+                 details TEXT NOT NULL,
+                 PRIMARY KEY (workspace, run_name)
+             );
              CREATE TABLE IF NOT EXISTS tasks (
                  id TEXT PRIMARY KEY,
                  title TEXT NOT NULL,
@@ -83,7 +115,8 @@ impl Store {
                  updated_at INTEGER NOT NULL,
                  completed_at INTEGER
              );",
-        )?;
+        )
+        .context("failed to initialize database schema")?;
         // Migrations: add columns if missing (existing DBs)
         let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN session_token TEXT;");
         let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN last_seen INTEGER;");

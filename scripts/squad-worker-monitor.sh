@@ -54,6 +54,8 @@ while [[ -L "$source_file" ]]; do
   else source_file="$source_directory/$link_target"; fi
 done
 source "$(cd "$(dirname "$source_file")" && pwd)/lib/squad-worker-model.sh"
+# shellcheck source=lib/squad-plan.sh
+source "$(cd "$(dirname "$source_file")" && pwd)/lib/squad-plan.sh"
 
 status_get() {
   sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
@@ -109,16 +111,26 @@ elapsed_seconds() {
 }
 
 # Summarises a codex --json, claude stream-json, or agy stream-json log as tab-separated
-# metrics on the first line, then one activity line per event.
+# metrics on the first line, then one activity line per event: summarise_log <log> [engine].
+# Only the engine's own stream format is parsed; an unknown engine (older status
+# files) tries all of them.
 summarise_log() {
-  local log="$1"
+  local log="$1" engine="${2:-}"
   local root="${log%/.squad/workers/*}/"
+  local codex=false claude=false agy=false
+  case "$engine" in
+    codex) codex=true ;;
+    claude|ccr) claude=true ;;
+    agy) claude=true agy=true ;;
+    grok|opencode) ;;
+    *) codex=true claude=true agy=true ;;
+  esac
   if [[ ! -s "$log" ]] || ! command -v jq >/dev/null 2>&1; then
     printf '\t\t\t\t\t\t\n'
     [[ -s "$log" ]] && tail -n 40 "$log"
     return 0
   fi
-  jq -R -r -s --arg root "$root" '
+  jq -R -r -s --arg root "$root" --argjson codex "$codex" --argjson claude "$claude" --argjson agy "$agy" '
     def short: tostring | split($root) | join("") | gsub("[\r\n]+"; " ") | .[0:160];
     def cmd: tostring | sub("^/bin/(ba|z)?sh -l?c "; "") | short;
     def clean_out:
@@ -136,24 +148,24 @@ summarise_log() {
       else "" end;
 
     [split("\n")[] | fromjson? | select(type == "object")] as $events
-    | [$events[] | select(.type == "item.completed") | .item] as $done
-    | [$events[] | select(.type == "item.started") | .item] as $started
+    | (if $codex then [$events[] | select(.type == "item.completed") | .item] else [] end) as $done
+    | (if $codex then [$events[] | select(.type == "item.started") | .item] else [] end) as $started
     | ([$done[] | .id]) as $done_ids
-    | [$events[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")] as $tools
-    | [$events[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true)] as $tool_errors
-    | (reduce $events[] as $e ({};
+    | (if $claude then [$events[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")] else [] end) as $tools
+    | (if $claude then [$events[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true)] else [] end) as $tool_errors
+    | (if $claude then reduce $events[] as $e ({};
         if $e.type == "user" then
           reduce ($e.message.content[]? | select(.type == "tool_result")) as $tr (.;
             .[$tr.tool_use_id] = $tr
           )
         else . end
-      )) as $claude_results
-    | [$events[] | select(.event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "DONE") | .step_update] as $agy_tools
-    | [$events[] | select(.event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "ACTIVE") | .step_update] as $agy_active_tools
-    | [$events[] | select(.event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "DONE" and ((.step_update.tool_info.output // "") | test("exit code [1-9]|status FAILED|failed"; "i")))] as $agy_tool_errors
-    | ([$events[] | select(.type == "turn.completed") | .usage]
-       + [$events[] | select(.type == "result") | .usage | select(. != null)]
-       + [$events[] | select(.event == "result") | .result.usage | select(. != null)]) as $usage
+      ) else {} end) as $claude_results
+    | (if $agy then [$events[] | select(.event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "DONE") | .step_update] else [] end) as $agy_tools
+    | (if $agy then [$events[] | select(.event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "ACTIVE") | .step_update] else [] end) as $agy_active_tools
+    | [$agy_tools[] | select((.tool_info.output // "") | test("exit code [1-9]|status FAILED|failed"; "i"))] as $agy_tool_errors
+    | ((if $codex then [$events[] | select(.type == "turn.completed") | .usage] else [] end)
+       + (if $claude then [$events[] | select(.type == "result") | .usage | select(. != null)] else [] end)
+       + (if $agy then [$events[] | select(.event == "result") | .result.usage | select(. != null)] else [] end)) as $usage
     | [
         ([$done[] | select(.type == "command_execution" or .type == "mcp_tool_call")] | length) + ($tools | length) + ($agy_tools | length),
         ([$done[] | select((.type == "command_execution" and .exit_code != 0) or (.type == "mcp_tool_call" and .status != "completed"))] | length) + ($tool_errors | length) + ($agy_tool_errors | length),
@@ -163,10 +175,11 @@ summarise_log() {
         ([$usage[] | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_tokens // 0)] | add // ""),
         ([$usage[] | (.cached_input_tokens // .cache_read_input_tokens // .cache_read_tokens // 0)] | add // ""),
         ([$usage[] | .output_tokens // 0] | add // ""),
-        ([$events[] | select(.type == "result") | .num_turns] + [$events[] | select(.event == "result") | .result.num_turns] | last // "")
+        ((if $claude then [$events[] | select(.type == "result") | .num_turns] else [] end)
+          + (if $agy then [$events[] | select(.event == "result") | .result.num_turns] else [] end) | last // "")
       ] | map(tostring) | join("\t"),
     ( $events[]
-      | if .type == "item.completed" then .item
+      | if $codex and .type == "item.completed" then .item
           | if .type == "command_execution" then
               (if .exit_code == 0 then "✓ " else "✗ " end) + (.command | cmd) + (if .exit_code == 0 then "" else "  (exit \(.exit_code))" end)
               + (.aggregated_output | out_line)
@@ -176,18 +189,18 @@ summarise_log() {
             elif .type == "agent_message" then "» " + (.text | short)
             elif .type == "error" then "! " + (.message | short)
             else empty end
-        elif .type == "assistant" then .message.content[]?
+        elif $claude and .type == "assistant" then .message.content[]?
           | if .type == "tool_use" then
               (if .id != null and $claude_results[.id].is_error == true then "✗ " else "→ " end)
               + .name + " " + ((.input.file_path // .input.path // .input.pattern // .input.command // "") | short)
               + (if .id != null then ($claude_results[.id].content | out_line) else "" end)
             elif .type == "text" and (.text | length) > 0 then "» " + (.text | short)
             else empty end
-        elif .type == "user" then .message.content[]?
+        elif $claude and .type == "user" then .message.content[]?
           | if .type == "tool_result" and .is_error == true then
               "✗ tool error: " + (.content | short)
             else empty end
-        elif .event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "DONE" then
+        elif $agy and .event == "step_update" and .step_update.step_type == "tool" and .step_update.state == "DONE" then
           .step_update |
           (if .tool_name == "read_file" then
             "✓ read " + (.tool_info.parameters.Path // "" | short)
@@ -199,7 +212,7 @@ summarise_log() {
             "⚙ " + .tool_name + " " + ((.tool_info.parameters | tostring) | short)
            end)
           + (.tool_info.output | out_line)
-        elif .event == "error" then "! " + (.error.message // .error | short)
+        elif $agy and .event == "error" then "! " + (.error.message // .error | short)
         else empty end ),
     ( [$started[] | select(.type == "command_execution") | select(.id as $id | $done_ids | index($id) | not)]
       | last | select(. != null) | "… running: " + (.command | cmd) ),
@@ -343,7 +356,7 @@ watch_run() {
     size="$(file_size "$log")"
     if [[ "$size" != "$last_size" || "$state" != running ]]; then
       last_size="$size"
-      summary="$(summarise_log "$log")"
+      summary="$(summarise_log "$log" "$engine")"
       IFS=$'\t' read -r calls failures files tokens_in tokens_cached tokens_out turns <<<"${summary%%$'\n'*}" || true
       running_command=""
       index=0
@@ -395,21 +408,61 @@ watch_run() {
   return 0
 }
 
+# One native directory scan imports changed legacy files; one query reads all runs.
+# A failed supported query is visible, then the legacy view remains available.
+indexed_runs() {
+  local directory="$1" workspace
+  command -v jq >/dev/null 2>&1 && squad_supports run || return 1
+  [[ -d "$directory" ]] || return 1
+  directory="$(cd "$directory" && pwd -P)" || return 1
+  workspace="$(dirname "$(dirname "$directory")")"
+  [[ -d "$workspace/.squad" ]] || return 1
+  squad run list --json --workspace "$workspace" --directory "$directory" "${@:2}"
+}
+
+render_indexed() {
+  local rows="$1" columns="$2" worker engine role state started finished pid tokens title profile requested model_source actual tier calls
+  local elapsed now
+  now="$(date +%s)"
+  while IFS='|' read -r worker engine role state started finished pid tokens title profile requested model_source actual tier calls; do
+    [[ -n "$worker" ]] || continue
+    if [[ "$state" == running && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then state=lost; fi
+    elapsed=$(( ${finished:-$now} - ${started:-$now} ))
+    [[ "$engine" == codex && -n "$profile" ]] && engine="codex/$profile"
+    frame+="$(printf '%-12s %-14s %-10s %-13s %8s %8s %12s  %s' \
+      "$worker" "$engine" "$role" "$state" "$(format_duration "$elapsed")" "${calls:-0}" \
+      "$([[ "$tokens" == null ]] && printf '-' || format_count "$tokens")" \
+      "${title:0:$(( columns > 90 ? columns - 90 : 10 ))}")"$'\n'
+    frame+="requested=${requested:-default} source=${model_source:-unknown} actual=${actual:-unknown}"
+    [[ -z "$tier" ]] || frame+=" tier=$tier"
+    [[ -z "$profile" ]] || frame+=" profile=$profile"
+    frame+=$'\n'
+    found=1
+  done < <(printf '%s' "$rows" | jq -r '.[] | [ .worker_id, .engine, .details.role, .state,
+    .details.started, .details.finished, .details.pid,
+    (if (.metrics.tokens_in // .tokens_in) == null and (.metrics.tokens_out // .tokens_out) == null then "null" else ((.metrics.tokens_in // .tokens_in // 0) + (.metrics.tokens_out // .tokens_out // 0) | tostring) end),
+    .details.title, .details.profile, (.details.requested_model // .details.model), .details.model_source, .details.actual_model, .details.model_tier, (.metrics.calls // 0) ]
+    | map((. // "") | tostring | gsub("[|\\r\\n]"; " ")) | join("|")')
+}
+
 # Redraws the table in place (cursor home, clear each line) inside a
 # synchronized update, so the dashboard never flashes.
 render_all() {
-  local directory="$1" columns frame="" file found=0
+  local directory="$1" columns frame="" file found=0 rows
   columns="$(terminal_columns)"
   frame+="$(printf '%s%-12s %-14s %-10s %-13s %8s %8s %12s  %s%s' "$bold" \
     WORKER ENGINE ROLE STATE ELAPSED CALLS TOKENS TASK "$reset")"$'\n'
-  while IFS= read -r file; do
+  if rows="$(indexed_runs "$directory" --metrics)"; then
+    render_indexed "$rows" "$columns"
+  else
+    while IFS= read -r file; do
     [[ -n "$file" ]] || continue
     found=1
     local engine profile state metrics calls tokens_in tokens_out tokens="-"
     engine="$(status_get "$file" engine)"
     profile="$(status_get "$file" profile)"
     state="$(effective_state "$file")"
-    metrics="$(summarise_log "$(status_get "$file" log)")"
+    metrics="$(summarise_log "$(status_get "$file" log)" "$engine")"
     metrics="${metrics%%$'\n'*}"
     IFS=$'\t' read -r calls _ _ tokens_in _ tokens_out _ <<<"$metrics" || true
     [[ "$engine" == codex && -n "$profile" ]] && engine="codex/$profile"
@@ -419,7 +472,8 @@ render_all() {
       "$(format_duration "$(elapsed_seconds "$file")")" "${calls:-0}" "$tokens" \
       "$(status_get "$file" title | cut -c1-$(( columns > 90 ? columns - 90 : 10 )))")"$'\n'
     frame+="$(squad_worker_model_label "$file")"$'\n'
-  done < <(ls -t "$directory"/*.status 2>/dev/null)
+    done < <(ls -t "$directory"/*.status 2>/dev/null)
+  fi
   (( found == 1 )) || frame+="No worker runs in $directory yet."$'\n'
   if (( once == 1 )) || [[ ! -t 1 ]]; then
     printf '%s' "$frame"
@@ -433,7 +487,21 @@ print_savings() {
   local directory="$1/.squad/workers"
   local since="${SQUAD_DEVKIT_SESSION_START:-0}"
   local running=0 offloaded=0 claude_tokens=0 runs=0 file engine started total tokens_in tokens_out
-  for file in "$directory"/*.status; do
+  local rows indexed_state indexed_pid indexed_engine indexed_total
+  if rows="$(indexed_runs "$directory")"; then
+    while IFS='|' read -r indexed_state indexed_pid indexed_engine indexed_total; do
+      [[ -n "$indexed_state" ]] || continue
+      runs=$(( runs + 1 ))
+      if [[ "$indexed_state" == running ]]; then
+        if [[ -z "$indexed_pid" ]] || kill -0 "$indexed_pid" 2>/dev/null; then running=$(( running + 1 )); fi
+      fi
+      if [[ "$indexed_engine" == claude ]]; then claude_tokens=$(( claude_tokens + indexed_total ));
+      else offloaded=$(( offloaded + indexed_total )); fi
+    done < <(printf '%s' "$rows" | jq -r --argjson since "$since" '.[] | select((.details.started // "0" | if . == "" then "0" else . end | tonumber) >= $since)
+      | [.state, .details.pid, .engine, ((.tokens_in // 0) + (.tokens_out // 0))]
+      | map((. // "") | tostring | gsub("[|\\r\\n]"; " ")) | join("|")')
+  else
+    for file in "$directory"/*.status; do
     [[ -f "$file" ]] || continue
     started="$(status_get "$file" started)"
     (( ${started:-0} >= since )) || continue
@@ -448,7 +516,8 @@ print_savings() {
     else
       offloaded=$(( offloaded + total ))
     fi
-  done
+    done
+  fi
   local label="squad"
   if (( runs == 0 )); then
     label+=" idle"

@@ -1,5 +1,8 @@
+pub mod guard;
 pub mod init;
+pub mod plan;
 pub mod roles;
+pub mod runs;
 pub mod session;
 pub mod setup;
 pub mod store;

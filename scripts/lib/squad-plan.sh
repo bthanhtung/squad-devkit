@@ -3,6 +3,13 @@
 # A plan is markdown with `## Heading` sections; headings match case-insensitively.
 # Sourcing this file has no side effects.
 
+# Inspect help rather than invoking unknown commands: older squad joins them as roles.
+squad_supports() {
+  [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] || return 1
+  command -v squad >/dev/null 2>&1 || return 1
+  squad help 2>/dev/null | grep "^  squad $1 " >/dev/null
+}
+
 # Prints the body of the `## <name>` section (without its heading): plan_section <file> <name>.
 plan_section() {
   awk -v name="$2" '
@@ -63,6 +70,7 @@ plan_triage_level() {
 
 # Prints one line per missing item; returns 0 when the plan is valid.
 plan_validate() {
+  if squad_supports plan; then squad plan validate "$@"; return $?; fi
   local file="$1" missing=0 section label value body lowered
   if [[ ! -f "$file" ]]; then
     printf 'file not found: %s\n' "$file"
@@ -162,6 +170,7 @@ plan_approves() {
 # newest mtime first; returns 1 when none does:
 # plan_list_approvals <dir> <action> <repo> [<repo_path>].
 plan_list_approvals() {
+  if squad_supports plan; then squad plan approves "$@"; return $?; fi
   local dir="$1" action="$2" repo="$3" repo_path="${4:-}" file status=1
   [[ -d "$dir" ]] || return 1
   while IFS= read -r file; do
@@ -179,6 +188,30 @@ plan_find_approval() {
   local plans
   plans="$(plan_list_approvals "$@")" || return 1
   printf '%s\n' "${plans%%$'\n'*}"
+}
+
+# Prints the shared context sections (Goal, Findings, Decisions) from a plan file,
+# plus an optional <plan-stem>.context.md companion file (bounded to
+# SQUAD_WORKER_MAX_CONTEXT_BYTES, default 16384): plan_shared_context <file>.
+plan_shared_context() {
+  if squad_supports plan; then squad plan context "$@"; return $?; fi
+  local file="$1" section body companion max_bytes="${SQUAD_WORKER_MAX_CONTEXT_BYTES:-16384}"
+  [[ -f "$file" ]] || return 0
+  for section in Goal Findings Decisions; do
+    if plan_has_section "$file" "$section"; then
+      body="$(plan_section "$file" "$section" | awk 'NF { found = 1 } found { print }')"
+      if [[ -n "$body" ]]; then
+        printf '### Plan %s\n%s\n\n' "$section" "$body"
+      fi
+    fi
+  done
+  companion="${file%.md}.context.md"
+  if [[ "$companion" != "$file" && -f "$companion" && -s "$companion" ]]; then
+    printf '### Shared Context (%s)\n' "$(basename "$companion")"
+    head -c "$max_bytes" "$companion"
+    printf '\n\n'
+  fi
+  return 0
 }
 
 # Adds a bullet to the end of the Approvals section, creating the section at the
@@ -226,4 +259,17 @@ plan_append_approval() {
   fi
   rm -f "$tmp"
   return 1
+}
+
+# Best effort secondary storage: the atomic status file remains authoritative.
+squad_record_status() {
+  squad_supports run || return 0
+  local file="$1" directory workspace
+  directory="$(cd "$(dirname "$file")" && pwd -P)" || return 0
+  workspace="$(dirname "$(dirname "$directory")")"
+  [[ -d "$workspace/.squad" ]] || return 0
+  if ! squad run record --workspace "$workspace" --status-file "$directory/$(basename "$file")"; then
+    printf 'squad-worker: could not index status in SQLite: %s\n' "$file" >&2
+  fi
+  return 0
 }

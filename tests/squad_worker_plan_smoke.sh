@@ -397,4 +397,189 @@ expect_exit 3 'n has no plan' "$worker" --merge n
 "$worker" --discard n >/dev/null
 "$worker" --discard n-1 >/dev/null
 
-echo 'PASS: plan library, plan gate, repo bootstrap and merge review gate'
+# --- 6. structured reviewer verdict ----------------------------------------------------------------------
+# A reviewer that asks for changes blocks the merge; a later approving one lifts it.
+run_edit v-1 .squad/plans/risky.md "src/app.txt=verdict"
+sleep 1
+cat >"$tmp/bin/agy" <<'EOF'
+#!/usr/bin/env bash
+while IFS= read -r edit; do
+  [[ -n "$edit" ]] || continue
+  mkdir -p "$(dirname "${edit%%=*}")"
+  printf '%s\n' "${edit#*=}" >"${edit%%=*}"
+done <<<"${FAKE_EDIT:-}"
+printf 'agy:%s\n' "${*//$'\n'/\\n}" >>"$WORKER_TEST_LOG"
+printf '%s\n' "${FAKE_REPORT:-Done. Files: none. Verification: ok.}"
+EOF
+chmod +x "$tmp/bin/agy"
+FAKE_REPORT=$'src/app.txt:1 injection\nVERDICT: CHANGES_REQUESTED' \
+  "$worker" vr-1 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+grep -qx 'verdict=changes_requested' "$(last_status vr-1)" || fail "changes_requested verdict not recorded"
+expect_exit 3 'blocked: reviewer vr-1 .* requested changes' "$worker" --merge v-1
+sleep 1
+FAKE_REPORT=$'no issues found\nVERDICT: APPROVED' \
+  "$worker" vr-2 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+grep -qx 'verdict=approved' "$(last_status vr-2)" || fail "approved verdict not recorded"
+# A newer rejection supersedes the approval, even if the approval status was touched later.
+sleep 1
+FAKE_REPORT=$'still needs fixes\nVERDICT: CHANGES_REQUESTED' \
+  "$worker" vr-latest --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+touch "$(last_status vr-2)"
+expect_exit 3 'blocked: reviewer vr-latest .* requested changes' "$worker" --merge v-1
+sleep 1
+FAKE_REPORT=$'fixed\nVERDICT: APPROVED' \
+  "$worker" vr-final --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+expect_exit 0 'Merged v-1' "$worker" --merge v-1
+git -C "$repo" checkout -q -- src/app.txt
+# A reviewer without a verdict line keeps the old behaviour (counts as a review) and is marked missing.
+run_edit v-2 .squad/plans/risky.md "src/app.txt=legacy"
+sleep 1
+"$worker" vr-3 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+grep -qx 'verdict=missing' "$(last_status vr-3)" || fail "missing verdict not recorded"
+expect_exit 0 'Merged v-2' "$worker" --merge v-2
+git -C "$repo" checkout -q -- src/app.txt
+# Non-reviewer roles record no verdict.
+! grep -q '^verdict=.' "$(last_status v-1)" || fail "dev worker recorded a verdict"
+# --override-review lifts a changes_requested block.
+run_edit v-3 .squad/plans/risky.md "src/app.txt=forced"
+sleep 1
+FAKE_REPORT=$'bad\nVERDICT: CHANGES_REQUESTED' \
+  "$worker" vr-4 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+expect_exit 3 'requested changes' "$worker" --merge v-3
+expect_exit 0 'review override for v-3: ship it' "$worker" --merge v-3 --override-review 'ship it'
+git -C "$repo" checkout -q -- src/app.txt
+
+# --- 7. --own scope gate ---------------------------------------------------------------------------------
+FAKE_EDIT=$'src/app.txt=owned\nsrc/other.txt=stray' \
+  "$worker" o-1 --engine agy --worktree --project "$repo" --plan .squad/plans/ok.md --own 'src/app.txt' --brief 'Edit' >"$tmp/out"
+grep -qx 'owned=src/app.txt' "$(last_status o-1)" || fail "owned= not recorded"
+grep -qx 'scope_violation=src/other.txt' "$(last_status o-1)" || fail "scope violation not recorded"
+grep -q 'Scope violation (outside --own): src/other.txt' "$tmp/out" || fail "scope violation not reported"
+grep -q 'Files you own (change nothing else): src/app.txt' "$WORKER_TEST_LOG" || fail "owned files missing from the prompt"
+expect_exit 3 'outside its --own scope: src/other.txt' "$worker" --merge o-1
+[[ "$(cat "$repo/src/app.txt")" == base ]] || fail "refused scope merge changed the repo"
+expect_exit 0 'scope override for o-1' "$worker" --merge o-1 --override-review 'known stray file'
+git -C "$repo" checkout -q -- src/app.txt
+rm -f "$repo/src/other.txt"
+# Directories, globs and several --own flags all cover their files.
+FAKE_EDIT=$'src/deep/a.txt=1\nsrc/b.js=2\ndocs/c.md=3' \
+  "$worker" o-2 --engine agy --worktree --project "$repo" --plan .squad/plans/ok.md --own 'src/deep/' --own 'src/*.js,docs' --brief 'Edit' >/dev/null
+[[ -z "$(sed -n 's/^scope_violation=//p' "$(last_status o-2)")" ]] || fail "owned directory/glob flagged"
+expect_exit 0 'Merged o-2' "$worker" --merge o-2
+git -C "$repo" reset -q --hard
+git -C "$repo" clean -qfd
+
+# Pending edits must be checked at merge time, not just against saved status.
+FAKE_EDIT='src/app.txt=owned' \
+  "$worker" o-3 --engine agy --worktree --project "$repo" --plan .squad/plans/ok.md --own src/app.txt --brief Edit >/dev/null
+wt="$(sed -n 's/^worktree=//p' "$(last_status o-3)")"
+echo stray >"$wt/src/pending.txt"
+expect_exit 3 'outside its --own scope: src/pending.txt' "$worker" --merge o-3
+[[ ! -e "$repo/src/pending.txt" ]] || fail "pending scope violation merged"
+# Removing the stray change makes the actual patch eligible again.
+rm "$wt/src/pending.txt"
+expect_exit 0 'Merged o-3' "$worker" --merge o-3
+git -C "$repo" reset -q --hard
+
+# A rename into an owned destination still deletes an unowned source.
+cat >>"$tmp/bin/agy" <<'EOF'
+if [[ -n "${FAKE_RENAME:-}" ]]; then mv src/app.txt src/moved.txt; fi
+EOF
+FAKE_RENAME=1 "$worker" o-4 --engine agy --worktree --project "$repo" --plan .squad/plans/ok.md --own src/moved.txt --brief Edit >/dev/null
+grep -qx 'scope_violation=src/app.txt' "$(last_status o-4)" || fail "rename source not recorded"
+expect_exit 3 'outside its --own scope: src/app.txt' "$worker" --merge o-4
+"$worker" --discard o-4 >/dev/null
+
+# A fix after capture cannot hide an unowned path in the captured patch.
+FAKE_EDIT='src/app.txt=owned' \
+  "$worker" o-5 --engine agy --worktree --project "$repo" --plan .squad/plans/ok.md --own src/app.txt --brief Edit >/dev/null
+wt="$(sed -n 's/^worktree=//p' "$(last_status o-5)")"
+CAPTURE_FIX_WORKTREE="$wt"
+CAPTURE_FIX_HEAD="$(git -C "$wt" rev-parse HEAD)"
+REAL_GIT="$(command -v git)"
+export CAPTURE_FIX_WORKTREE CAPTURE_FIX_HEAD REAL_GIT
+echo stray >"$wt/src/captured.txt"
+cat >"$tmp/bin/git" <<'EOF'
+#!/usr/bin/env bash
+"$REAL_GIT" "$@" || exit $?
+if [[ "$*" == *' diff --binary '* && "$2" == "$CAPTURE_FIX_WORKTREE" ]]; then
+  "$REAL_GIT" -C "$CAPTURE_FIX_WORKTREE" reset -q --hard "$CAPTURE_FIX_HEAD"
+fi
+EOF
+chmod +x "$tmp/bin/git"
+expect_exit 3 'outside its --own scope: src/captured.txt' "$worker" --merge o-5
+[[ ! -e "$repo/src/captured.txt" ]] || fail "captured scope violation merged"
+rm "$tmp/bin/git"
+unset CAPTURE_FIX_WORKTREE CAPTURE_FIX_HEAD REAL_GIT
+"$worker" --discard o-5 >/dev/null
+
+# Git's quoted display form must not replace the actual filename in scope checks.
+odd_path=$'src/odd\t"é" file.txt'
+FAKE_EDIT="$odd_path=odd" \
+  "$worker" o-6 --engine agy --worktree --project "$repo" --plan .squad/plans/ok.md --own "$odd_path" --brief Edit >/dev/null
+expect_exit 0 'Merged o-6' "$worker" --merge o-6
+[[ -f "$repo/$odd_path" ]] || fail "odd filename was not preserved"
+rm "$repo/$odd_path"
+
+# Newlines cannot be represented by the scope checker's line-based protocol.
+FAKE_EDIT='src/app.txt=owned' \
+  "$worker" o-7 --engine agy --worktree --project "$repo" --plan .squad/plans/ok.md --own src/ --brief Edit >/dev/null
+wt="$(sed -n 's/^worktree=//p' "$(last_status o-7)")"
+printf stray >"$wt/"$'src/line\nbreak.txt'
+expect_exit 3 'cannot check ownership for o-7' "$worker" --merge o-7
+[[ ! -e "$repo/"$'src/line\nbreak.txt' ]] || fail "unsupported filename merged"
+"$worker" --discard o-7 >/dev/null
+
+# --- 8. shared plan context --------------------------------------------------------------------------------
+cat >.squad/plans/ctx.md <<'EOF'
+# Ctx plan
+
+## Triage
+- Risk: low
+- Complexity: low
+- squad-route: not configured
+
+## Goal
+GOAL-MARKER ship it.
+
+## Findings
+- `src/app.txt:1` FINDING-MARKER
+
+## Perspectives
+- Principal engineer: a.
+- Engineering manager: b.
+- Technical lead: c.
+- QA/QC: d.
+- End user: e.
+
+## Decisions
+- DECISION-MARKER keep it small.
+
+## Tasks
+- TASK-MARKER-OTHER-WORKER
+
+## Acceptance
+- ok
+
+## Approvals
+- push: APPROVAL-MARKER
+EOF
+printf 'COMPANION-MARKER\n' >.squad/plans/ctx.context.md
+: >"$WORKER_TEST_LOG"
+"$worker" x-1 --engine agy --no-worktree --plan .squad/plans/ctx.md --brief 'Do x' >/dev/null
+for marker in GOAL-MARKER FINDING-MARKER DECISION-MARKER COMPANION-MARKER; do
+  grep -q "$marker" "$WORKER_TEST_LOG" || fail "$marker missing from the worker prompt"
+done
+for marker in TASK-MARKER-OTHER-WORKER APPROVAL-MARKER; do
+  ! grep -q "$marker" "$WORKER_TEST_LOG" || fail "$marker leaked into the worker prompt"
+done
+: >"$WORKER_TEST_LOG"
+"$worker" x-2 --engine agy --no-worktree --plan .squad/plans/ctx.md --no-plan-context --brief 'Do x' >/dev/null
+! grep -q 'GOAL-MARKER' "$WORKER_TEST_LOG" || fail "--no-plan-context still added the context"
+# The companion file is bounded.
+head -c 400 /dev/zero | tr '\0' 'z' >.squad/plans/ctx.context.md
+: >"$WORKER_TEST_LOG"
+SQUAD_WORKER_MAX_CONTEXT_BYTES=50 "$worker" x-3 --engine agy --no-worktree --plan .squad/plans/ctx.md --brief 'Do x' >/dev/null
+! grep -q 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' "$WORKER_TEST_LOG" || fail "companion context not bounded"
+
+echo 'PASS: plan library, plan gate, repo bootstrap, merge review gate, reviewer verdict, --own scope and plan context'

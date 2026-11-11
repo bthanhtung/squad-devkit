@@ -48,7 +48,7 @@ Mappings are operator capability policy, not automatic correctness, provider ava
 Use `--project <path>` for another repository and a unique worker ID per parallel run. Pick the role: the default team is you plus `dev` workers; add `ui-ux` only when the task touches UI/UX or the human asks for it, and `security` only for auth, secrets, input handling, dependencies or other high-risk changes, or when the human asks. Use tester, reviewer or researcher when the plan requires them.
 
 ## 5. Brief each worker
-Workers see only their brief, not this chat or the plan file. A brief is complete enough that a developer new to the repository could do the task without asking:
+Workers see only their brief, not this chat or the plan file. When started with `--plan`, they also receive the plan's Goal, Findings and Decisions (and an optional `<plan>.context.md`), so do not repeat those in the brief; pass `--own <paths>` for the files a worker may change (changes elsewhere are recorded as a scope violation and `--merge` refuses them). A brief is complete enough that a developer new to the repository could do the task without asking:
 - **Goal** of this task, and how it fits the overall change.
 - **Files you own** (create or edit only these), and files to read for context.
 - **Exact changes**: functions, signatures, behaviour, error handling, and the existing code to mirror (`path:line`).
