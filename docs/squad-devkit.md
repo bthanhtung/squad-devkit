@@ -446,9 +446,11 @@ When Claude Code is the manager, the session gets a status line through
 - without a status line, the squad label alone;
 - with another custom status line, nothing changes.
 
-The label reads `squad 2 running · saved 1.2M tok`: the tokens that workers on
+The label reads `squad 2 running · saved 1.2M tok (+3.4M cache) · claude workers 0.8M (+12M cache)`:
+the fresh tokens (input not served from cache, plus output) that workers on
 other engines processed instead of Claude during this session, plus the tokens
-of any Claude workers. Set `SQUAD_DEVKIT_STATUSLINE=0` to turn it off.
+of any Claude workers; cache reads are shown separately because they cost far
+less. Set `SQUAD_DEVKIT_STATUSLINE=0` to turn it off.
 
 ## Housekeeping
 

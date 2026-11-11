@@ -107,17 +107,37 @@ model_effort=high profile=deep yolo=1 squad_engine build_command || fail
 engine_directory="$workspace_root" sandbox_mode=0 squad_engine build_command || fail
 [[ "${engine_command[*]}" == *'--sandbox danger-full-access'* && "${engine_command[*]}" != *--add-dir* ]] || fail
 
-# Grok and OpenCode print the report on stdout.
-for name in grok opencode; do
-  printf '#!/usr/bin/env bash\necho "report from %s $*"\necho diagnostics >&2\n' "$name" >"$tmp/bin/$name"
-  chmod +x "$tmp/bin/$name"
-  squad_engine_load "$name"
-  squad_engine build_command || fail
-  squad_engine run_and_extract_report || fail
-  grep -q "^report from $name .*--model opus" "$absolute_report" || fail
-  grep -q '^diagnostics$' "$absolute_log" || fail
-  [[ -z "$(squad_engine reported_models "$absolute_log")" ]] || fail
-done
+# Grok prints the report on stdout; OpenCode runs in JSON mode.
+printf '#!/usr/bin/env bash\necho "report from grok $*"\necho diagnostics >&2\n' >"$tmp/bin/grok"
+chmod +x "$tmp/bin/grok"
+squad_engine_load grok
+squad_engine build_command || fail
+squad_engine run_and_extract_report || fail
+grep -q '^report from grok .*--model opus' "$absolute_report" || fail
+grep -q '^diagnostics$' "$absolute_log" || fail
+[[ -z "$(squad_engine reported_models "$absolute_log")" ]] || fail
+
+# OpenCode JSONL: the report is the text of the last assistant message, and the
+# stream (tool calls, tokens) lands in the log for the worker and monitor.
+cat >"$tmp/bin/opencode" <<'EOF'
+#!/usr/bin/env bash
+echo '{"type":"step_start","sessionID":"s","part":{"messageID":"m1","type":"step-start"}}'
+echo '{"type":"tool_use","sessionID":"s","part":{"messageID":"m1","type":"tool","tool":"read","state":{"status":"completed","input":{"path":"/abs/a.txt"},"output":"Read file /abs/a.txt, lines 1-1\n1: hello","title":"read"}}}'
+echo '{"type":"tool_use","sessionID":"s","part":{"messageID":"m1","type":"tool","tool":"shell","state":{"status":"completed","input":{"command":"ls a.txt"},"output":"a.txt\n","metadata":{"metadata":{"exit":0}}}}}'
+echo '{"type":"step_finish","sessionID":"s","part":{"messageID":"m1","type":"step-finish","reason":"tool-calls","cost":0,"tokens":{"input":9088,"output":3,"reasoning":0,"cache":{"read":1664,"write":0}}}}'
+printf '{"type":"text","sessionID":"s","part":{"messageID":"m2","type":"text","text":"report from opencode %s"}}\n' "$*"
+echo '{"type":"step_finish","sessionID":"s","part":{"messageID":"m2","type":"step-finish","reason":"stop","tokens":{"input":100,"output":5,"reasoning":2,"cache":{"read":9000,"write":0}}}}'
+EOF
+chmod +x "$tmp/bin/opencode"
+squad_engine_load opencode
+squad_engine build_command || fail
+[[ "${engine_command[*]}" == 'opencode run --format json do the task --model opus' ]] || fail
+: >"$absolute_report"
+squad_engine run_and_extract_report || fail
+[[ "$(cat "$absolute_report")" == 'report from opencode run --format json do the task --model opus' ]] || fail
+grep -q '"type":"tool_use"' "$absolute_log" || fail
+grep -q '"type":"step_finish"' "$absolute_log" || fail
+[[ -z "$(squad_engine reported_models "$absolute_log")" ]] || fail
 
 # AGY: report from the terminal SUCCESS; stream rejection is logged, not reported.
 cat >"$tmp/bin/agy" <<'EOF'
@@ -161,8 +181,9 @@ printf '%s\n' \
   '{"type":"item.completed","item":{"id":"1","type":"command_execution","command":"make","exit_code":0}}' \
   '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Read","input":{"file_path":"a"}}]}}' \
   '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"read_file","tool_info":{"parameters":{"Path":"b"}}}}' \
+  '{"type":"tool_use","sessionID":"s","part":{"messageID":"m1","type":"tool","tool":"read","state":{"status":"completed","input":{"path":"/abs/a.txt"},"output":"Read file /abs/a.txt","title":"read"}}}' \
   >"$monitor_log"
-for case in codex:1 claude:1 ccr:1 agy:2 grok:0 opencode:0 :3; do
+for case in codex:1 claude:1 ccr:1 agy:2 grok:0 opencode:1 :4; do
   name="${case%%:*}"
   printf 'worker=w\nengine=%s\nstate=completed\nstarted=1\nfinished=2\nlog=%s\n' "$name" "$monitor_log" >"$tmp/mon/.squad/workers/run.status"
   frame="$("$root/scripts/squad-worker-monitor.sh" "$tmp/mon/.squad/workers/run.status" --once)"

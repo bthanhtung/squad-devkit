@@ -58,6 +58,9 @@ releases.
 - The installer links `squad-route` and `squad-ask`.
 - Approvals accept an absolute repo path (`- push: /abs/path/to/repo`), which
   avoids matching every repo that shares a basename.
+- OpenCode workers run in JSON mode: their token usage is recorded and the
+  monitor shows their tool calls; the savings label now separates cache reads
+  from fresh tokens, e.g. `saved 1.2M tok (+3.4M cache)`.
 
 ### Changed
 - The sensitive-patch doc skip is narrowed to `*.md`, `*.mdx` and `*.rst`;

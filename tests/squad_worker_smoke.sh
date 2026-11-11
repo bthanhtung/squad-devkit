@@ -97,7 +97,19 @@ fi
 EOF
 sed 's/^printf .grok:/printf '"'"'agy:/' "$test_bin/grok" >"$test_bin/agy"
 sed 's/^printf .grok:/printf '"'"'gemini:/' "$test_bin/grok" >"$test_bin/gemini"
-sed 's/^printf .grok:/printf '"'"'opencode:/' "$test_bin/grok" >"$test_bin/opencode"
+cat >"$test_bin/opencode" <<'EOF'
+#!/usr/bin/env bash
+# Stand-in OpenCode JSON mode: one text part then a step_finish with tokens.
+echo $$ > "$WORKER_TEST_LOG.pid"
+printf 'opencode:%s\n' "${*//$'\n'/\\n}" >> "$WORKER_TEST_LOG"
+if [[ -n "${FAKE_PLAIN_BEATS:-}" ]]; then
+  for _ in $(seq "$FAKE_PLAIN_BEATS"); do echo 'progress'; sleep 1; done
+fi
+if [[ -n "${FAKE_PLAIN_SLEEP:-}" ]]; then sleep "$FAKE_PLAIN_SLEEP"; fi
+echo '{"type":"step_start","timestamp":1,"sessionID":"s","part":{"messageID":"m1","type":"step-start"}}'
+echo '{"type":"text","timestamp":2,"sessionID":"s","part":{"messageID":"m1","type":"text","text":"Done. Files: none. Verification: ok."}}'
+echo '{"type":"step_finish","timestamp":3,"sessionID":"s","part":{"messageID":"m1","type":"step-finish","reason":"stop","cost":0,"tokens":{"input":9088,"output":3,"reasoning":0,"cache":{"read":1664,"write":0}}}}'
+EOF
 chmod +x "$test_bin"/*
 export HOME="$temp_directory/home"
 export PATH="$repo_root/target/debug:$test_bin:$PATH"
@@ -367,6 +379,22 @@ claude_ns_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
 SQUAD_WORKER_SANDBOX=0 "$worker" lead-env-ns --engine claude --brief 'Env no sandbox claude' >/dev/null
 claude_env_ns_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
 [[ "$claude_env_ns_call" == *'--settings {"sandbox":{"enabled":false}}'* ]] || fail
+
+# opencode engine: JSON mode, report from the final assistant text, and token
+# accounting that separates fresh input from cache reads.
+"$worker" oc-1 --engine opencode --brief 'Opencode task' >/dev/null
+oc_call="$(grep '^opencode:' "$WORKER_TEST_LOG" | tail -n 1)"
+[[ "$oc_call" == *'run --format json'* ]] || fail
+oc_status="$(ls .squad/workers/oc-1-*.status)"
+grep -qx 'engine=opencode' "$oc_status"
+grep -qx 'tokens_in=10752' "$oc_status"
+grep -qx 'tokens_cached=1664' "$oc_status"
+grep -qx 'tokens_out=3' "$oc_status"
+grep -qx 'state=completed' "$oc_status"
+grep -q 'Done. Files: none. Verification: ok.' .squad/workers/oc-1-*.md
+oc_frame="$("$repo_root/scripts/squad-worker-monitor.sh" "$oc_status" --once)"
+[[ "$oc_frame" == *'tokens in 10,752 (cached 1,664) · out 3'* ]] || fail
+[[ "$oc_frame" == *'» Done. Files: none. Verification: ok.'* ]] || fail
 
 # A run that stops producing output is stopped and reported instead of hanging.
 status=0

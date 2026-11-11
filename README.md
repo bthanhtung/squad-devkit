@@ -160,8 +160,10 @@ pane/terminal in `herdr-app ls`, and restores manager focus; Herdr TUI
 
 `squad-monitor --all` shows every run as a table in any terminal. With
 claude-hud, the manager's status line adds the squad label, for example
-`squad 2 running · saved 1.2M tok`: the tokens that workers on other engines
-processed instead of Claude during this session.
+`squad 2 running · saved 1.2M tok (+3.4M cache) · claude workers 0.8M (+12M cache)`:
+the fresh tokens (input not served from cache, plus output) that workers on
+other engines processed instead of Claude during this session; cache reads are
+shown separately because they cost far less.
 
 ## Configuration
 

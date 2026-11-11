@@ -1100,11 +1100,19 @@ reported_model="$(squad_engine reported_models "$log_file")"
 if command -v jq >/dev/null 2>&1 && [[ -s "$log_file" ]]; then
   usage_line="$(jq -R -r -s '
     [split("\n")[] | fromjson? | select(type == "object")
-     | (select(.type == "turn.completed") | .usage), (select(.type == "result") | .usage // empty)]
+     | (select(.type == "turn.completed") | .usage), (select(.type == "result") | .usage // empty),
+       (select(.type == "step_finish") | .part.tokens // empty)]
+    | map(if has("input_tokens") then
+        {in: ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)),
+         cached: (.cached_input_tokens // .cache_read_input_tokens // 0),
+         out: (.output_tokens // 0)}
+      else
+        {in: ((.input // 0) + (.cache.read // 0) + (.cache.write // 0)),
+         cached: (.cache.read // 0),
+         out: ((.output // 0) + (.reasoning // 0))}
+      end)
     | if length == 0 then "" else
-      [ (map((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)) | add),
-        (map(.cached_input_tokens // .cache_read_input_tokens // 0) | add),
-        (map(.output_tokens // 0) | add) ] | map(tostring) | join(" ") end' "$log_file" 2>/dev/null || true)"
+      [ (map(.in) | add), (map(.cached) | add), (map(.out) | add) ] | map(tostring) | join(" ") end' "$log_file" 2>/dev/null || true)"
   if [[ -n "$usage_line" ]]; then
     read -r tokens_in tokens_cached tokens_out <<<"$usage_line"
   fi
