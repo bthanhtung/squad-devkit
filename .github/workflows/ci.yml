@@ -86,7 +86,8 @@ jobs:
         run: |
           shellcheck -S warning scripts/squad-devkit.sh scripts/squad-worker.sh \
             scripts/squad-worker-monitor.sh scripts/squad-ask.sh scripts/squad-route.sh \
-            scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh scripts/lib/squad-worktree.sh scripts/lib/squad-panes.sh scripts/lib/squad-worker-model.sh scripts/lib/squad-plan.sh
+            scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh scripts/lib/squad-worktree.sh scripts/lib/squad-panes.sh scripts/lib/squad-worker-model.sh scripts/lib/squad-plan.sh \
+            scripts/lib/squad-engine.sh scripts/lib/engines/*.sh
 
       - name: Build squad
         run: cargo build
@@ -107,10 +108,14 @@ jobs:
           bash tests/squad_devkit_roles_smoke.sh
           bash tests/squad_devkit_clean_smoke.sh
           bash tests/squad_worker_plan_smoke.sh
-          bash tests/squad_devkit_manager_guard_smoke.sh
+          PHASE4_GUARD_PARITY=1 bash tests/squad_devkit_manager_guard_smoke.sh
+          SQUAD_RUST_DISABLE=1 bash tests/squad_devkit_manager_guard_smoke.sh
+          bash tests/phase4_plan_parity.sh
+          bash tests/phase4_runs_smoke.sh
           bash tests/squad_worker_status_regression.sh
           bash tests/squad_herdr_panes_regression.sh
           bash tests/squad_terminal_routing_regression.sh
           bash tests/squad_herdr_app_panes_regression.sh
           bash tests/squad_orca_panes_regression.sh
           bash tests/squad_worker_agy_lifecycle_smoke.sh
+          bash tests/squad_engine_adapters_smoke.sh

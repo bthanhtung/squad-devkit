@@ -58,7 +58,7 @@ _squad_worker() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review -h --help"
+  local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review --own --no-plan-context -h --help"
   local engines="claude codex opencode grok agy ccr"
   local roles="dev tester reviewer researcher ui-ux security manager-devkit"
   local profiles="high medium max"
@@ -169,3 +169,29 @@ complete -F _squad_worker squad-worker
 complete -F _squad_worker squad-worker.sh
 complete -F _squad_monitor squad-monitor
 complete -F _squad_monitor squad-worker-monitor.sh
+
+# Core consolidation commands; retain filename completion for their operands.
+_squad_core() {
+  local cur="${COMP_WORDS[COMP_CWORD]}" choices=""
+  if (( COMP_CWORD == 1 )); then choices="plan guard run init config join leave agents send receive task pending history roles teams team doctor setup clean cleanup help";
+  elif (( COMP_CWORD == 2 )); then
+    case "${COMP_WORDS[1]}" in
+      plan) choices="validate context check-patch approves" ;;
+      guard) choices="pre-tool-use" ;;
+      run) choices="record list" ;;
+    esac
+  elif [[ "${COMP_WORDS[1]}" == run && "$cur" == -* ]]; then
+    case "${COMP_WORDS[2]}" in
+      record) choices="--workspace --status-file" ;;
+      list) choices="--workspace --directory --json --metrics" ;;
+    esac
+  fi
+  if [[ -n "$choices" ]]; then
+    # shellcheck disable=SC2207
+    COMPREPLY=( $(compgen -W "$choices" -- "$cur") )
+  else
+    # shellcheck disable=SC2207
+    COMPREPLY=( $(compgen -f -- "$cur") )
+  fi
+}
+complete -F _squad_core squad

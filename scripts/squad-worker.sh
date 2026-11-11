@@ -22,6 +22,8 @@ source "$script_dir/lib/squad-worktree.sh"
 source "$script_dir/lib/squad-panes.sh"
 # shellcheck source=lib/squad-plan.sh
 source "$script_dir/lib/squad-plan.sh"
+# shellcheck source=lib/squad-engine.sh
+source "$script_dir/lib/squad-engine.sh"
 
 usage() {
   cat <<'EOF'
@@ -30,6 +32,7 @@ Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FIL
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
                     [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
                     [--plan FILE | --no-plan "REASON"] [--clone URL] [--init]
+                    [--own PATHS] [--no-plan-context]
        squad-worker --list
        squad-worker --stop <worker-id|all>
        squad-worker --merge <worker-id> [--project DIR] [--override-review "REASON"]
@@ -77,6 +80,11 @@ Options:
                      in manager context (--manager, SQUAD_MANAGER_ID, or
                      SQUAD_WORKER_REQUIRE_PLAN=1; SQUAD_WORKER_REQUIRE_PLAN=0 disables)
   --no-plan REASON   Run without a plan and record why (excludes --plan)
+  --no-plan-context  Do not add the plan's Goal, Findings and Decisions (and an optional
+                     <plan>.context.md) to the worker's prompt
+  --own PATHS        Comma-separated files, directories or globs this worker may change
+                     (repeatable). Changes elsewhere are recorded as scope_violation and
+                     --merge refuses them unless --override-review is given
   --clone URL        git clone URL into --project first, if that directory is missing
   --init             Create --project if missing and git init it (no commits);
                      a repository without commits runs in place, without a worktree
@@ -122,6 +130,10 @@ no_plan_reason=""
 clone_url=""
 init_project=0
 override_review=""
+owned_paths=""
+no_plan_context=0
+verdict=""
+scope_violation=""
 project_directory=""
 timeout_minutes="${SQUAD_WORKER_TIMEOUT:-45}"
 stall_minutes="${SQUAD_WORKER_STALL:-10}"
@@ -148,7 +160,7 @@ one_line_reason() {
 while (( $# > 0 )); do
   case "$1" in --models|--engine|--project) ;; *) catalog_incompatible=1 ;; esac
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review)
+    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -167,6 +179,7 @@ while (( $# > 0 )); do
         --plan) plan_argument="$2" ;;
         --no-plan) no_plan_reason="$(one_line_reason --no-plan "$2")" || exit 2 ;;
         --clone) clone_url="$2" ;;
+        --own) owned_paths="${owned_paths:+$owned_paths,}$2" ;;
         --override-review) override_review="$(one_line_reason --override-review "$2")" || exit 2 ;;
         --project) project_directory="$2" ;;
         --timeout) timeout_minutes="$2" ;;
@@ -177,8 +190,11 @@ while (( $# > 0 )); do
       esac
       shift
       ;;
-    --all-mcp) all_mcp=1 ;;
+    --all-mcp)
+      # shellcheck disable=SC2034 # read by lib/engines/*.sh
+      all_mcp=1 ;;
     --init) init_project=1 ;;
+    --no-plan-context) no_plan_context=1 ;;
     --worktree) worktree_mode=1 ;;
     --no-worktree) worktree_mode=0 ;;
     --yolo) yolo=1 ;;
@@ -274,7 +290,10 @@ reconcile_status() {
   tmp="$(mktemp "$file.reconcile.XXXXXX")"
   awk '!/^(state|reason|finished|exit)=/' "$file" >"$tmp"
   printf 'state=lost\nreason=%s; report may be incomplete\nfinished=%s\nexit=\n' "$reason" "$(date +%s)" >>"$tmp"
-  if [[ "$(status_get "$file" state)" == running ]]; then mv "$tmp" "$file"; else rm -f "$tmp"; fi
+  if [[ "$(status_get "$file" state)" == running ]]; then
+    mv "$tmp" "$file"
+    squad_record_status "$file"
+  else rm -f "$tmp"; fi
 }
 
 # Status files of runs that are still running, newest first.
@@ -321,6 +340,7 @@ unmerged_worktrees() {
 # security-folder and content checks, but secret-looking paths and private keys are
 # checked in every file. Both sides of a rename are checked.
 sensitive_reasons() {
+  if squad_supports plan; then squad plan check-patch "$@"; return $?; fi
   awk '
     function is_doc(path,   lower) {
       lower = tolower(path)
@@ -390,10 +410,37 @@ sensitive_reasons() {
   ' "$1"
 }
 
+# Prints the files from stdin (one per line) that no --own pattern covers.
+# A pattern matches a path exactly, as a glob, or as a directory prefix:
+# scope_violations <comma-separated patterns> < file-list.
+scope_violations() {
+  local file pattern ok
+  local patterns=()
+  IFS=',' read -r -a patterns <<<"$1"
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
+    ok=0
+    for pattern in ${patterns[@]+"${patterns[@]}"}; do
+      pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+      pattern="${pattern%"${pattern##*[![:space:]]}"}"
+      pattern="${pattern%/}"
+      [[ -n "$pattern" ]] || continue
+      # shellcheck disable=SC2053 # the pattern is deliberately a glob
+      if [[ "$file" == $pattern || "$file" == $pattern/* ]]; then ok=1; break; fi
+    done
+    (( ok == 1 )) || printf '%s\n' "$file"
+  done
+  return 0
+}
+
 # True when another worker with role reviewer finished the same plan after the
-# target's last finish: review_exists <target status file> <plan>.
+# target's last finish: review_exists <target status file> <plan>. A reviewer whose
+# verdict is changes_requested never counts; the newest such reviewer is left in
+# $review_blocker so the gate can say why. A reviewer without a verdict (older
+# runs, or a report that omits it) still counts, as before.
 review_exists() {
-  local target_status="$1" plan="$2" target_finished file finished state
+  local target_status="$1" plan="$2" target_finished file finished state verdict newest=0 latest=""
+  review_blocker=""
   # A worker without a real plan cannot be reviewed against one.
   [[ -n "$plan" && "$plan" != none ]] || return 1
   target_finished="$(status_get "$target_status" finished)"
@@ -406,18 +453,62 @@ review_exists() {
     [[ "$state" == "completed" || "$state" == "done" ]] || continue
     finished="$(status_get "$file" finished)"
     if [[ "$finished" =~ ^[0-9]+$ ]] && (( finished > target_finished )); then
-      return 0
+      if (( finished > newest )); then
+        newest="$finished"
+        latest="$file"
+      elif (( finished == newest )) && [[ "$(status_get "$file" verdict)" == changes_requested ]]; then
+        latest="$file"
+      fi
     fi
   done < <(ls -t .squad/workers/*.status 2>/dev/null)
-  return 1
+  [[ -n "$latest" ]] || return 1
+  verdict="$(status_get "$latest" verdict)"
+  if [[ "$verdict" == changes_requested ]]; then
+    review_blocker="$(status_get "$latest" worker) ($(status_get "$latest" report))"
+    return 1
+  fi
+  return 0
 }
 
-# Returns 1 for a high-risk plan's or sensitive patch without a review, unless
-# --override-review was given: review_gate <target> <patch file>.
+# Returns 1 for a high-risk plan's or sensitive patch without a review, or for
+# changes outside --own, unless --override-review was given:
+# review_gate <target> <patch file>.
 review_gate() {
-  local target="$1" patch="$2" file plan="" reasons="" sensitive
+  local target="$1" patch="$2" file plan="" reasons="" sensitive scope="" owned="" paths record path
   file="$(worker_status_files "$target" | head -n 1)"
   [[ -z "$file" ]] || plan="$(status_get "$file" plan)"
+  [[ -z "$file" ]] || owned="$(status_get "$file" owned)"
+  if [[ -n "$owned" ]]; then
+    # Parse the captured no-renames patch, never the worker's mutable HEAD.
+    if ! paths="$(
+      set -o pipefail
+      git apply --numstat -z -- "$patch" | while IFS= read -r -d '' record; do
+        path="${record#*$'\t'}"
+        path="${path#*$'\t'}"
+        # Scope input is line-delimited; reject paths it cannot represent safely.
+        if [[ -z "$path" || "$path" == *$'\n'* || "$path" == *$'\r'* ]]; then
+          echo "unsupported filename in ownership check" >&2
+          exit 1
+        fi
+        printf '%s\n' "$path"
+      done
+    )"; then
+      echo "squad-worker: cannot check ownership for $target." >&2
+      return 1
+    fi
+    scope="$(printf '%s\n' "$paths" | scope_violations "$owned" | paste -sd ',' -)"
+  fi
+  if [[ -n "$scope" ]]; then
+    if [[ -n "$override_review" ]]; then
+      echo "squad-worker: scope override for $target ($scope): $override_review"
+      if [[ -n "$plan" && "$plan" != none && -f "$plan" ]]; then
+        plan_append_approval "$plan" "- review-override: $target — scope: $override_review ($(date +%Y-%m-%d))"
+      fi
+    else
+      echo "squad-worker: merging $target blocked: it changed files outside its --own scope: $scope. Discard those changes with a fix round, or pass --override-review \"<reason>\"." >&2
+      return 1
+    fi
+  fi
   if [[ -n "$plan" && "$plan" != none && -f "$plan" && "$(plan_field "$plan" risk)" == high ]]; then
     reasons="plan risk is high"
   fi
@@ -434,6 +525,10 @@ review_gate() {
       plan_append_approval "$plan" "- review-override: $target — $override_review ($(date +%Y-%m-%d))"
     fi
     return 0
+  fi
+  if [[ -n "${review_blocker:-}" ]]; then
+    echo "squad-worker: merging $target blocked: reviewer $review_blocker requested changes. Fix the issues and rerun the reviewer on the same plan, or pass --override-review \"<reason>\"." >&2
+    return 1
   fi
   if [[ -z "$plan" || "$plan" == none ]]; then
     echo "squad-worker: merging $target needs a review: $reasons. $target has no plan, so a reviewer cannot satisfy the gate: rerun the worker with --plan <plan>, or pass --override-review \"<reason>\"." >&2
@@ -583,6 +678,7 @@ if [[ "$yolo" == 1 ]]; then
     echo 'YOLO and --sandbox (or SQUAD_WORKER_SANDBOX=1) are mutually exclusive' >&2
     exit 2
   fi
+  # shellcheck disable=SC2034 # read by lib/engines/*.sh
   sandbox_mode=0
 fi
 if [[ -n "$plan_argument" && -n "$no_plan_reason" ]]; then
@@ -621,16 +717,18 @@ if [[ -n "$plan_argument" ]]; then
   fi
   plan_line="Plan: $plan_path"
 fi
-case "$engine" in
-  claude|codex|opencode|grok|agy|ccr) ;;
-  *) echo "Unknown engine: $engine (use claude, codex, opencode, grok, agy, or ccr)" >&2; exit 2 ;;
-esac
+plan_context=""
+if [[ "$plan_path" != none ]] && (( no_plan_context == 0 )); then
+  plan_context="$(plan_shared_context "$plan_path")"
+fi
+squad_engine_load "$engine" || exit 2
 if [[ ! "$timeout_minutes" =~ ^[0-9]+$ || "$timeout_minutes" =~ ^0+$ || ! "$stall_minutes" =~ ^[0-9]+$ ]]; then
   echo "--timeout (at least 1) and SQUAD_WORKER_STALL take whole minutes" >&2
   exit 2
 fi
 squad_worker_select_model
 model_arguments=()
+# shellcheck disable=SC2034 # read by lib/engines/*.sh
 [[ -z "$model" ]] || model_arguments=(--model "$model")
 
 if [[ -n "$brief_file" ]]; then
@@ -650,12 +748,7 @@ if [[ -z "$title" ]]; then
 fi
 
 require_command squad
-require_command "$engine"
-[[ "$engine" != codex ]] || require_command jq
-if [[ "$engine" == ccr ]]; then
-  require_command claude
-  require_command curl
-fi
+squad_engine check_deps
 
 if [[ -n "$clone_url" ]]; then
   if [[ -d "$project_directory" ]]; then
@@ -802,6 +895,7 @@ else
   questions="- If the brief is ambiguous or you find a better technical approach, ask before guessing: \`$ask_command --to $manager_id \"your question\"\` waits for the answer (up to 5 minutes). Ask another worker the same way (\`squad agents\` in $workspace_root lists them).
 - Between major steps, run \`$ask_command --check\` and answer other workers' questions with \`$ask_command --reply <id> \"answer\"\`."
 fi
+# shellcheck disable=SC2034 # read by lib/engines/*.sh
 prompt="You are $worker_id, a $role worker in a squad led by $manager_id. You run once, without a human at the keyboard.
 ${role_instructions:+
 $role_instructions
@@ -812,7 +906,11 @@ Working directory: $engine_directory${worktree_path:+
 This is your own git worktree of $repository_root, isolated from other workers. The manager reviews and merges your changes, so do not commit, push, or switch branches.}
 
 $plan_line
-
+${plan_context:+
+## Shared plan context (Goal, Findings and Decisions from the plan)
+$plan_context}${owned_paths:+
+Files you own (change nothing else): $owned_paths
+}
 $brief
 
 ## Rules
@@ -855,6 +953,7 @@ write_status() {
     printf 'process_started=%s\n' "$process_started"
     printf 'pid=%s\nstarted=%s\nfinished=%s\nexit=%s\n' "$$" "$started_at" "$finished" "$exit_status"
     printf 'tokens_in=%s\ntokens_cached=%s\ntokens_out=%s\n' "$tokens_in" "$tokens_cached" "$tokens_out"
+    printf 'verdict=%s\nowned=%s\nscope_violation=%s\n' "$verdict" "$owned_paths" "$scope_violation"
     printf 'project=%s\nlog=%s\nreport=%s\n' "$project_directory" \
       "$workspace_root/$log_file" "$workspace_root/$report_file"
     printf 'repository=%s\nworktree=%s\nbase=%s\npatch=%s\n' "$repository_root" "$worktree_path" \
@@ -866,6 +965,7 @@ write_status() {
     fi
   } >"$status_file.tmp"
   mv "$status_file.tmp" "$status_file"
+  squad_record_status "$status_file"
 }
 : >"$log_file"
 : >"$report_file"
@@ -918,192 +1018,21 @@ if ! failure_reason="$(open_monitor_pane 2>&1)"; then
   exit 1
 fi
 
-ensure_ccr_server() {
-  local port
-  port="$(sed -n 's/.*"PORT"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
-    "$HOME/.claude-code-router/config.json" 2>/dev/null | head -1)"
-  port="${port:-3456}"
-  if curl -s -o /dev/null "http://127.0.0.1:$port/"; then
-    return 0
-  fi
-  nohup ccr start >>"$output_directory/ccr-server.log" 2>&1 &
-  for _ in $(seq 1 30); do
-    if curl -s -o /dev/null "http://127.0.0.1:$port/"; then
-      return 0
-    fi
-    sleep 1
-  done
-  echo "claude-code-router did not start on port $port; see $output_directory/ccr-server.log" >>"$log_file"
-  return 1
-}
-
-# Codex silently drops an MCP server whose bearer-token variable is unset, and
-# the worker then improvises around the missing tool. Fail fast instead.
-missing_mcp_tokens() {
-  local mcp_json="$1" server variable
-  for server in ${keep_mcp[@]+"${keep_mcp[@]}"}; do
-    variable="$(printf '%s' "$mcp_json" | jq -r --arg name "$server" \
-      '.[] | select(.name == $name) | .transport.bearer_token_env_var // empty' 2>/dev/null || true)"
-    if [[ -n "$variable" && -z "${!variable:-}" ]]; then
-      printf '%s (needs %s)\n' "$server" "$variable"
-    fi
-  done
-}
-
 # Each engine reads the prompt and writes its final report to $report_file and
 # its activity (JSON events where the engine supports them) to $log_file.
+# shellcheck disable=SC2034 # read by lib/engines/*.sh
 absolute_report="$workspace_root/$report_file"
+# shellcheck disable=SC2034 # read by lib/engines/*.sh
 absolute_log="$workspace_root/$log_file"
+# shellcheck disable=SC2034 # read by lib/engines/*.sh
 engine_command=()
 status=0
-case "$engine" in
-  codex)
-    mcp_json="$(codex mcp list --json 2>>"$log_file")" || status=3
-    if ! printf '%s\n' "$mcp_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
-      echo "Could not list Codex MCP servers; refusing an unfiltered worker launch." | tee -a "$log_file" >&2
-      status=3
-      mcp_json='[]'
-    fi
-    missing=""
-    if command -v jq >/dev/null 2>&1; then
-      missing="$(missing_mcp_tokens "$mcp_json")"
-    fi
-    if [[ -n "$missing" ]]; then
-      {
-        echo "MCP servers requested with --mcp are missing their token environment variables:"
-        printf '%s\n' "$missing" | sed 's/^/  /'
-        echo "Export them in the shell that starts the manager (for example from ~/.zshrc)."
-      } | tee -a "$log_file" >&2
-      status=3
-    fi
-    mcp_arguments=()
-    if (( all_mcp == 0 )); then
-      configured_servers="$(printf '%s\n' "$mcp_json" | jq -r '
-        .[] | select(.enabled != false) | [.name, .transport.type // ""] | @tsv' 2>/dev/null || true)"
-      while IFS=$'\t' read -r server transport; do
-        [[ -n "$server" ]] || continue
-        if [[ " ${keep_mcp[*]:-} " == *" $server "* ]]; then
-          continue
-        fi
-        # Plugin servers need a transport even when disabled; never copy credentials.
-        case "$transport" in
-          stdio) mcp_arguments+=(-c "mcp_servers.$server={enabled=false,command=\"false\"}") ;;
-          streamable_http) mcp_arguments+=(-c "mcp_servers.$server={enabled=false,url=\"http://127.0.0.1\"}") ;;
-          *) mcp_arguments+=(-c "mcp_servers.$server.enabled=false") ;;
-        esac
-      done <<<"$configured_servers"
-    fi
-    add_directory=()
-    [[ "$engine_directory" != "$workspace_root" ]] && add_directory=(--add-dir "$workspace_root")
-    sandbox_arguments=(--sandbox workspace-write)
-    if [[ "$sandbox_mode" == 0 ]]; then
-      sandbox_arguments=(--sandbox danger-full-access)
-    fi
-    if [[ "$yolo" == 1 ]]; then
-      sandbox_arguments=(--dangerously-bypass-approvals-and-sandbox)
-    fi
-    profile_arguments=()
-    [[ -z "$profile" ]] || profile_arguments=(--profile "$profile")
-    [[ -z "$model_effort" ]] || model_arguments+=(-c "model_reasoning_effort=\"$model_effort\"")
-    engine_command=(codex exec --json --cd "$engine_directory" ${profile_arguments[@]+"${profile_arguments[@]}"} --ephemeral
-      --skip-git-repo-check ${sandbox_arguments[@]+"${sandbox_arguments[@]}"} ${add_directory[@]+"${add_directory[@]}"}
-      ${mcp_arguments[@]+"${mcp_arguments[@]}"} ${model_arguments[@]+"${model_arguments[@]}"} --output-last-message "$absolute_report" "$prompt")
-    ;;
-  claude)
-    # Six core tools keep the prompt small. Edits are accepted in the project;
-    # shell commands run inside Claude Code's sandbox by default, and can be
-    # disabled with --no-sandbox or SQUAD_WORKER_SANDBOX=0.
-    claude_settings='{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}'
-    if [[ "$sandbox_mode" == 0 ]]; then
-      claude_settings='{"sandbox":{"enabled":false}}'
-    fi
-    claude_allowed_tools=()
-    if [[ -n "${SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS:-}" ]]; then
-      claude_allowed_tools=(--allowedTools "$SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS")
-    fi
-    permission_arguments=(--permission-mode "${SQUAD_WORKER_CLAUDE_PERMISSION_MODE:-acceptEdits}")
-    [[ "$yolo" == 1 ]] && permission_arguments=(--dangerously-skip-permissions)
-    engine_command=(claude -p --model "$model" --strict-mcp-config --disable-slash-commands
-      --no-session-persistence --tools "${SQUAD_WORKER_CLAUDE_TOOLS:-Read,Edit,Write,Glob,Grep,Bash}"
-      "${permission_arguments[@]}"
-      ${claude_allowed_tools[@]+"${claude_allowed_tools[@]}"} --settings "$claude_settings"
-      --add-dir "$workspace_root" --output-format stream-json --verbose "$prompt")
-    ;;
-  ccr)
-    tools="${SQUAD_WORKER_CCR_TOOLS:-Read,Edit,Write,Glob,Grep}"
-    ensure_ccr_server || status=1
-    engine_command=(claude -p --strict-mcp-config --disable-slash-commands --no-session-persistence
-      --tools "$tools" --allowedTools "$tools" --permission-mode acceptEdits
-      --output-format stream-json --verbose "$prompt")
-    ;;
-  grok)
-    engine_command=(grok -p "$prompt" --always-approve --cwd "$engine_directory")
-    [[ -n "$model" ]] && engine_command+=(--model "$model")
-    ;;
-  agy)
-    engine_command=(agy -p "$prompt" --mode accept-edits --output-format stream-json)
-    [[ "$yolo" == 1 ]] && engine_command+=(--dangerously-skip-permissions)
-    [[ -z "$model_effort" ]] || engine_command+=(--effort "$model_effort")
-    [[ -n "$model" ]] && engine_command+=(--model "$model")
-    ;;
-  opencode)
-    engine_command=(opencode run "$prompt")
-    [[ -n "$model" ]] && engine_command+=(--model "$model")
-    ;;
-esac
-
-# Native AGY streams end with {event:result,result:{status,response}} and may
-# interleave plain diagnostics (ignored); accept only one valid terminal SUCCESS. Claude-
-# shaped and plain-text output stay supported. Damaged or
-# non-object JSON is never plaintext.
-agy_extract_report() {
-  local verdict
-  verdict="$(jq -R -s -r '
-    [split("\n")[] | select(test("\\S")) | sub("^\\s+";"") | sub("\\s+$";"") | . as $s | (try {v: fromjson} catch null) as $p
-     | if $p == null then (if $s | test("^[{\\[]") then {bad: true} elif $s | test("^root agent idle; waiting for ") then {} else {text: true} end)
-       elif ($p.v | type) == "object" then {o: $p.v} else {bad: true} end] as $l
-    | [$l[] | .o // empty] as $objs
-    | if any($l[]; .bad) then "damaged JSON in stream"
-      elif any($objs[]; has("event")) then
-        [$objs[] | select(.event == "result")] as $r
-        | if any($objs[]; .event == "error" or has("error")) then "stream contains an error event"
-          elif ($r | length) != 1 then "expected exactly one terminal result, found \($r | length)"
-          elif ($objs[-1].event != "result") then "events follow the terminal result"
-          elif ($r[0].result.status // "") != "SUCCESS" then "terminal status \($r[0].result.status // "missing")"
-          elif (($r[0].result.response | type) != "string") or (($r[0].result.response | test("\\S")) | not) then "terminal SUCCESS has no response"
-          else "ok:" + $r[0].result.response end
-      elif any($objs[]; .type == "result") then
-        ([$objs[] | select(.type == "result") | .result // empty] | join("\n")) as $t
-        | if $t == "" then "result has no text" else "ok:" + $t end
-      elif ($objs | length) > 0 then "no result event in stream"
-      elif any($l[]; .text) then "plain:" else "no report in stream" end' "$absolute_log" 2>/dev/null || echo 'unparseable stream')"
-  case "$verdict" in
-    ok:*) printf '%s\n' "${verdict#ok:}" >"$absolute_report" ;;
-    plain:) cp "$absolute_log" "$absolute_report" ;;
-    *) printf '\nsquad-worker: AGY stream rejected: %s\n' "$verdict" >>"$absolute_log" ;;
-  esac
-}
+squad_engine build_command || status=$?
 
 run_engine() {
   cd "$engine_directory"
   unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-  case "$engine" in
-    ccr)
-      eval "$(ccr activate 2>/dev/null)"
-      "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 || return $?
-      jq -R -r 'fromjson? | select(.type == "result") | .result // empty' "$absolute_log" >"$absolute_report"
-      ;;
-    claude)
-      "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 || return $?
-      jq -R -r 'fromjson? | select(.type == "result") | .result // empty' "$absolute_log" >"$absolute_report"
-      ;;
-    agy)
-      "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 || return $?
-      agy_extract_report
-      ;;
-    codex) "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 ;;
-    *) "${engine_command[@]}" </dev/null >"$absolute_report" 2>"$absolute_log" ;;
-  esac
+  squad_engine run_and_extract_report
 }
 
 file_age() {
@@ -1125,12 +1054,6 @@ output_age() {
   printf '%d' "$newest"
 }
 
-if (( status == 0 )); then
-  if [[ "$engine" == ccr || "$engine" == claude || "$engine" == agy ]] && ! command -v jq >/dev/null 2>&1; then
-    echo "jq is required for the $engine engine" | tee -a "$log_file" >&2
-    status=1
-  fi
-fi
 timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 stall_seconds="${SQUAD_WORKER_STALL_SECONDS:-$(( stall_minutes * 60 ))}"
 if (( status == 0 )); then
@@ -1144,7 +1067,7 @@ if (( status == 0 )); then
     current_log_size="$(wc -c <"$log_file")"
     if [[ "$current_log_size" != "$model_log_size" ]]; then
       model_log_size="$current_log_size"
-      reported_model="$(squad_worker_reported_models "$engine" "$log_file")"
+      reported_model="$(squad_engine reported_models "$log_file")"
       if [[ -n "$reported_model" && "$reported_model" != "$actual_model" ]]; then
         actual_model="$reported_model"
         write_status running
@@ -1169,7 +1092,7 @@ if (( status == 0 )); then
   fi
 fi
 
-reported_model="$(squad_worker_reported_models "$engine" "$log_file")"
+reported_model="$(squad_engine reported_models "$log_file")"
 [[ -z "$reported_model" ]] || actual_model="$reported_model"
 
 # Token usage, summed from the engine's JSON events, for the monitor and the
@@ -1198,6 +1121,11 @@ if [[ -n "$worktree_path" ]]; then
     changed_files="$(git apply --numstat "$patch_file" 2>/dev/null | wc -l | tr -d ' ')"
   fi
   worktree_note="Worktree: $changed_files changed file(s) in $worktree_path (branch squad/$worker_id). Review: git -C $worktree_path diff $worktree_base_commit. Merge: squad-worker --merge $worker_id. Discard: squad-worker --discard $worker_id."
+  if [[ -n "$owned_paths" ]]; then
+    scope_violation="$(git -C "$worktree_path" diff --no-renames --name-only "$worktree_base_commit" HEAD -- . ':(exclude).claude' ':(exclude,glob)**/.claude/**' 2>/dev/null |
+      scope_violations "$owned_paths" | paste -sd ',' -)"
+    [[ -z "$scope_violation" ]] || worktree_note+=" Scope violation (outside --own): $scope_violation."
+  fi
 fi
 
 report=""
@@ -1219,6 +1147,14 @@ if (( status != 0 )) || [[ -z "${report//[[:space:]]/}" ]]; then
   exit "$status"
 fi
 
+if [[ "$role" == reviewer || "$role" == security ]]; then
+  verdict_line="$(printf '%s\n' "$report" | grep -iE '^[[:space:]*`_]*VERDICT:[[:space:]]*(APPROVED|CHANGES_REQUESTED)' | tail -n 1 | tr '[:lower:]' '[:upper:]' || true)"
+  case "$verdict_line" in
+    *CHANGES_REQUESTED*) verdict=changes_requested ;;
+    *APPROVED*) verdict=approved ;;
+    *) verdict=missing ;;
+  esac
+fi
 write_status completed 0
 report="$plan_line
 

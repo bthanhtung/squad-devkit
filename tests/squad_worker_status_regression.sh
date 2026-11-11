@@ -4,6 +4,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 # Exercise the production helpers without launching an engine or a monitor.
+source "$root/scripts/lib/squad-plan.sh"
 eval "$(sed -n '/^status_get() {/,/^# Status files of runs/{ /^# Status files of runs/d; p; }' "$root/scripts/squad-worker.sh")"
 file="$tmp/run.status"
 printf 'state=running\npid=999999999\nexit=\n' >"$file"

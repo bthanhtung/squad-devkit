@@ -16,6 +16,10 @@ lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=squad-plan.sh
 source "$lib_dir/squad-plan.sh"
 
+if squad_supports guard; then
+  exec squad guard pre-tool-use "$@"
+fi
+
 allow_on_error() {
   echo "squad-devkit-manager-guard: $1; allowing the tool call" >&2
   exit 0

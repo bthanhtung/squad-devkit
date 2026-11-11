@@ -1,4 +1,4 @@
-#compdef squad-devkit squad-devkit.sh squad-worker squad-worker.sh squad-monitor squad-worker-monitor.sh
+#compdef squad squad-devkit squad-devkit.sh squad-worker squad-worker.sh squad-monitor squad-worker-monitor.sh
 
 _squad_devkit_find_workspace() {
   local dir="$PWD"
@@ -98,6 +98,8 @@ _squad_worker() {
     '--clone[Clone repository URL]:url:' \
     '--init[Initialize project repository]' \
     '--override-review[Reason for overriding review]:reason:' \
+    '--own[Files this worker may change (comma-separated paths or globs)]:paths:_files' \
+    '--no-plan-context[Do not add plan Goal, Findings and Decisions to the prompt]' \
     '--manager[Manager agent ID]:manager:' \
     '--list[Show running workers]' \
     '--stop[Stop a running worker]:worker:_squad_devkit_workers_running' \
@@ -118,7 +120,31 @@ _squad_monitor() {
     '1:status file:_files'
 }
 
+_squad_core() {
+  local -a commands
+  if (( CURRENT == 2 )); then
+    commands=(plan guard run init config join leave agents send receive task pending history roles teams team doctor setup clean cleanup help)
+    _describe 'command' commands
+  elif (( CURRENT == 3 )); then
+    case "$words[2]" in
+      plan) commands=(validate context check-patch approves) ;;
+      guard) commands=(pre-tool-use) ;;
+      run) commands=(record list) ;;
+    esac
+    _describe 'subcommand' commands
+  elif [[ "$words[2]" == run ]]; then
+    _arguments '--workspace[Squad workspace]:directory:_directories' \
+      '--status-file[Status file to record]:file:_files' \
+      '--directory[Import legacy status directory]:directory:_directories' '--json[JSON output]' '--metrics[Include live log metrics]'
+  else
+    _files
+  fi
+}
+
 case "$service" in
+  squad)
+    _squad_core "$@"
+    ;;
   squad-devkit|squad-devkit.sh)
     _squad_devkit "$@"
     ;;

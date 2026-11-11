@@ -7,6 +7,16 @@ releases.
 ## [Unreleased]
 
 ### Added
+- Structured reviewer verdict: `reviewer` and `security` workers end their report
+  with `VERDICT: APPROVED` or `VERDICT: CHANGES_REQUESTED`, recorded as `verdict=`
+  in the status file. `squad-worker --merge` no longer counts a reviewer that
+  requested changes; runs without a verdict line keep working as before.
+- `squad-worker --own PATHS`: files, directories or globs a worker may change.
+  Changes elsewhere are recorded as `scope_violation=` and `--merge` refuses them
+  unless `--override-review` is given.
+- Shared plan context: workers started with `--plan` receive the plan's Goal,
+  Findings and Decisions plus an optional `<plan>.context.md` (bounded by
+  `SQUAD_WORKER_MAX_CONTEXT_BYTES`, default 16384); `--no-plan-context` skips it.
 - Worker model tiers: `squad-worker --model-tier fast|balanced|strong` resolves
   `SQUAD_WORKER_<ENGINE>_MODEL_<TIER>`, saved project selections in
   `.squad/worker-models.json`, and built-in aliases (`haiku`, `sonnet`, `opus`
