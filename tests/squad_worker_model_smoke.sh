@@ -5,7 +5,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/home"
 export HOME="$tmp/home"
-unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE
+unset SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_WORKER_REQUIRE_PLAN
 # CLI argument forwarding is exercised by squad_worker_smoke.sh.
 source "$root/scripts/lib/squad-worker-model.sh"
 for engine in claude codex opencode grok agy; do
