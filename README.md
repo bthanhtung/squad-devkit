@@ -304,7 +304,9 @@ Status retains `model` for compatibility and adds `requested_model`,
 `model_source` (`flag`, `tier-environment`, `environment`, `builtin`, `cli-default`, `router-default`),
 and `actual_model`. Claude/CCR/AGY structured assistant and result model-usage
 fields supply reported models (comma-separated when multiple); status refreshes
-while running and persists the evidence on completion or failure. Init selection aliases are excluded from actual evidence. A router's
+while running and persists the evidence on completion or failure. Init selection aliases are excluded from actual evidence. AGY also displays `configured_model` and `configured_model_source` separately;
+the native init model has source `agy-init`, or both fields are `unknown` when absent.
+This configuration does not prove which model actually executed. A router's
 reported alias may not identify its upstream provider. AGY uses stream-json output (plain wrapper output remains compatible). Other engines currently
 remain `actual=unknown`: requests, profiles and free-form text are not proof.
 Old status files display unknown provenance/actual model. No credentials or

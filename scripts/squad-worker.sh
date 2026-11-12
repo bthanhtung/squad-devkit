@@ -933,6 +933,8 @@ process_started="$(LC_ALL=C ps -p "$$" -o lstart= | awk '{$1=$1; print}' || true
 run_profile=""
 [[ "$engine" == codex ]] && run_profile="$profile"
 actual_model=unknown
+configured_model=unknown
+configured_model_source=unknown
 tokens_in=""
 tokens_cached=""
 tokens_out=""
@@ -948,6 +950,9 @@ write_status() {
       "$worker_id" "$engine" "$run_profile" "$model" "$role"
     printf 'model_tier=%s\n' "$model_tier"
     printf 'requested_model=%s\nmodel_source=%s\nactual_model=%s\n' "$model" "$model_source" "$actual_model"
+    if [[ "$engine" == agy ]]; then
+      printf 'configured_model=%s\nconfigured_model_source=%s\n' "$configured_model" "$configured_model_source"
+    fi
     printf 'title=%s\ntask=%s\nstate=%s\nreason=%s\n' \
       "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state" "${failure_reason:-$stop_reason}"
     printf 'process_started=%s\n' "$process_started"
@@ -1068,10 +1073,20 @@ if (( status == 0 )); then
     if [[ "$current_log_size" != "$model_log_size" ]]; then
       model_log_size="$current_log_size"
       reported_model="$(squad_engine reported_models "$log_file")"
+      model_changed=0
       if [[ -n "$reported_model" && "$reported_model" != "$actual_model" ]]; then
         actual_model="$reported_model"
-        write_status running
+        model_changed=1
       fi
+      if [[ "$engine" == agy ]]; then
+        reported_configured="$(squad_worker_agy_configured_model "$log_file")"
+        if [[ -n "$reported_configured" && ( "$reported_configured" != "$configured_model" || "$configured_model_source" != agy-init ) ]]; then
+          configured_model="$reported_configured"
+          configured_model_source=agy-init
+          model_changed=1
+        fi
+      fi
+      [[ "$model_changed" == 0 ]] || write_status running
     fi
     if (( $(date +%s) - started_at > timeout_seconds )); then
       stop_reason="timed out after $(( timeout_seconds / 60 ))m"
@@ -1094,6 +1109,13 @@ fi
 
 reported_model="$(squad_engine reported_models "$log_file")"
 [[ -z "$reported_model" ]] || actual_model="$reported_model"
+if [[ "$engine" == agy ]]; then
+  reported_configured="$(squad_worker_agy_configured_model "$log_file")"
+  if [[ -n "$reported_configured" ]]; then
+    configured_model="$reported_configured"
+    configured_model_source=agy-init
+  fi
+fi
 
 # Token usage, summed from the engine's JSON events, for the monitor and the
 # savings summary.

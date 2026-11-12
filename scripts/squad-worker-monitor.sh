@@ -128,11 +128,10 @@ summarise_log() {
   esac
   if [[ ! -s "$log" ]] || ! command -v jq >/dev/null 2>&1; then
     printf '\t\t\t\t\t\t\n'
-    [[ -s "$log" ]] && tail -n 40 "$log"
     return 0
   fi
   jq -R -r -s --arg root "$root" --argjson codex "$codex" --argjson claude "$claude" --argjson agy "$agy" --argjson opencode "$opencode" '
-    def short: tostring | split($root) | join("") | gsub("[\r\n]+"; " ") | .[0:160];
+    def short: tostring | split($root) | join("") | gsub("[\u0000-\u001f\u007f-\u009f]+"; " ") | .[0:160];
     def cmd: tostring | sub("^/bin/(ba|z)?sh -l?c "; "") | short;
     def clean_out:
       split("\n")
@@ -200,7 +199,7 @@ summarise_log() {
               (if .exit_code == 0 then "✓ " else "✗ " end) + (.command | cmd) + (if .exit_code == 0 then "" else "  (exit \(.exit_code))" end)
               + (.aggregated_output | out_line)
             elif .type == "mcp_tool_call" then
-              (if .status == "completed" then "⚙ " else "✗ " end) + "\(.server)/\(.tool)"
+              (if .status == "completed" then "⚙ " else "✗ " end) + (("\(.server)/\(.tool)") | short)
             elif .type == "file_change" then "✎ " + ([.changes[]? | .path] | join(", ") | short)
             elif .type == "agent_message" then "» " + (.text | short)
             elif .type == "error" then "! " + (.message | short)
@@ -208,7 +207,7 @@ summarise_log() {
         elif $claude and .type == "assistant" then .message.content[]?
           | if .type == "tool_use" then
               (if .id != null and $claude_results[.id].is_error == true then "✗ " else "→ " end)
-              + .name + " " + ((.input.file_path // .input.path // .input.pattern // .input.command // "") | short)
+              + (.name | short) + " " + ((.input.file_path // .input.path // .input.pattern // .input.command // "") | short)
               + (if .id != null then ($claude_results[.id].content | out_line) else "" end)
             elif .type == "text" and (.text | length) > 0 then "» " + (.text | short)
             else empty end
@@ -225,9 +224,10 @@ summarise_log() {
            elif .tool_name == "write_to_file" or .tool_name == "replace_file_content" or .tool_name == "multi_replace_file_content" or .tool_name == "notebook_edit" then
             "✎ " + (.tool_info.parameters.Path // "" | short)
            else
-            "⚙ " + .tool_name + " " + ((.tool_info.parameters | tostring) | short)
+            "⚙ " + (.tool_name | short)
            end)
           + (.tool_info.output | out_line)
+        elif $agy and .event == "result" and (.result.response | type) == "string" then "» " + (.result.response | short)
         elif $agy and .event == "error" then "! " + (.error.message // .error | short)
         elif $opencode and .type == "tool_use" then .part
           | (if .state.status == "error" or ((.state.metadata.metadata.exit // 0) != 0) then "✗ " else "✓ " end) as $mark
@@ -239,7 +239,7 @@ summarise_log() {
             elif .tool == "edit" or .tool == "write" then
               (if .state.status == "error" then "✗ " else "✎ " end) + ((.state.input.filePath // .state.input.path // "") | short)
             else
-              (if .state.status == "error" then "✗ " else "⚙ " end) + .tool + " " + ((.state.input // {}) | tostring | short)
+              (if .state.status == "error" then "✗ " else "⚙ " end) + (.tool | short)
             end)
           + (if .state.status == "error" and .state.error != null then " " + (.state.error | short) else "" end)
           + (.state.output | out_line)
@@ -248,8 +248,8 @@ summarise_log() {
     ( [$started[] | select(.type == "command_execution") | select(.id as $id | $done_ids | index($id) | not)]
       | last | select(. != null) | "… running: " + (.command | cmd) ),
     ( [$agy_active_tools[] | select(.tool_name != null)]
-      | last | select(. != null) | "… running: " + (.tool_name + " " + ((.tool_info.parameters.CommandLine // .tool_info.parameters.Path // "") | short)) )
-  ' "$log" 2>/dev/null || { printf '\t\t\t\t\t\t\n'; tail -n 40 "$log"; }
+      | last | select(. != null) | "… running: " + ((.tool_name | short) + " " + ((.tool_info.parameters.CommandLine // .tool_info.parameters.Path // "") | short)) )
+  ' "$log" 2>/dev/null || printf '\t\t\t\t\t\t\n'
 }
 
 # Styles only when writing to a terminal.
@@ -452,27 +452,31 @@ indexed_runs() {
 }
 
 render_indexed() {
-  local rows="$1" columns="$2" worker engine role state started finished pid tokens title profile requested model_source actual tier calls
+  local rows="$1" columns="$2" worker engine role state started finished pid tokens title profile requested model_source actual tier calls configured configured_source log summary activity
   local elapsed now
   now="$(date +%s)"
-  while IFS='|' read -r worker engine role state started finished pid tokens title profile requested model_source actual tier calls; do
+  while IFS='|' read -r worker engine role state started finished pid tokens title profile requested model_source actual tier calls configured configured_source log; do
     [[ -n "$worker" ]] || continue
     if [[ "$state" == running && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then state=lost; fi
     elapsed=$(( ${finished:-$now} - ${started:-$now} ))
+    summary="$(summarise_log "$log" "$engine")"
     [[ "$engine" == codex && -n "$profile" ]] && engine="codex/$profile"
     frame+="$(printf '%-12s %-14s %-10s %-13s %8s %8s %12s  %s' \
       "$worker" "$engine" "$role" "$state" "$(format_duration "$elapsed")" "${calls:-0}" \
       "$([[ "$tokens" == null ]] && printf '-' || format_count "$tokens")" \
       "${title:0:$(( columns > 90 ? columns - 90 : 10 ))}")"$'\n'
     frame+="requested=${requested:-default} source=${model_source:-unknown} actual=${actual:-unknown}"
+    [[ "$engine" != agy ]] || frame+=" configured=${configured:-unknown} configured_source=${configured_source:-unknown}"
     [[ -z "$tier" ]] || frame+=" tier=$tier"
     [[ -z "$profile" ]] || frame+=" profile=$profile"
     frame+=$'\n'
+    activity="$(printf '%s\n' "$summary" | tail -n +2 | tail -n 3 | cut -c1-$(( columns - 2 )))"
+    [[ -z "$activity" ]] || frame+="$activity"$'\n'
     found=1
   done < <(printf '%s' "$rows" | jq -r '.[] | [ .worker_id, .engine, .details.role, .state,
     .details.started, .details.finished, .details.pid,
     (if (.metrics.tokens_in // .tokens_in) == null and (.metrics.tokens_out // .tokens_out) == null then "null" else ((.metrics.tokens_in // .tokens_in // 0) + (.metrics.tokens_out // .tokens_out // 0) | tostring) end),
-    .details.title, .details.profile, (.details.requested_model // .details.model), .details.model_source, .details.actual_model, .details.model_tier, (.metrics.calls // 0) ]
+    .details.title, .details.profile, (.details.requested_model // .details.model), .details.model_source, .details.actual_model, .details.model_tier, (.metrics.calls // 0), .details.configured_model, .details.configured_model_source, .details.log ]
     | map((. // "") | tostring | gsub("[|\\r\\n]"; " ")) | join("|")')
 }
 
@@ -494,6 +498,8 @@ render_all() {
     profile="$(status_get "$file" profile)"
     state="$(effective_state "$file")"
     metrics="$(summarise_log "$(status_get "$file" log)" "$engine")"
+    local activity
+    activity="$(printf '%s\n' "$metrics" | tail -n +2 | tail -n 3 | cut -c1-$(( columns - 2 )))"
     metrics="${metrics%%$'\n'*}"
     IFS=$'\t' read -r calls _ _ tokens_in _ tokens_out _ <<<"$metrics" || true
     [[ "$engine" == codex && -n "$profile" ]] && engine="codex/$profile"
@@ -503,6 +509,7 @@ render_all() {
       "$(format_duration "$(elapsed_seconds "$file")")" "${calls:-0}" "$tokens" \
       "$(status_get "$file" title | cut -c1-$(( columns > 90 ? columns - 90 : 10 )))")"$'\n'
     frame+="$(squad_worker_model_label "$file")"$'\n'
+    [[ -z "$activity" ]] || frame+="$activity"$'\n'
     done < <(ls -t "$directory"/*.status 2>/dev/null)
   fi
   (( found == 1 )) || frame+="No worker runs in $directory yet."$'\n'
