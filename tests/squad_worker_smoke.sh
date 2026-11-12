@@ -89,8 +89,14 @@ if [[ -n "${FAKE_PLAIN_BEATS:-}" ]]; then
 fi
 if [[ -n "${FAKE_PLAIN_SLEEP:-}" ]]; then sleep "$FAKE_PLAIN_SLEEP"; fi
 if [[ -n "${FAKE_AGY_JSON:-}" ]]; then
-  echo '{"type":"assistant","message":{"model":"agy-reported"}}'
-  echo '{"type":"result","result":"Done. Verification: ok."}'
+  if [[ -n "${FAKE_AGY_INIT:-}" ]]; then
+    printf '{"event":"init","init":{"model":"%s"}}\n' "$FAKE_AGY_INIT"
+    echo '{"event":"step_update"}'
+    echo '{"event":"result","result":{"status":"SUCCESS","response":"Done. Verification: ok."}}'
+  else
+    echo '{"type":"assistant","message":{"model":"agy-reported"}}'
+    echo '{"type":"result","result":"Done. Verification: ok."}'
+  fi
 else
   echo 'Done. Files: none. Verification: ok.'
 fi
@@ -143,6 +149,10 @@ for engine in codex claude opencode grok agy; do
     else [[ "$call" != *'--model '* ]] || fail; fi
     actual=unknown; [[ "$engine" != claude ]] || actual=observed-model
     grep -qx "actual_model=$actual" "$sf"
+    if [[ "$engine" == agy ]]; then
+      grep -qx 'configured_model=unknown' "$sf"
+      grep -qx 'configured_model_source=unknown' "$sf"
+    fi
   done
 done
 # Saved effort is forwarded only when that selection wins.
@@ -154,6 +164,8 @@ JSON
 [[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" != *'--profile '* ]] || fail
 "$worker" saved-agy --engine agy --model-tier strong --no-worktree --brief check >/dev/null
 [[ "$(grep '^agy:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--effort low --model saved-agy'* ]] || fail
+grep -qx 'configured_model=unknown' .squad/workers/saved-agy-*.status
+grep -qx 'configured_model_source=unknown' .squad/workers/saved-agy-*.status
 SQUAD_WORKER_CODEX_PROFILE=custom "$worker" saved-profile --engine codex --model-tier strong --no-worktree --brief check >/dev/null
 [[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--profile custom'* ]] || fail
 "$worker" flag-profile --engine codex --profile chosen --model explicit --model-tier strong --no-worktree --brief check >/dev/null
@@ -165,6 +177,12 @@ grep -qx 'model_tier=strong' .squad/workers/tier-codex-*.status
 grep -qx 'requested_model=tier-choice' .squad/workers/tier-codex-*.status
 FAKE_AGY_JSON=1 "$worker" model-agy-json --engine agy --no-worktree --brief 'AGY JSON' >/dev/null
 grep -qx 'actual_model=agy-reported' .squad/workers/model-agy-json-*.status
+grep -qx 'configured_model=unknown' .squad/workers/model-agy-json-*.status
+grep -qx 'configured_model_source=unknown' .squad/workers/model-agy-json-*.status
+FAKE_AGY_JSON=1 FAKE_AGY_INIT=agy-native-model "$worker" model-agy-init --engine agy --no-worktree --brief 'AGY init' >/dev/null
+grep -qx 'actual_model=unknown' .squad/workers/model-agy-init-*.status
+grep -qx 'configured_model=agy-native-model' .squad/workers/model-agy-init-*.status
+grep -qx 'configured_model_source=agy-init' .squad/workers/model-agy-init-*.status
 if "$worker" model-ccr --engine ccr --model explicit --brief check >/dev/null 2>"$temp_directory/model-stderr"; then fail; fi
 grep -q 'router' "$temp_directory/model-stderr"
 if SQUAD_WORKER_CCR_MODEL=env "$worker" model-ccr-env --engine ccr --brief check >/dev/null 2>&1; then fail; fi

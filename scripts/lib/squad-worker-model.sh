@@ -115,15 +115,29 @@ squad_worker_stream_models() {
     | unique | join(",")' "$log" 2>/dev/null || true
 }
 
+squad_worker_agy_configured_model() {
+  local log="$1"
+  [[ -s "$log" ]] && command -v jq >/dev/null 2>&1 || return 0
+  jq -Rrs '[split("\n")[] | fromjson? | select(type == "object" and .event == "init" and (.init | type) == "object")
+    | .init.model | select(type == "string" and length > 0 and length <= 256)
+    | select(test("[\\s\\p{Cc}]") | not)] | first // empty' "$log" 2>/dev/null || true
+}
+
 squad_worker_model_label() {
-  local file="$1" requested actual source profile tier
+  local file="$1" requested actual source profile tier configured configured_source engine
   requested="$(status_get "$file" requested_model)"
   [[ -n "$requested" ]] || requested="$(status_get "$file" model)"
   source="$(status_get "$file" model_source)"
   actual="$(status_get "$file" actual_model)"
+  engine="$(status_get "$file" engine)"
   profile="$(status_get "$file" profile)"
   tier="$(status_get "$file" model_tier)"
   printf 'requested=%s source=%s actual=%s' "${requested:-default}" "${source:-unknown}" "${actual:-unknown}"
+  if [[ "$engine" == agy ]]; then
+    configured="$(status_get "$file" configured_model)"
+    configured_source="$(status_get "$file" configured_model_source)"
+    printf ' configured=%s configured_source=%s' "${configured:-unknown}" "${configured_source:-unknown}"
+  fi
   [[ -z "$tier" ]] || printf ' tier=%s' "$tier"
   [[ -z "$profile" ]] || printf ' profile=%s' "$profile"
   return 0

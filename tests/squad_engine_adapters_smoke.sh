@@ -170,6 +170,28 @@ cp "$tmp/events" "$absolute_log"
 squad_engine_stream_report
 [[ "$(cat "$absolute_report")" == done ]] || fail
 
+# AGY native init model extraction and actual model independence (no contamination)
+printf '%s\n' \
+  '{"event":"init","init":{"model":"agy-init-model"}}' \
+  '{"type":"assistant","message":{"model":"m-one"}}' \
+  '{"type":"result","result":"done","modelUsage":{"m-two":{}}}' >"$tmp/mixed_events"
+for name in claude ccr agy; do
+  squad_engine_load "$name"
+  [[ "$(squad_engine reported_models "$tmp/mixed_events")" == m-one,m-two ]] || fail
+  [[ "$(squad_worker_reported_models "$name" "$tmp/mixed_events")" == m-one,m-two ]] || fail
+done
+[[ "$(squad_worker_agy_configured_model "$tmp/mixed_events")" == agy-init-model ]] || fail
+
+# Stream with native init only reports configured model; actual model remains empty
+printf '%s\n' '{"event":"init","init":{"model":"agy-only-init"}}' >"$tmp/init_only"
+squad_engine_load agy
+[[ -z "$(squad_engine reported_models "$tmp/init_only")" ]] || fail
+[[ -z "$(squad_worker_reported_models agy "$tmp/init_only")" ]] || fail
+[[ "$(squad_worker_agy_configured_model "$tmp/init_only")" == agy-only-init ]] || fail
+
+# Stream with no init reports empty for agy configured model
+[[ -z "$(squad_worker_agy_configured_model "$tmp/events")" ]] || fail
+
 # The worker CLI keeps its unknown-engine error and exit status.
 if env -u SQUAD_MANAGER_ID -u SQUAD_DEVKIT_YOLO "$root/scripts/squad-worker.sh" w --engine ../claude --no-plan test --brief x 2>"$tmp/error"; then fail; else [[ $? == 2 ]] || fail; fi
 [[ "$(cat "$tmp/error")" == 'Unknown engine: ../claude (use claude, codex, opencode, grok, agy, or ccr)' ]] || fail
