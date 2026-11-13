@@ -80,10 +80,14 @@ Prebuilt `squad` binaries for Linux are also on the
 `~/.local/bin` is on your `PATH`.
 
 The installer links `squad-devkit`, `squad-worker`, and `squad-monitor` into
-`~/.local/bin`, picks the manager (Claude Code if installed, otherwise it asks
-which installed CLI to use), lists the worker engines it found, and, when
-claude-hud is installed, turns on its weekly-quota and usage-pace display.
-Run `squad-devkit --setup` to choose another manager later.
+`~/.local/bin`, then runs a setup wizard that detects the installed AI CLIs and
+offers two choices: **Default (recommended)** keeps Claude Code as the manager
+and every installed worker in the built-in trust order, while **Personal
+custom** lets you pick the manager, which workers to enable, and their
+preference order. The saved order is the manager's preference order (it prefers
+earlier engines), and the installer, when claude-hud is installed, turns on its
+weekly-quota and usage-pace display. Run `squad-devkit --setup` to change the
+setup at any time.
 
 The installer also adds a `squad-devkit` skill to Claude Code and Codex
 (`~/.claude/skills`, `~/.codex/skills`, linked to this repository so `git pull`

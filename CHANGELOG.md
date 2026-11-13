@@ -7,6 +7,12 @@ releases.
 ## [Unreleased]
 
 ### Added
+- Interactive setup wizard (`squad-devkit --setup`, and the first interactive
+  `install-devkit.sh` run): detects installed AI CLIs and offers a default
+  setup (manager plus every worker in the built-in trust order) or a personal
+  custom setup (choose the manager, which workers to enable, and their
+  preference order). The saved order becomes the manager's preference order,
+  shown as "in the order the human chose".
 - Structured reviewer verdict: `reviewer` and `security` workers end their report
   with `VERDICT: APPROVED` or `VERDICT: CHANGES_REQUESTED`, recorded as `verdict=`
   in the status file. `squad-worker --merge` no longer counts a reviewer that

@@ -89,6 +89,14 @@ interactive=0
 if (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
   interactive=1
 fi
+# On the first interactive install (no saved setup_mode yet), offer the full
+# setup wizard; --manager and --no-prompt skip it.
+if (( interactive == 1 )) && [[ -z "$manager_client" ]] &&
+  [[ -z "$(devkit_config_get setup_mode)" ]]; then
+  if ! run_setup_wizard; then
+    printf 'Setup skipped; run squad-devkit --setup later.\n' >&2
+  fi
+fi
 if [[ -n "$manager_client" ]]; then
   manager_client="$(resolve_manager "$manager_client" "$interactive")"
   save_manager "$manager_client"
@@ -98,13 +106,36 @@ fi
 printf 'Manager: %s (%s)\n' "$manager_client" "$(manager_label "$manager_client")"
 
 worker_engines=()
-for engine in claude codex opencode grok agy ccr; do
-  if command -v "$engine" >/dev/null 2>&1; then
-    worker_engines+=("$engine")
-  fi
-done
+saved_workers="$(devkit_config_get workers)"
+disabled_workers="$(devkit_config_get disabled_workers)"
+# A disabled engine is always skipped, mirroring worker_enabled in the launcher.
+worker_disabled() {
+  local engine
+  for engine in ${disabled_workers//,/ }; do
+    [[ "$engine" == "$1" ]] && return 0
+  done
+  return 1
+}
+# List only installed, enabled engines: the saved workers order when one is set
+# (custom setup), otherwise the built-in trust order.
+if [[ -n "$saved_workers" ]]; then
+  for engine in ${saved_workers//,/ }; do
+    if command -v "$engine" >/dev/null 2>&1 && ! worker_disabled "$engine"; then
+      worker_engines+=("$engine")
+    fi
+  done
+else
+  # shellcheck disable=SC2154 # worker_engine_order is defined in lib/squad-devkit-agents.sh
+  for engine in "${worker_engine_order[@]}"; do
+    if command -v "$engine" >/dev/null 2>&1 && ! worker_disabled "$engine"; then
+      worker_engines+=("$engine")
+    fi
+  done
+fi
 if (( ${#worker_engines[@]} == 0 )); then
   echo 'Workers: none (install claude, codex, opencode, grok, agy, or ccr; until then the manager does the work itself)'
+elif [[ "$(devkit_config_get setup_mode)" == custom ]]; then
+  printf 'Workers (in the order you chose): %s\n' "${worker_engines[*]}"
 else
   printf 'Workers (most trusted first): %s\n' "${worker_engines[*]}"
 fi

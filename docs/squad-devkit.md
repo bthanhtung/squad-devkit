@@ -157,8 +157,16 @@ even when they work in another repository with `--project`.
   `~/.config/squad-devkit/config` (set `SQUAD_DEVKIT_CONFIG` for another path)
   and reused from then on. If the saved CLI is later uninstalled, you are asked
   again.
-- `squad-devkit --setup` chooses again at any time, including choosing another
-  CLI while Claude Code is installed.
+- `squad-devkit --setup` runs an interactive setup wizard at any time, including
+  choosing another CLI while Claude Code is installed. It detects the installed
+  CLIs and offers two choices:
+  - **Default (recommended)** — keeps Claude Code as the manager (or the first
+    installed CLI when Claude Code is missing) and every installed worker in the
+    built-in trust order.
+  - **Personal custom** — lets you pick the manager and which worker engines to
+    enable, in the order you type. That order is the manager's preference order:
+    the launcher lists them "in the order the human chose" and the manager
+    prefers earlier engines.
 - `squad-devkit --doctor` checks and diagnoses your environment: verifies core
   tools (`squad`, `git`, `jq`, `curl`, `tmux`), displays manager and worker
   CLIs, and inspects terminal multiplexer / monitor pane support.

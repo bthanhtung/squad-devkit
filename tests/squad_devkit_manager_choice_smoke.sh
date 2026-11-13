@@ -66,10 +66,12 @@ if "$devkit" "$project_directory" --manager cursor --dry-run 2>"$temp_directory/
 fi
 grep -q 'Unknown manager: cursor' "$temp_directory/log"
 
-setup_output="$(printf 'codex\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$devkit" --setup 2>"$temp_directory/log")"
+# --setup now runs the wizard: custom (2), manager codex (2 of claude, codex,
+# agy), empty worker order (all), then confirm.
+setup_output="$(printf '2\n2\n\ny\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$devkit" --setup 2>"$temp_directory/log")"
 grep -q '1) claude' "$temp_directory/log"
-[[ "$setup_output" == *'Saved manager: codex'* ]] || fail
-[[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=codex' ]] || fail
+[[ "$setup_output" == *'Saved setup to'* ]] || fail
+grep -qx 'manager=codex' "$SQUAD_DEVKIT_CONFIG" || fail
 
 fake_cli tmux
 fake_cli osascript
@@ -106,12 +108,15 @@ grep -q 'Claude Code is not installed; using agy as the manager.' "$temp_directo
 [[ ! -e "$SQUAD_DEVKIT_CONFIG" ]] || fail
 
 export SQUAD_DEVKIT_BIN_DIR="$temp_directory/bin-links"
-install_output="$(printf '2\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/install-devkit.sh" 2>/dev/null)"
+# First interactive install runs the setup wizard: custom (2), manager grok (2
+# of agy, grok), empty worker order (all), then confirm.
+install_output="$(printf '2\n2\n\ny\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root/scripts/install-devkit.sh" 2>/dev/null)"
 [[ "$(readlink "$SQUAD_DEVKIT_BIN_DIR/squad-devkit")" == "$repo_root/scripts/squad-devkit.sh" ]] || fail
 [[ "$(readlink "$SQUAD_DEVKIT_BIN_DIR/squad-worker")" == "$repo_root/scripts/squad-worker.sh" ]] || fail
 [[ "$install_output" == *'Manager: grok (Grok Build)'* ]] || fail
-[[ "$install_output" == *'Workers (most trusted first): grok agy'* ]] || fail
-[[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=grok' ]] || fail
+[[ "$install_output" == *'Workers (in the order you chose): grok agy'* ]] || fail
+grep -qx 'manager=grok' "$SQUAD_DEVKIT_CONFIG" || fail
+grep -qx 'setup_mode=custom' "$SQUAD_DEVKIT_CONFIG" || fail
 fake_cli claude
 rm "$SQUAD_DEVKIT_CONFIG"
 install_output="$("$repo_root/scripts/install-devkit.sh" --no-prompt)"

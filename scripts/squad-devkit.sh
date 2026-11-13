@@ -43,7 +43,7 @@ Without an objective the manager opens an interactive chat and asks for one firs
 
   --manager CLI Manager CLI for this run: claude, codex, agy, gemini, grok, or
                 opencode (or set SQUAD_DEVKIT_MANAGER)
-  --setup       Choose and save the default manager CLI, then exit
+  --setup       Detect installed AI CLIs and choose the manager, workers and their order, then exit
   --workers LIST          Only enable these worker engines (comma list of claude,codex,opencode,grok,agy,ccr)
                           (or SQUAD_DEVKIT_WORKERS, or workers= in the config file)
   --disable-workers LIST  Exclude these worker engines
@@ -430,21 +430,42 @@ run_doctor() {
   printf '\n'
 
   printf 'Worker Engines:\n'
+  printf '  Setup mode: %s\n' "${setup_mode:-not set}"
   local engines_found=0
-  local eng
-  for eng in claude codex opencode grok agy ccr; do
+  local eng seen=""
+  local order=()
+  if [[ -n "$workers_opt" ]]; then
+    for eng in ${workers_opt//,/ }; do
+      order+=("$eng")
+    done
+  else
+    # shellcheck disable=SC2154 # worker_engine_order is defined in lib/squad-devkit-agents.sh
+    order=("${worker_engine_order[@]}")
+  fi
+  # Enabled engines first, in the effective order (allow-list order when set,
+  # otherwise the built-in trust order).
+  for eng in "${order[@]}"; do
+    if path="$(command -v "$eng" 2>/dev/null)" && worker_enabled "$eng"; then
+      ver="$(get_tool_version "$eng")"
+      if [[ -n "$ver" ]]; then
+        printf '  [FOUND]   %-8s %s (%s) [enabled]\n' "$eng" "$path" "$ver"
+      else
+        printf '  [FOUND]   %-8s %s [enabled]\n' "$eng" "$path"
+      fi
+      engines_found=$((engines_found + 1))
+      seen+=" $eng "
+    fi
+  done
+  # Installed-but-disabled and not-installed engines, in trust order.
+  # shellcheck disable=SC2154 # worker_engine_order is defined in lib/squad-devkit-agents.sh
+  for eng in "${worker_engine_order[@]}"; do
+    case " $seen " in *" $eng "*) continue ;; esac
     if path="$(command -v "$eng" 2>/dev/null)"; then
       ver="$(get_tool_version "$eng")"
-      local state="[enabled]"
-      if worker_enabled "$eng"; then
-        engines_found=$((engines_found + 1))
-      else
-        state="[disabled]"
-      fi
       if [[ -n "$ver" ]]; then
-        printf '  [FOUND]   %-8s %s (%s) %s\n' "$eng" "$path" "$ver" "$state"
+        printf '  [FOUND]   %-8s %s (%s) [disabled]\n' "$eng" "$path" "$ver"
       else
-        printf '  [FOUND]   %-8s %s %s\n' "$eng" "$path" "$state"
+        printf '  [FOUND]   %-8s %s [disabled]\n' "$eng" "$path"
       fi
     else
       printf '  [-]       %-8s (not installed)\n' "$eng"
@@ -517,8 +538,15 @@ normalize_worker_list() {
   done
   printf '%s' "$out"
 }
+# Remember whether the allow-list came from the flag/env (as opposed to the
+# saved config), so the manager prompt can describe a custom saved order.
+workers_from_flag=0
+if [[ -n "$workers_opt" ]]; then
+  workers_from_flag=1
+fi
 workers_opt="$(normalize_worker_list "${workers_opt:-$(devkit_config_get workers)}")" || exit 2
 disable_workers_opt="$(normalize_worker_list "${disable_workers_opt:-$(devkit_config_get disabled_workers)}")" || exit 2
+setup_mode="$(devkit_config_get setup_mode)"
 
 interactive=0
 if (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
@@ -531,10 +559,12 @@ if (( doctor == 1 )); then
 fi
 
 if (( setup == 1 )); then
-  manager_client="$(prompt_for_manager 'Choose the CLI that manages the squad (1 is the default):')"
-  save_manager "$manager_client"
-  printf 'Saved manager: %s (%s)\n' "$manager_client" "$(devkit_config_file)"
-  exit 0
+  if [[ ! -t 0 ]] && ! is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; then
+    printf 'squad-devkit --setup needs an interactive terminal\n' >&2
+    exit 2
+  fi
+  run_setup_wizard
+  exit $?
 fi
 # Cleaning needs no manager, so it works where no manager CLI is installed.
 if (( clean_only == 0 )); then
@@ -572,12 +602,23 @@ session_name="squad-devkit-${project_name}-${project_hash}"
 
 require_command squad
 worker_engines=()
-# Worker engines in trust order: claude > codex > opencode > grok, agy > ccr.
-for engine in claude codex opencode grok agy ccr; do
-  if command -v "$engine" >/dev/null 2>&1 && worker_enabled "$engine"; then
-    worker_engines+=("$engine")
-  fi
-done
+# Worker engines in the effective allow-list order when one is set (so the
+# manager prefers them in the order the human chose), otherwise the built-in
+# trust order (claude > codex > opencode > grok, agy > ccr).
+if [[ -n "$workers_opt" ]]; then
+  for engine in ${workers_opt//,/ }; do
+    if command -v "$engine" >/dev/null 2>&1 && worker_enabled "$engine"; then
+      worker_engines+=("$engine")
+    fi
+  done
+else
+  # shellcheck disable=SC2154 # worker_engine_order is defined in lib/squad-devkit-agents.sh
+  for engine in "${worker_engine_order[@]}"; do
+    if command -v "$engine" >/dev/null 2>&1 && worker_enabled "$engine"; then
+      worker_engines+=("$engine")
+    fi
+  done
+fi
 if (( ${#worker_engines[@]} == 0 && clean_only == 0 )); then
   echo "Note: no worker engine (claude, codex, opencode, grok, agy, ccr) is installed; the manager will do the work itself." >&2
 fi
@@ -606,9 +647,13 @@ else
   while IFS= read -r missing_mapping; do
     [[ -z "$missing_mapping" ]] || printf 'Worker models: %s; run squad config workers, then squad-worker --models.\n' "$missing_mapping" >&2
   done < <(printf '%s' "$worker_catalog" | jq -r '.[] | select(.installed and .tier != "" and .source == "unresolved" and .engine != "ccr") | "\(.engine) \(.tier): set SQUAD_WORKER_\(.engine | ascii_upcase)_MODEL_\(.tier | ascii_upcase)"')
+  worker_order_line="Installed worker engines, most trusted first: ${worker_engines[*]}"
+  if [[ "$setup_mode" == custom && "$workers_from_flag" == 0 && -n "$workers_opt" ]]; then
+    worker_order_line="Installed worker engines, in the order the human chose (prefer earlier ones): ${worker_engines[*]}"
+  fi
   worker_line="squad-worker is: $worker_command
 Always pass --manager {{MANAGER_ID}} on every worker launch; do not rely on inherited environment variables.
-Installed worker engines, most trusted first: ${worker_engines[*]}
+$worker_order_line
 Local model candidates (provider availability unverified; null means unmapped, never guess):
 $(printf '%s' "$worker_catalog" | jq -c '.')
 In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
