@@ -1,7 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+orig_args=("$@")
+
+source_file="${BASH_SOURCE[0]:-$0}"
+while [[ -L "$source_file" ]]; do
+  source_dir="$(cd -P "$(dirname "$source_file")" && pwd)"
+  link_target="$(readlink "$source_file")"
+  if [[ "$link_target" == /* ]]; then
+    source_file="$link_target"
+  else
+    source_file="$source_dir/$link_target"
+  fi
+done
+script_dir="$(cd -P "$(dirname "$source_file")" && pwd)"
+script_path="$script_dir/$(basename "$source_file")"
+
+saved_tty=""
+reload_on_hup() {
+  [[ -z "$saved_tty" ]] || stty "$saved_tty" 2>/dev/null || true
+  if [[ -t 1 ]]; then
+    printf '\033[?2026l\033[?25h\033[0m\033[H\033[2J'
+  fi
+  export SQUAD_ORCHESTRATION_REEXEC=1
+  exec bash "$script_path" ${orig_args[@]+"${orig_args[@]}"}
+}
+
 export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+
+# Environment variables:
+#   SQUAD_ORCHESTRATION_LIVE=1    Keep live loop running even when stdout is not a TTY (for tests)
 
 usage() {
   cat <<'EOF'
@@ -14,6 +42,9 @@ Live terminal orchestration view showing manager and worker flow.
   --layout LAYOUT   Layout to render: graph, pipeline, or tree (default: $SQUAD_ORCHESTRATION_LAYOUT or graph)
   --root ID         Start zoomed into sub-manager ID (Esc disabled)
   -h, --help        Show this help
+
+Environment:
+  SQUAD_ORCHESTRATION_LIVE=1  Keep live loop running even when stdout is not a TTY (for tests)
 EOF
 }
 
@@ -87,6 +118,10 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+if (( once == 0 )) && { [[ -t 1 ]] || [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" == 1 ]]; }; then
+  trap reload_on_hup HUP
+fi
 
 case "$layout" in
   graph|pipeline|tree) ;;
@@ -2596,8 +2631,8 @@ if [[ -t 1 ]] && command -v perl >/dev/null 2>&1; then
   perl -MFcntl -e 'fcntl(STDOUT, F_SETFL, fcntl(STDOUT, F_GETFL, 0) & ~O_NONBLOCK)' 2>/dev/null || true
 fi
 
-# One-shot / non-TTY execution mode
-if (( once == 1 )) || [[ ! -t 1 ]]; then
+# One-shot execution mode
+if (( once == 1 )) || { [[ ! -t 1 ]] && [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" != 1 ]]; }; then
   load_data
   build_frame_templates
   forced_frame="${SQUAD_ORCHESTRATION_FRAME:-0}"
@@ -2621,7 +2656,7 @@ if (( once == 1 )) || [[ ! -t 1 ]]; then
     done
   fi
   printf '%s' "$REPLY"
-  if [[ -n "${SQUAD_WORKER_MONITOR_READY:-}" ]]; then
+  if [[ "${SQUAD_ORCHESTRATION_REEXEC:-0}" != 1 && -n "${SQUAD_WORKER_MONITOR_READY:-}" ]]; then
     printf '%s\n' "$$" >"$SQUAD_WORKER_MONITOR_READY"
   fi
   exit 0
@@ -2679,7 +2714,7 @@ while true; do
 
   if (( first_frame == 1 )); then
     first_frame=0
-    if [[ -n "${SQUAD_WORKER_MONITOR_READY:-}" ]]; then
+    if [[ "${SQUAD_ORCHESTRATION_REEXEC:-0}" != 1 && -n "${SQUAD_WORKER_MONITOR_READY:-}" ]]; then
       printf '%s\n' "$$" >"$SQUAD_WORKER_MONITOR_READY"
     fi
   fi

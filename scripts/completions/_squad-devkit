@@ -49,6 +49,12 @@ _squad_devkit_workers_unmerged() {
   _describe -t unmerged-worktrees 'unmerged worker id' unmerged_ids
 }
 
+_squad_devkit_first_arg() {
+  _alternative \
+    'subcommands:command:((update\:"Pull latest squad-devkit and reload session" reload\:"Refresh roles, links, views, and manager instructions" restart\:"Alias for reload"))' \
+    'directories:project:_directories'
+}
+
 _squad_devkit() {
   _arguments -s -S \
     '--manager[Manager CLI]:manager:(claude codex agy gemini grok opencode)' \
@@ -61,6 +67,8 @@ _squad_devkit() {
     '--ghostty[Run manager in a Ghostty window]' \
     '--tmux[Run manager in a tmux session]' \
     '--yolo[Bypass engine permissions and sandbox for this session]' \
+    '--update[Pull latest squad-devkit and reload session]' \
+    '--reload[Refresh roles, links, views, and manager instructions]' \
     '--dry-run[Print manager command only]' \
     '--task[Objective for manager]:objective:' \
     '--prompt[Objective for manager]:objective:' \
@@ -70,7 +78,7 @@ _squad_devkit() {
     '--no-prompt[Skip manager prompt]' \
     '--version[Print version]' \
     '(-h --help)'{-h,--help}'[Show usage]' \
-    '1:project or objective:_directories' \
+    '1:project or objective:_squad_devkit_first_arg' \
     '2:objective:_default'
 }
 

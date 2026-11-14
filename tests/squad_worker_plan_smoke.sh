@@ -181,7 +181,8 @@ fi
 EOF
 chmod +x "$tmp/bin/herdr"
 export WORKER_HERDR_LOG="$tmp/herdr"
-export HERDR_ENV=1 HERDR_PANE_ID=w1:pM SQUAD_WORKER_PANE_HOLD=0
+# Pin the classic view: the fake herdr runs monitors without a TTY.
+export HERDR_ENV=1 HERDR_PANE_ID=w1:pM SQUAD_WORKER_PANE_HOLD=0 SQUAD_WORKER_VIEW=panes
 worker="$repo_root/scripts/squad-worker.sh"
 git_q() { git -c user.name=t -c user.email=t@t "$@"; }
 

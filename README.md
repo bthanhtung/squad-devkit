@@ -122,6 +122,8 @@ squad-devkit                                          # from ~: general workspac
 squad-devkit "check prod error logs since 18:00 and write a report"
 squad-devkit my-service "add rate limiting to the public API"
 squad-devkit my-service --tmux                        # or --ghostty for a new window
+squad-devkit update                                   # pull latest devkit and reload inside a session
+squad-devkit reload                                   # reload roles, links, views, and manager prompt
 squad-devkit --version
 ```
 
@@ -131,6 +133,13 @@ their results, and reports back with evidence. From your home directory it runs
 in the general workspace `~/.squad-devkit`, where requests such as log checks
 and reports need no repository; for code changes it finds the repositories
 involved. In git repositories the launcher leaves the working tree clean.
+
+### Update without restarting
+
+Inside a running manager session, ask the manager to update or reload (or have it run `squad-devkit update` or `squad-devkit reload` / `restart` from its Bash tool):
+
+- `squad-devkit update` (or `--update`) runs `git pull --ff-only` in the devkit checkout (refusing to pull when the checkout has local changes) and then runs `reload` with the updated script.
+- `squad-devkit reload` (or `--reload`, `restart`) refreshes `.squad/roles/` templates, re-links commands in `~/.local/bin`, sends `SIGHUP` to running `squad-orchestration` views so they re-exec in place, and prints the refreshed manager instructions to stdout so the active manager session adopts the new configuration and role prompt immediately without restarting.
 
 ## Workers
 

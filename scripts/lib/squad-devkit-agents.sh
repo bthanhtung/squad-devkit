@@ -107,6 +107,23 @@ manager_start_command() {
   shell_join "$binary" ${arguments[@]+"${arguments[@]}"}
 }
 
+# Expands {{MANAGER_ID}} and {{MANAGER_LABEL}} in the prompt template and
+# appends the project's manager-devkit role file when present.
+build_manager_instructions() {
+  local client="$1"
+  local template="$2"
+  local mgr_id="${3:-manager}"
+  local project_dir="${4:-.}"
+  local role_file="$project_dir/.squad/roles/manager-devkit.md"
+  local text="${template//\{\{MANAGER_ID\}\}/$mgr_id}"
+  text="${text//\{\{MANAGER_LABEL\}\}/$(manager_label "$client")}"
+  if [[ -f "$role_file" ]]; then
+    text+=$'\n\n'"## Your role (.squad/roles/manager-devkit.md)"$'\n\n'
+    text+="$(grep -v '^<!-- squad-devkit template' "$role_file")"
+  fi
+  printf '%s' "$text"
+}
+
 installed_manager_clients() {
   local client
   for client in "${manager_clients[@]}"; do

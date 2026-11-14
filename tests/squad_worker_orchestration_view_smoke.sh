@@ -204,3 +204,61 @@ TERM_PROGRAM=Apple_Terminal SQUAD_DEVKIT_OSASCRIPT="$tmp/bin/osascript" SQUAD_WO
 grep -q 'orchestration\.sh' "$TEST_OSASCRIPT"
 ! grep -q 'dashboard\.sh' "$TEST_OSASCRIPT"
 
+# (e) View resolution fallback:
+# 1. SQUAD_WORKER_VIEW unset, SQUAD_MANAGER_ID set, temp config without view -> orchestration behaviour
+export TMUX=fake TMUX_PANE=%1
+export SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$"
+export SQUAD_MANAGER_ID="boss"
+unset SQUAD_WORKER_VIEW
+rm -f "$SQUAD_DEVKIT_CONFIG"
+rm -f "$marker"
+: >"$TEST_SPLITS"
+: >"$TEST_TITLES"
+"$tmp/scripts/squad-worker.sh" fb-orch-1 \
+  --engine grok --manager boss --no-plan "fallback orch smoke" --no-worktree --brief "fb orch" >"$tmp/out-fb-orch" 2>&1
+[[ -f "$marker" ]]
+fb_marker_pid="$(cat "$marker")"
+printf '%s\n' "$fb_marker_pid" >>"$TEST_STUB_PIDS"
+kill -0 "$fb_marker_pid" 2>/dev/null
+kill "$fb_marker_pid" 2>/dev/null || true
+rm -f "$marker"
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+grep -q 'squad orchestration' "$TEST_TITLES"
+
+# 2. Config view=panes with SQUAD_WORKER_VIEW unset -> panes
+printf 'view=panes\n' >"$SQUAD_DEVKIT_CONFIG"
+: >"$TEST_SPLITS"
+: >"$TEST_TITLES"
+export SQUAD_WORKER_PANE_HOLD=1
+"$tmp/scripts/squad-worker.sh" fb-pane-1 \
+  --engine grok --manager boss --no-plan "fallback pane smoke" --no-worktree --brief "fb pane" >"$tmp/out-fb-pane" 2>&1
+[[ ! -f "$marker" ]]
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+! grep -q 'squad orchestration' "$TEST_TITLES"
+
+# 3. Env overrides config:
+# (a) Config view=panes, env SQUAD_WORKER_VIEW=orchestration -> orchestration
+: >"$TEST_SPLITS"
+: >"$TEST_TITLES"
+SQUAD_WORKER_VIEW=orchestration "$tmp/scripts/squad-worker.sh" fb-env-orch \
+  --engine grok --manager boss --no-plan "env override smoke" --no-worktree --brief "env orch" >"$tmp/out-fb-env-orch" 2>&1
+[[ -f "$marker" ]]
+fb_override_pid="$(cat "$marker")"
+printf '%s\n' "$fb_override_pid" >>"$TEST_STUB_PIDS"
+kill -0 "$fb_override_pid" 2>/dev/null
+kill "$fb_override_pid" 2>/dev/null || true
+rm -f "$marker"
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+grep -q 'squad orchestration' "$TEST_TITLES"
+
+# (b) Config view=orchestration, env SQUAD_WORKER_VIEW=panes -> panes
+printf 'view=orchestration\n' >"$SQUAD_DEVKIT_CONFIG"
+: >"$TEST_SPLITS"
+: >"$TEST_TITLES"
+SQUAD_WORKER_VIEW=panes "$tmp/scripts/squad-worker.sh" fb-env-pane \
+  --engine grok --manager boss --no-plan "env override pane" --no-worktree --brief "env pane" >"$tmp/out-fb-env-pane" 2>&1
+[[ ! -f "$marker" ]]
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+! grep -q 'squad orchestration' "$TEST_TITLES"
+rm -f "$SQUAD_DEVKIT_CONFIG"
+

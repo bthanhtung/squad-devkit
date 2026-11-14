@@ -23,7 +23,8 @@ usage() {
 Usage: squad-devkit [project-name-or-directory] [objective] [--task objective]
                     [--manager CLI] [--workers LIST]
                     [--disable-workers LIST] [--view MODE] [--setup] [--doctor] [--list] [--ghostty] [--tmux]
-                    [--dry-run] [--no-attach] [--no-prompt]
+                    [--update] [--reload] [--dry-run] [--no-attach] [--no-prompt]
+       squad-devkit update|reload|restart [project-name-or-directory]
 
 Start a manager (Claude Code by default) for a project in the current terminal.
 The manager plans and starts on-demand Codex or CCR workers with squad-worker
@@ -59,6 +60,10 @@ Without an objective the manager opens an interactive chat and asks for one firs
                 workspace older than SQUAD_DEVKIT_RETENTION_DAYS (7) or beyond
                 SQUAD_DEVKIT_MAX_MB (200), then exit; every launch does this too
   --clean-all   Remove every finished worker run, then exit
+  update, --update
+                Pull the latest squad-devkit (--ff-only) and reload the session in place
+  reload, restart, --reload
+                Refresh roles, command links, and orchestration views, and print updated manager instructions
   --no-prompt   Skip the first-run manager question (or set SQUAD_DEVKIT_NO_PROMPT)
   --yolo        Bypass engine permissions and sandbox for Claude/Codex/AGY managers
                 and their workers (session only; SQUAD_DEVKIT_YOLO=1)
@@ -87,6 +92,10 @@ dry_run=0
 no_attach=0
 setup=0
 doctor=0
+devkit_action=""
+seen_positional=0
+reload_passthrough_args=()
+caller_worker_view="${SQUAD_WORKER_VIEW:-}"
 manager_client="${SQUAD_DEVKIT_MANAGER:-}"
 workers_opt="${SQUAD_DEVKIT_WORKERS:-}"
 disable_workers_opt="${SQUAD_DEVKIT_DISABLE_WORKERS:-}"
@@ -96,37 +105,41 @@ view_source=""
 backend="${SQUAD_DEVKIT_BACKEND:-here}"
 while (( $# > 0 )); do
   case "$1" in
-    --here) backend=here ;;
-    --tmux) backend=tmux ;;
-    --ghostty) backend=ghostty ;;
-    --yolo) export SQUAD_DEVKIT_YOLO=1 ;;
-    --dry-run) dry_run=1 ;;
-    --no-attach) no_attach=1 ;;
-    --no-prompt) no_prompt=1 ;;
-    --list) list_projects=1 ;;
-    --clean) clean_only=1 ;;
-    --clean-all) clean_only=2 ;;
-    --setup) setup=1 ;;
-    --doctor) doctor=1 ;;
+    --here) backend=here; reload_passthrough_args+=("$1") ;;
+    --tmux) backend=tmux; reload_passthrough_args+=("$1") ;;
+    --ghostty) backend=ghostty; reload_passthrough_args+=("$1") ;;
+    --yolo) export SQUAD_DEVKIT_YOLO=1; reload_passthrough_args+=("$1") ;;
+    --dry-run) dry_run=1; reload_passthrough_args+=("$1") ;;
+    --no-attach) no_attach=1; reload_passthrough_args+=("$1") ;;
+    --no-prompt) no_prompt=1; reload_passthrough_args+=("$1") ;;
+    --list) list_projects=1; reload_passthrough_args+=("$1") ;;
+    --clean) clean_only=1; reload_passthrough_args+=("$1") ;;
+    --clean-all) clean_only=2; reload_passthrough_args+=("$1") ;;
+    --setup) setup=1; reload_passthrough_args+=("$1") ;;
+    --doctor) doctor=1; reload_passthrough_args+=("$1") ;;
+    --update) devkit_action=update ;;
+    --reload) devkit_action=reload ;;
     --manager)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
       fi
       manager_client="$2"
+      reload_passthrough_args+=("$1" "$2")
       shift
       ;;
-    --manager=*) manager_client="${1#*=}" ;;
+    --manager=*) manager_client="${1#*=}"; reload_passthrough_args+=("$1") ;;
     --workers|--disable-workers)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
       fi
       if [[ "$1" == --workers ]]; then workers_opt="$2"; else disable_workers_opt="$2"; fi
+      reload_passthrough_args+=("$1" "$2")
       shift
       ;;
-    --workers=*) workers_opt="${1#*=}" ;;
-    --disable-workers=*) disable_workers_opt="${1#*=}" ;;
+    --workers=*) workers_opt="${1#*=}"; reload_passthrough_args+=("$1") ;;
+    --disable-workers=*) disable_workers_opt="${1#*=}"; reload_passthrough_args+=("$1") ;;
     --view)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
@@ -134,6 +147,7 @@ while (( $# > 0 )); do
       fi
       view_opt="$2"
       view_source=flag
+      reload_passthrough_args+=("$1" "$2")
       shift
       ;;
     --view=*)
@@ -143,6 +157,7 @@ while (( $# > 0 )); do
         exit 2
       fi
       view_source=flag
+      reload_passthrough_args+=("$1")
       ;;
     --task|--prompt)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
@@ -150,26 +165,66 @@ while (( $# > 0 )); do
         exit 2
       fi
       objective="$2"
+      reload_passthrough_args+=("$1" "$2")
       shift
       ;;
-    --task=*|--prompt=*) objective="${1#*=}" ;;
+    --task=*|--prompt=*) objective="${1#*=}"; reload_passthrough_args+=("$1") ;;
     -h|--help) usage; exit 0 ;;
     --version) printf 'squad-devkit %s\n' "$devkit_version"; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
-      if [[ -n "$project_directory" ]]; then
+      if (( seen_positional == 0 )) && [[ -z "$devkit_action" && ! -d "$1" ]] &&
+        [[ "$1" == update || "$1" == reload || "$1" == restart ]]; then
+        if [[ "$1" == update ]]; then
+          devkit_action=update
+        else
+          devkit_action=reload
+        fi
+        seen_positional=1
+      elif [[ -n "$project_directory" ]]; then
         if [[ -n "$objective" ]]; then
           echo "Only one objective is allowed" >&2
           exit 2
         fi
         objective="$1"
+        seen_positional=1
+        reload_passthrough_args+=("$1")
       else
         project_directory="$1"
+        seen_positional=1
+        reload_passthrough_args+=("$1")
       fi
       ;;
   esac
   shift
 done
+if [[ "$devkit_action" == update ]]; then
+  devkit_repo_root="${SQUAD_DEVKIT_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}"
+  update_dirty=0
+  if [[ ! -d "$devkit_repo_root" ]] || ! git -C "$devkit_repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'not a git checkout; skipping pull\n'
+  elif [[ -n "$(git -C "$devkit_repo_root" status --porcelain 2>/dev/null)" ]]; then
+    printf 'devkit repo has local changes; not pulling\n'
+    update_dirty=1
+  else
+    old_sha="$(git -C "$devkit_repo_root" rev-parse --short HEAD)"
+    if ! pull_out="$(git -C "$devkit_repo_root" pull --ff-only 2>&1)"; then
+      printf '%s\n' "$pull_out" >&2
+      exit 1
+    fi
+    new_sha="$(git -C "$devkit_repo_root" rev-parse --short HEAD)"
+    if [[ "$old_sha" == "$new_sha" ]]; then
+      printf 'already up to date\n'
+    else
+      printf 'pulled %s..%s\n' "$old_sha" "$new_sha"
+    fi
+  fi
+  if (( update_dirty == 1 )); then
+    "$script_dir/squad-devkit.sh" --reload ${reload_passthrough_args[@]+"${reload_passthrough_args[@]}"}
+    exit 1
+  fi
+  exec "$script_dir/squad-devkit.sh" --reload ${reload_passthrough_args[@]+"${reload_passthrough_args[@]}"}
+fi
 if [[ "$backend" != here && "$backend" != ghostty && "$backend" != tmux ]]; then
   echo "Unknown backend: $backend (use here, ghostty, or tmux)" >&2
   exit 2
@@ -585,7 +640,7 @@ disable_workers_opt="$(normalize_worker_list "${disable_workers_opt:-$(devkit_co
 setup_mode="$(devkit_config_get setup_mode)"
 
 interactive=0
-if (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
+if [[ -z "$devkit_action" ]] && (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
   interactive=1
 fi
 
@@ -622,7 +677,7 @@ if [[ -z "$project_directory" && "$(pwd -P)" == "$(cd "$HOME" && pwd -P)" ]] &&
 else
   project_directory="$(resolve_project_reference "${project_directory:-$PWD}")"
   project_directory="$(resolve_project_directory "$project_directory")"
-  if ! git -C "$project_directory" rev-parse --show-toplevel >/dev/null 2>&1; then
+  if [[ -z "$devkit_action" ]] && ! git -C "$project_directory" rev-parse --show-toplevel >/dev/null 2>&1; then
     printf 'Note: %s is not a git repository; squad init will create .squad/ there.\n' \
       "$project_directory" >&2
   fi
@@ -630,6 +685,10 @@ else
   if [[ "$project_directory" == "$(cd "$HOME" && pwd -P)" ]] && ! is_truthy "${SQUAD_DEVKIT_ALLOW_HOME:-}"; then
     echo "Refusing to use your home directory as the project; pass a project name or path." >&2
     exit 1
+  fi
+  general_ws_candidate="${SQUAD_DEVKIT_GENERAL_WORKSPACE:-$HOME/.squad-devkit}"
+  if [[ -d "$general_ws_candidate" && "$project_directory" == "$(cd "$general_ws_candidate" && pwd -P)" ]]; then
+    general_workspace=1
   fi
 fi
 project_name="$(basename "$project_directory" | tr -cs '[:alnum:]' '-' | cut -c1-24)"
@@ -668,6 +727,128 @@ if (( clean_only > 0 )); then
   fi
   exit 0
 fi
+
+worker_command="$script_dir/squad-worker.sh"
+template_marker='<!-- squad-devkit template'
+
+build_manager_prompt() {
+  local worker_line=""
+  local worker_catalog=""
+  local missing_mapping=""
+  local worker_order_line=""
+  local prompt=""
+  if (( ${#worker_engines[@]} == 0 )); then
+    worker_line="No worker engine is installed, so do the work yourself instead of starting squad-worker."
+  else
+    worker_catalog="$(source "$script_dir/lib/squad-worker-model.sh"; squad_worker_model_catalog "${worker_engines[@]}")" || return $?
+    while IFS= read -r missing_mapping; do
+      [[ -z "$missing_mapping" ]] || printf 'Worker models: %s; run squad config workers, then squad-worker --models.\n' "$missing_mapping" >&2
+    done < <(printf '%s' "$worker_catalog" | jq -r '.[] | select(.installed and .tier != "" and .source == "unresolved" and .engine != "ccr") | "\(.engine) \(.tier): set SQUAD_WORKER_\(.engine | ascii_upcase)_MODEL_\(.tier | ascii_upcase)"')
+    worker_order_line="Installed worker engines, most trusted first: ${worker_engines[*]}"
+    if [[ "$setup_mode" == custom && "$workers_from_flag" == 0 && -n "$workers_opt" ]]; then
+      worker_order_line="Installed worker engines, in the order the human chose (prefer earlier ones): ${worker_engines[*]}"
+    fi
+    worker_line="squad-worker is: $worker_command
+Always pass --manager {{MANAGER_ID}} on every worker launch; do not rely on inherited environment variables.
+$worker_order_line
+Local model candidates (provider availability unverified; null means unmapped, never guess):
+$(printf '%s' "$worker_catalog" | jq -c '.')
+In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
+  fi
+  if [[ -n "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then
+    worker_line+=$'\n'"squad-route is configured: $script_dir/squad-route.sh \"<redacted digest>\""
+  fi
+  prompt="You are the {{MANAGER_LABEL}} manager of this squad devkit, in an interactive session in this repository. You already joined the squad as {{MANAGER_ID}}; workers report to you automatically.
+$worker_line"
+  if (( general_workspace == 1 )); then
+    prompt+=$'\n\n'"You are in the general squad workspace ($project_directory), not inside a project. Many requests need no repository: checking logs or metrics (prod, staging), querying data, and writing reports. Run those workers here without --project, give them the MCP servers they need, and save reports under reports/ in this workspace. When a request changes or inspects code, work out which repositories it involves (they live under ~/Workspace; $script_dir/squad-devkit.sh --list lists them) and pass --project <repository path> to those squad-worker runs. Keep plans in .squad/plans/ here. Ask the human only when the repository is genuinely unclear."
+  else
+    prompt+=$'\n\n'"Workers work in this repository by default; pass --project <path> to have one work in another repository."
+  fi
+  prompt+=$'\n\n'"The human's messages in the chat are their requests. When a message gives you work, start investigating and planning right away, without asking for the objective again unless it is genuinely ambiguous. Do not repeat these instructions to the human."
+  printf '%s' "$prompt"
+}
+
+refresh_project_roles() {
+  local target_project="${1:-$project_directory}"
+  local role=""
+  local source=""
+  local destination=""
+  mkdir -p "$target_project/.squad/roles"
+  for role in manager-devkit dev tester reviewer researcher ui-ux security sub-manager; do
+    source="$script_dir/../templates/devkit/$role.md"
+    destination="$target_project/.squad/roles/$role.md"
+    if [[ ! -e "$destination" ]]; then
+      cp "$source" "$destination"
+    elif cmp -s "$source" "$destination"; then
+      continue
+    elif [[ "$(head -n 1 "$destination")" == "$template_marker"* ]]; then
+      cp "$source" "$destination"
+    else
+      printf 'Note: keeping customized %s; compare it with %s\n' "$destination" "$source" >&2
+    fi
+  done
+}
+
+run_reload() {
+  refresh_project_roles "$project_directory"
+  printf 'roles refreshed (%s/.squad/roles)\n' "$project_directory"
+
+  local install_out=""
+  if install_out="$("$script_dir/install-devkit.sh" --no-prompt --no-hud 2>&1)"; then
+    printf 'links refreshed\n'
+  else
+    printf '%s\n' "$install_out" >&2
+    return 1
+  fi
+
+  local view_count=0
+  local pid=""
+  local uid="${UID:-}"
+  if [[ -z "$uid" ]]; then
+    if command -v id >/dev/null 2>&1; then
+      uid="$(id -u)"
+    elif [[ -x /usr/bin/id ]]; then
+      uid="$(/usr/bin/id -u)"
+    fi
+  fi
+  local pgrep_bin="pgrep"
+  if ! command -v pgrep >/dev/null 2>&1 && [[ -x /usr/bin/pgrep ]]; then
+    pgrep_bin="/usr/bin/pgrep"
+  fi
+  if command -v "$pgrep_bin" >/dev/null 2>&1 || [[ -x "$pgrep_bin" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" && "$pid" != "$$" ]] || continue
+      if kill -HUP "$pid" 2>/dev/null; then
+        view_count=$((view_count + 1))
+      fi
+    done < <("$pgrep_bin" -u "$uid" -f 'squad-orchestration\.sh' 2>/dev/null || true)
+  fi
+  printf '%d orchestration views reloaded\n' "$view_count"
+
+  local prompt=""
+  prompt="$(build_manager_prompt)" || return $?
+  local mgr_id="${SQUAD_MANAGER_ID:-manager}"
+  local instructions=""
+  instructions="$(build_manager_instructions "$manager_client" "$prompt" "$mgr_id" "$project_directory")"
+  printf 'Follow these instructions from now on; they replace the squad-devkit instructions given at session start.\n'
+  printf '## Updated squad-devkit manager instructions (replace the earlier ones)\n\n'
+  printf '%s\n' "$instructions"
+
+  local cfg_view=""
+  cfg_view="$(devkit_config_get view)"
+  local effective_cfg_view="${cfg_view:-orchestration}"
+  if [[ -n "$caller_worker_view" && "$caller_worker_view" != "$effective_cfg_view" ]]; then
+    printf '\nNote: session env SQUAD_WORKER_VIEW=%s differs from config view=%s (squad-worker reads config when SQUAD_WORKER_VIEW is unset).\n' \
+      "$caller_worker_view" "$effective_cfg_view"
+  fi
+}
+
+if [[ "$devkit_action" == reload ]]; then
+  run_reload
+  exit 0
+fi
+
 if [[ "$backend" == tmux ]]; then
   require_command tmux
 elif [[ "$backend" == ghostty ]]; then
@@ -675,36 +856,7 @@ elif [[ "$backend" == ghostty ]]; then
   require_command "$osascript_command"
 fi
 
-worker_command="$script_dir/squad-worker.sh"
-if (( ${#worker_engines[@]} == 0 )); then
-  worker_line="No worker engine is installed, so do the work yourself instead of starting squad-worker."
-else
-  worker_catalog="$(source "$script_dir/lib/squad-worker-model.sh"; squad_worker_model_catalog "${worker_engines[@]}")" || exit $?
-  while IFS= read -r missing_mapping; do
-    [[ -z "$missing_mapping" ]] || printf 'Worker models: %s; run squad config workers, then squad-worker --models.\n' "$missing_mapping" >&2
-  done < <(printf '%s' "$worker_catalog" | jq -r '.[] | select(.installed and .tier != "" and .source == "unresolved" and .engine != "ccr") | "\(.engine) \(.tier): set SQUAD_WORKER_\(.engine | ascii_upcase)_MODEL_\(.tier | ascii_upcase)"')
-  worker_order_line="Installed worker engines, most trusted first: ${worker_engines[*]}"
-  if [[ "$setup_mode" == custom && "$workers_from_flag" == 0 && -n "$workers_opt" ]]; then
-    worker_order_line="Installed worker engines, in the order the human chose (prefer earlier ones): ${worker_engines[*]}"
-  fi
-  worker_line="squad-worker is: $worker_command
-Always pass --manager {{MANAGER_ID}} on every worker launch; do not rely on inherited environment variables.
-$worker_order_line
-Local model candidates (provider availability unverified; null means unmapped, never guess):
-$(printf '%s' "$worker_catalog" | jq -c '.')
-In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
-fi
-if [[ -n "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then
-  worker_line+=$'\n'"squad-route is configured: $script_dir/squad-route.sh \"<redacted digest>\""
-fi
-manager_prompt="You are the {{MANAGER_LABEL}} manager of this squad devkit, in an interactive session in this repository. You already joined the squad as {{MANAGER_ID}}; workers report to you automatically.
-$worker_line"
-if (( general_workspace == 1 )); then
-  manager_prompt+=$'\n\n'"You are in the general squad workspace ($project_directory), not inside a project. Many requests need no repository: checking logs or metrics (prod, staging), querying data, and writing reports. Run those workers here without --project, give them the MCP servers they need, and save reports under reports/ in this workspace. When a request changes or inspects code, work out which repositories it involves (they live under ~/Workspace; $script_dir/squad-devkit.sh --list lists them) and pass --project <repository path> to those squad-worker runs. Keep plans in .squad/plans/ here. Ask the human only when the repository is genuinely unclear."
-else
-  manager_prompt+=$'\n\n'"Workers work in this repository by default; pass --project <path> to have one work in another repository."
-fi
-manager_prompt+=$'\n\n'"The human's messages in the chat are their requests. When a message gives you work, start investigating and planning right away, without asking for the objective again unless it is genuinely ambiguous. Do not repeat these instructions to the human."
+manager_prompt="$(build_manager_prompt)" || exit $?
 manager_command="$(shell_join "$script_dir/lib/squad-devkit-manager.sh" "$manager_client" "$manager_prompt" "$objective")"
 manager_command="$(shell_join env "SQUAD_DEVKIT_YOLO=${SQUAD_DEVKIT_YOLO:-0}" "SQUAD_WORKER_VIEW=$view_opt") $manager_command"
 manager_title="$(manager_label "$manager_client")"
@@ -721,8 +873,6 @@ if (( dry_run == 1 )); then
   printf 'cli: %s\n' "$(manager_start_command "$manager_client" INSTRUCTIONS "${objective:+MESSAGE}")"
   exit 0
 fi
-
-template_marker='<!-- squad-devkit template'
 
 # squad init appends guidance to CLAUDE.md, AGENTS.md, and GEMINI.md and adds
 # .squad/ to .gitignore. In a git repository, keep those files as they were and
@@ -763,22 +913,7 @@ squad_init_project() {
 prepare_project() {
   squad_init_project
   "$script_dir/lib/squad-devkit-clean.sh" "$project_directory" --quiet || true
-  local role=""
-  local source=""
-  local destination=""
-  for role in manager-devkit dev tester reviewer researcher ui-ux security sub-manager; do
-    source="$script_dir/../templates/devkit/$role.md"
-    destination="$project_directory/.squad/roles/$role.md"
-    if [[ ! -e "$destination" ]]; then
-      cp "$source" "$destination"
-    elif cmp -s "$source" "$destination"; then
-      continue
-    elif [[ "$(head -n 1 "$destination")" == "$template_marker"* ]]; then
-      cp "$source" "$destination"
-    else
-      printf 'Note: keeping customized %s; compare it with %s\n' "$destination" "$source" >&2
-    fi
-  done
+  refresh_project_roles "$project_directory"
 }
 
 # squad-worker splits worker monitor panes next to this Ghostty terminal.

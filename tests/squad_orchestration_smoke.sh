@@ -1,11 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -z "${TEST_SIGHUP_RESET:-}" ]] && command -v perl >/dev/null 2>&1; then
+  export TEST_SIGHUP_RESET=1
+  exec perl -e '$SIG{HUP} = "DEFAULT"; exec @ARGV' -- "$0" "$@"
+fi
+
 export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+live_pid=""
+non_tty_pid=""
+cleanup() {
+  if [[ -n "${live_pid:-}" ]]; then
+    kill "$live_pid" 2>/dev/null || true
+    wait "$live_pid" 2>/dev/null || true
+  fi
+  if [[ -n "${non_tty_pid:-}" ]]; then
+    kill "$non_tty_pid" 2>/dev/null || true
+    wait "$non_tty_pid" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 workers_dir="$tmp/.squad/workers"
 mkdir -p "$workers_dir"
@@ -968,5 +986,105 @@ PYEOF
     exit 1
   }
 fi
+
+# Verify non-TTY output without SQUAD_ORCHESTRATION_LIVE exits by itself within 5 s (no --once)
+non_tty_out="$tmp/non_tty_render.log"
+(
+  unset SQUAD_ORCHESTRATION_LIVE || true
+  "$root/scripts/squad-orchestration.sh" "$workers_dir" >"$non_tty_out" 2>&1 &
+  echo "$!" >"$tmp/non_tty.pid"
+)
+non_tty_pid="$(cat "$tmp/non_tty.pid")"
+
+exited=0
+deadline=$(( $(date +%s) + 5 ))
+while (( $(date +%s) < deadline )); do
+  if ! kill -0 "$non_tty_pid" 2>/dev/null; then
+    exited=1
+    break
+  fi
+  sleep 0.05
+done
+
+if (( exited == 0 )); then
+  echo "FAIL: non-TTY orchestration view without SQUAD_ORCHESTRATION_LIVE did not exit within 5 s" >&2
+  kill -9 "$non_tty_pid" 2>/dev/null || true
+  exit 1
+fi
+wait "$non_tty_pid" 2>/dev/null || true
+non_tty_pid=""
+
+grep -q "squad orchestration" "$non_tty_out" || {
+  echo "FAIL: non-TTY one-shot output missing header" >&2
+  exit 1
+}
+
+# Verify live renderer SIGHUP in-place reload:
+# Start renderer live in background on fixture, verify output, send SIGHUP,
+# verify same PID is alive and output shows reload / second header, then kill.
+live_out="$tmp/live_renderer_hup.log"
+(
+  set -m
+  SQUAD_ORCHESTRATION_LIVE=1 \
+  SQUAD_ORCHESTRATION_ANIMATE=0 \
+  SQUAD_ORCHESTRATION_INTERVAL=1 \
+  SQUAD_ORCHESTRATION_FPS=10 \
+  SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$workers_dir" >"$live_out" 2>&1 &
+  echo "$!" >"$tmp/live_renderer.pid"
+)
+live_pid="$(cat "$tmp/live_renderer.pid")"
+
+# Wait until output appears
+deadline=$(( $(date +%s) + 4 ))
+while (( $(date +%s) < deadline )); do
+  if [[ -s "$live_out" ]] && grep -q "squad orchestration" "$live_out"; then
+    break
+  fi
+  sleep 0.05
+done
+
+grep -q "squad orchestration" "$live_out" || {
+  echo "FAIL: live renderer did not produce header within timeout" >&2
+  kill -9 "$live_pid" 2>/dev/null || true
+  exit 1
+}
+
+initial_headers="$(grep -c "squad orchestration" "$live_out" || true)"
+initial_size="$(wc -c <"$live_out" | tr -d " ")"
+
+kill -HUP "$live_pid"
+
+reloaded=0
+hup_deadline=$(( $(date +%s) + 4 ))
+while (( $(date +%s) < hup_deadline )); do
+  if ! kill -0 "$live_pid" 2>/dev/null; then
+    echo "FAIL: live renderer PID $live_pid died after SIGHUP" >&2
+    exit 1
+  fi
+  headers_now="$(grep -c "squad orchestration" "$live_out" || true)"
+  size_now="$(wc -c <"$live_out" | tr -d " ")"
+  if (( headers_now > initial_headers || size_now > initial_size )); then
+    reloaded=1
+    break
+  fi
+  sleep 0.05
+done
+
+(( reloaded == 1 )) || {
+  echo "FAIL: live renderer output did not grow / show second header after SIGHUP" >&2
+  kill -9 "$live_pid" 2>/dev/null || true
+  exit 1
+}
+
+# Verify process is still alive under the exact same PID
+kill -0 "$live_pid" 2>/dev/null || {
+  echo "FAIL: live renderer PID $live_pid exited unexpectedly" >&2
+  exit 1
+}
+
+kill "$live_pid" 2>/dev/null || true
+wait "$live_pid" 2>/dev/null || true
+live_pid=""
 
 echo "PASS: squad_orchestration_smoke"

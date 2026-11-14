@@ -111,7 +111,8 @@ SQUAD_WORKER_CLAUDE_TOOLS, SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS (optional scoped
 Bash allow rules), SQUAD_WORKER_CLAUDE_PERMISSION_MODE (default
 acceptEdits, shell sandboxed), SQUAD_WORKER_CCR_TOOLS, SQUAD_WORKER_TIMEOUT (minutes),
 SQUAD_WORKER_STALL (minutes without log output before a run counts as stuck,
-default 10), SQUAD_WORKER_VIEW (panes or orchestration), SQUAD_WORKER_PANES=0,
+default 10), SQUAD_WORKER_VIEW (orchestration or panes, default orchestration
+when managed, panes otherwise), SQUAD_WORKER_PANES=0,
 SQUAD_WORKER_PANE_HOLD (seconds a finished monitor pane stays open, default 60),
 SQUAD_WORKER_WORKTREE (auto, 1, or 0), SQUAD_WORKER_SANDBOX (1 or 0).
 EOF
@@ -153,7 +154,25 @@ worktree_mode="${SQUAD_WORKER_WORKTREE:-auto}"
 sandbox_mode="${SQUAD_WORKER_SANDBOX:-1}"
 sandbox_flag_set=""
 yolo="${SQUAD_DEVKIT_YOLO:-0}"
-view="${SQUAD_WORKER_VIEW:-panes}"
+view="${SQUAD_WORKER_VIEW:-}"
+if [[ -z "$view" ]]; then
+  if ! declare -f devkit_config_get >/dev/null 2>&1 && [[ -f "$script_dir/lib/squad-devkit-agents.sh" ]]; then
+    # shellcheck source=lib/squad-devkit-agents.sh
+    source "$script_dir/lib/squad-devkit-agents.sh"
+  fi
+  if declare -f devkit_config_get >/dev/null 2>&1; then
+    view="$(devkit_config_get view)"
+  elif [[ -f "${SQUAD_DEVKIT_CONFIG:-$HOME/.config/squad-devkit/config}" ]]; then
+    view="$(grep '^view=' "${SQUAD_DEVKIT_CONFIG:-$HOME/.config/squad-devkit/config}" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
+  fi
+  if [[ -z "$view" ]]; then
+    if [[ -n "${SQUAD_MANAGER_ID:-}" ]]; then
+      view="orchestration"
+    else
+      view="panes"
+    fi
+  fi
+fi
 parent_id=""
 depth=1
 budget_tokens=""

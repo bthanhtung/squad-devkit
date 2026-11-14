@@ -190,10 +190,19 @@ squad-devkit my-project 'fix the failing login test'
 squad-devkit my-project --task '-v flag is ignored'
 squad-devkit --doctor                         # diagnose tools, manager CLI, workers, and panes
 squad-devkit --list                           # discoverable git projects
+squad-devkit update                           # pull latest devkit (--ff-only) and reload session
+squad-devkit reload                           # refresh roles, links, views, and manager prompt
 squad-devkit my-project --ghostty             # new Ghostty window instead of this terminal
 squad-devkit my-project --tmux [--no-attach]  # tmux session; re-running attaches
 squad-devkit my-project --dry-run             # print the manager command only
 ```
+
+### Update without restarting
+
+When the devkit repository or `~/.config/squad-devkit/config` changes while a manager session is already running, the manager can run `squad-devkit update` or `squad-devkit reload` (also `--update`, `--reload`, or `restart`) from its Bash tool instead of closing and restarting the session:
+
+1. `squad-devkit update` runs `git pull --ff-only` in the devkit checkout (`SQUAD_DEVKIT_REPO_ROOT` overrides the repo path). If the checkout has local changes, it prints `devkit repo has local changes; not pulling`, still runs the reload steps, and exits `1`. On a clean pull it re-execs the updated `squad-devkit.sh --reload`.
+2. `squad-devkit reload` refreshes template-marked `.squad/roles/*.md` files in the project, re-links the CLI binaries via `install-devkit.sh --no-prompt --no-hud`, sends `SIGHUP` to running `squad-orchestration.sh` processes owned by the current user so they reload in place, prints the refreshed manager system prompt under `## Updated squad-devkit manager instructions (replace the earlier ones)`, and notes if session environment variables (such as `SQUAD_WORKER_VIEW`) differ from the saved config.
 
 By default the manager runs in the current terminal, so it works in any
 terminal app. Set `SQUAD_DEVKIT_BACKEND=here|ghostty|tmux` to change the default.

@@ -57,13 +57,7 @@ trap leave_squad EXIT
 # The launcher writes {{MANAGER_LABEL}} so the same instructions also fit a
 # fallback manager.
 build_instructions() {
-  local text="${prompt_template//\{\{MANAGER_ID\}\}/$manager_id}"
-  text="${text//\{\{MANAGER_LABEL\}\}/$(manager_label "$1")}"
-  if [[ -f .squad/roles/manager-devkit.md ]]; then
-    text+=$'\n\n'"## Your role (.squad/roles/manager-devkit.md)"$'\n\n'
-    text+="$(grep -v '^<!-- squad-devkit template' .squad/roles/manager-devkit.md)"
-  fi
-  printf '%s' "$text"
+  build_manager_instructions "$1" "$prompt_template" "$manager_id" "."
 }
 
 # squad-worker reads these, so workers report to this manager and record

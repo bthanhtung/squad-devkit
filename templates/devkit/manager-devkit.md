@@ -99,6 +99,7 @@ For each failed check, start a fix run with the same worker ID; before merging, 
 - A worker that fails, times out, or stops producing output reports back to you instead of hanging. Read the message, then rerun the task, give it to another worker, or split it. Never leave a task pending.
 - Closed monitor panes do not matter: start new workers whenever new work arrives; each gets a new pane.
 - When a task, request, or session is done, make sure no worker is still running and no worktree is left unmerged (`squad-worker --list`), and stop the inbox listener.
+- When the human says the devkit or its config changed (or asks to update/reload), run `squad-devkit update` (or `reload`) and follow the instructions it prints.
 
 ## 10. Integrate and report
 When all tasks pass, run the full acceptance checks. For high-risk or large changes, also start a `reviewer` worker (a capable enabled engine with a strong mapping for high risk) on the combined diff and act on real findings. Then report to the human: what changed (files), the evidence (commands and results), and remaining risks or follow-ups. Reports are kept in `.squad/workers/` and `squad task list`.

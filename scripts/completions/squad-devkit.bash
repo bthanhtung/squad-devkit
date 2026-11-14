@@ -22,7 +22,7 @@ _squad_devkit() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--manager --setup --workers --disable-workers --view --doctor --list --ghostty --tmux --yolo --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
+  local opts="--manager --setup --workers --disable-workers --view --doctor --list --ghostty --tmux --yolo --update --reload --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
   local managers="claude codex agy gemini grok opencode"
 
   case "$prev" in
@@ -50,6 +50,12 @@ _squad_devkit() {
   if [[ "$cur" == -* ]]; then
     # shellcheck disable=SC2207
     COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+    return 0
+  fi
+
+  if (( COMP_CWORD == 1 )); then
+    # shellcheck disable=SC2207
+    COMPREPLY=( $(compgen -W "update reload restart" -d -- "$cur" || true) )
     return 0
   fi
 
