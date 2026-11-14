@@ -102,7 +102,7 @@ cat > .squad/worker-models.json <<'JSON'
 JSON
 "$DEVKIT" --dry-run --manager codex --workers agy >"$tmpdir/saved-output" 2>"$tmpdir/warnings"
 [[ ! -s "$tmpdir/warnings" ]] || fail 'saved tiers warned'
-grep -q 'saved' "$tmpdir/saved-output" || fail 'saved catalog missing'
+grep -Fq 'agy: fast=f, balanced=b, strong=s' "$tmpdir/saved-output" || fail 'saved catalog missing'
 "$DEVKIT" --dry-run --manager codex --workers claude,ccr > /dev/null 2>"$tmpdir/warnings"
 [[ ! -s "$tmpdir/warnings" ]] || fail 'builtins or unsupported CCR tiers warned'
 echo "PASS: Test 7"

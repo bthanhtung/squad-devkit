@@ -654,8 +654,14 @@ else
   worker_line="squad-worker is: $worker_command
 Always pass --manager {{MANAGER_ID}} on every worker launch; do not rely on inherited environment variables.
 $worker_order_line
-Local model candidates (provider availability unverified; null means unmapped, never guess):
-$(printf '%s' "$worker_catalog" | jq -c '.')
+Mapped worker models (local configuration; provider availability unverified; use only these):
+$(printf '%s' "$worker_catalog" | jq -r '
+  (reduce .[].engine as $engine ([]; if index($engine) then . else . + [$engine] end)) as $order
+  | . as $rows
+  | $order[] as $engine
+  | [$rows[] | select(.engine == $engine and .tier != "" and .candidate != null)
+      | if .effort != null then "\(.tier)=\(.candidate) (effort \(.effort))" else "\(.tier)=\(.candidate)" end]
+  | if length == 0 then "\($engine): CLI default only" else "\($engine): " + join(", ") end')
 In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
 fi
 if [[ -n "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then

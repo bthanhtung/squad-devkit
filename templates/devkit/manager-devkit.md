@@ -45,6 +45,8 @@ Choose an enabled installed engine by required tools first: MCP requires Codex; 
 
 Mappings are operator capability policy, not automatic correctness, provider availability, price or subscription guarantees. Catalog candidates are local configuration; availability remains unverified. Never silently downgrade high-risk work. If a mapping is missing, use another capable enabled engine or report the needed mapping. Escalate capability after failed rounds; after two failed rounds also reconsider approach or split the task. Router advice cannot override safety or quality policy.
 
+A `Risk: high` plan refuses any launch below `--model-tier strong` unless `--tier-reason "<reason>"` is given (recorded in the status file); high complexity below strong and strong on a low/low plan only print a note.
+
 Use `--project <path>` for another repository and a unique worker ID per parallel run. Pick the role: the default team is you plus `dev` workers; add `ui-ux` only when the task touches UI/UX or the human asks for it, and `security` only for auth, secrets, input handling, dependencies or other high-risk changes, or when the human asks. Use tester, reviewer or researcher when the plan requires them.
 
 ## 5. Brief each worker
@@ -61,10 +63,12 @@ Workers see only their brief, not this chat or the plan file. When started with 
 Start each worker as a background command, and start independent workers together so they run in parallel:
 
 ```sh
-squad-worker dev-1 --manager MANAGER_ID --engine codex --model-tier balanced --role dev --plan .squad/plans/<name>.md --brief-file - <<'BRIEF'
+squad-worker dev-1 --manager MANAGER_ID --engine codex --model-tier balanced --verify '<acceptance command>' --role dev --plan .squad/plans/<name>.md --brief-file - <<'BRIEF'
 <complete brief>
 BRIEF
 ```
+
+The command runs in the worktree after the worker finishes; the result is in the report (`Verify: pass` / `Verify: FAIL`) and the status file, and a failed verify blocks `--merge`.
 
 Every manager worker must open a live split monitor before its engine starts. Never disable panes or use a headless override. If the split fails, report the failure and fix the terminal or use tmux; do not retry hidden.
 
@@ -80,12 +84,13 @@ In a git repository each editing worker works in its own worktree (branch `squad
 
 A report is a claim, not proof. For each finished worker:
 - Read its report and its diff (`git -C <worktree> diff <base>`, both given in the report). Check every acceptance criterion against the code.
+- The printed report is capped (40 lines by default; full text stays in the report file). A `Verify: pass` line replaces re-running that same command yourself; still read the diff.
 - Run the verification commands yourself, in the worktree.
 - Check that it touched only its own files, followed the existing patterns, and kept the security and quality bar.
 - When it passes, `squad-worker --merge <id>` applies the changes to the project (uncommitted, three-way) and removes the worktree. Merge one worker at a time and re-run the checks after each merge. `--merge` refuses a high-risk plan or a sensitive patch (auth, secret, token, `.env`, `_headers`, `netlify.toml`, `vercel.json`, security paths; CSP, Authorization, API-key, or private-key lines) unless a reviewer run on the same plan is newer than the worker's; `--override-review "<reason>"` merges anyway and records the override in the plan. High-risk pushes also need `- review: <repo>`. On conflicts, the markers stay in the listed files: give their resolution to a worker with `--no-worktree`. `squad-worker --discard <id>` drops a worktree; `squad-worker --list` shows unmerged ones.
 
 ## 8. Fix what is wrong
-For each failed check, start a fix run with the same worker ID; before merging, it continues in the same worktree. The fix brief quotes the original acceptance criteria and lists each defect with `path:line`: what is wrong, what is expected instead, and the failing output. Fix only what is wrong; do not reassign work that passed. After two failed fix rounds on the same task, change approach: escalate to a mapped higher capability tier or another capable enabled engine, split the task, or ask the human with your analysis.
+For each failed check, start a fix run with the same worker ID; before merging, it continues in the same worktree. A fix run automatically receives the previous round's report and diff stat, so the fix brief lists only the defects and the criteria they violate. The run's `attempt` number is in the status file, and the launcher prints a note on the third round at the same tier. Fix only what is wrong; do not reassign work that passed. After two failed fix rounds on the same task, change approach: escalate to a mapped higher capability tier or another capable enabled engine, split the task, or ask the human with your analysis.
 
 ## 9. Keep workers healthy and lean
 - `squad-worker --list` shows running workers; `squad-worker --stop <id>` stops one (`all` stops every one).
@@ -96,33 +101,4 @@ For each failed check, start a fix run with the same worker ID; before merging, 
 ## 10. Integrate and report
 When all tasks pass, run the full acceptance checks. For high-risk or large changes, also start a `reviewer` worker (a capable enabled engine with a strong mapping for high risk) on the combined diff and act on real findings. Then report to the human: what changed (files), the evidence (commands and results), and remaining risks or follow-ups. Reports are kept in `.squad/workers/` and `squad task list`.
 
-### Worker model selection
-
-`--model NAME` overrides tier mappings and `SQUAD_WORKER_<ENGINE>_MODEL` (uppercase engine:
-`CLAUDE`, `CODEX`, `OPENCODE`, `GROK`, `AGY`, `CCR`). Empty environment values
-use the default: Claude uses `haiku`; other engines use their CLI default.
-Codex `--profile` selects a configuration profile, not a model; an explicit
-model overrides the profile's model. Model names come from the installed CLI
-and provider; no fixed model catalog is assumed.
-
-CCR uses its router default. Model overrides (flag or environment) are rejected:
-router/provider mapping cannot be guaranteed by forwarding Claude's `--model`.
-Configure the router separately or use `--engine claude --model NAME`.
-
-Startup stderr, `squad-worker --list`, individual monitors and the dashboard
-show requested selection, its source, and actual model evidence separately.
-Status retains `model` for compatibility and adds `requested_model`,
-`model_source` (`flag`, `tier-environment`, `environment`, `builtin`, `cli-default`, `router-default`),
-and `actual_model`. Claude/CCR/AGY structured assistant and result model-usage
-fields supply reported models (comma-separated when multiple); status refreshes
-while running and persists the evidence on completion or failure. Init selection aliases are excluded from actual evidence. A router's
-reported alias may not identify its upstream provider. AGY uses stream-json output (plain wrapper output remains compatible). Other engines currently
-remain `actual=unknown`: requests, profiles and free-form text are not proof.
-Old status files display unknown provenance/actual model. No credentials or
-router configuration are inspected for model discovery.
-
-`--model-tier` resolves `SQUAD_WORKER_<ENGINE>_MODEL_<FAST|BALANCED|STRONG>`.
-Only balanced may fall back to the generic engine model. Unmapped Claude tiers
-use haiku/sonnet/opus respectively; without a tier Claude still defaults to haiku.
-Other missing mappings fail early. Status and monitor labels retain requested/actual
-model evidence and add `model_tier`; the tier never proves actual provider usage.
+Model resolution details: `squad-worker --help` and docs/squad-devkit.md ("Worker model selection").

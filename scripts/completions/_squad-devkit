@@ -94,6 +94,8 @@ _squad_worker() {
     '--sandbox[Run shell commands in engine sandbox]' \
     '--no-sandbox[Disable engine sandbox]' \
     '--plan[Plan file]:file:_files' \
+    '--tier-reason[Reason for selecting a lower tier]:reason:' \
+    '--verify[Acceptance command]:command:' \
     '--no-plan[Reason for running without a plan]:reason:' \
     '--clone[Clone repository URL]:url:' \
     '--init[Initialize project repository]' \

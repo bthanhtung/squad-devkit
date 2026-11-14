@@ -297,7 +297,9 @@ git -C "$repo" add -A
 git_q -C "$repo" commit -qm init
 
 run_edit() { # run_edit ID PLAN EDIT [ROLE]
-  FAKE_EDIT="$3" "$worker" "$1" --engine agy --worktree --project "$repo" --plan "$2" \
+  local tier_args=()
+  [[ "$2" != .squad/plans/risky.md ]] || tier_args=(--tier-reason test)
+  FAKE_EDIT="$3" "$worker" "$1" --engine agy --worktree --project "$repo" --plan "$2" ${tier_args[@]+"${tier_args[@]}"} \
     ${4:+--role "$4"} --brief 'Edit' >/dev/null
 }
 # Sensitive path, low-risk plan: refused, then overridden.
@@ -321,7 +323,7 @@ sleep 1
 write_plan .squad/plans/other.md Low
 "$worker" r-1 --engine agy --role reviewer --project "$repo" --plan .squad/plans/other.md --brief 'Review' >/dev/null
 expect_exit 3 'needs a review' "$worker" --merge m-2   # reviewed a different plan
-"$worker" r-2 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+"$worker" r-2 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 expect_exit 0 'Merged m-2' "$worker" --merge m-2
 [[ "$(cat "$repo/src/app.txt")" == changed ]] || fail "reviewed merge did not apply"
 git -C "$repo" checkout -q -- src/app.txt
@@ -413,28 +415,28 @@ printf '%s\n' "${FAKE_REPORT:-Done. Files: none. Verification: ok.}"
 EOF
 chmod +x "$tmp/bin/agy"
 FAKE_REPORT=$'src/app.txt:1 injection\nVERDICT: CHANGES_REQUESTED' \
-  "$worker" vr-1 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+  "$worker" vr-1 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 grep -qx 'verdict=changes_requested' "$(last_status vr-1)" || fail "changes_requested verdict not recorded"
 expect_exit 3 'blocked: reviewer vr-1 .* requested changes' "$worker" --merge v-1
 sleep 1
 FAKE_REPORT=$'no issues found\nVERDICT: APPROVED' \
-  "$worker" vr-2 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+  "$worker" vr-2 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 grep -qx 'verdict=approved' "$(last_status vr-2)" || fail "approved verdict not recorded"
 # A newer rejection supersedes the approval, even if the approval status was touched later.
 sleep 1
 FAKE_REPORT=$'still needs fixes\nVERDICT: CHANGES_REQUESTED' \
-  "$worker" vr-latest --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+  "$worker" vr-latest --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 touch "$(last_status vr-2)"
 expect_exit 3 'blocked: reviewer vr-latest .* requested changes' "$worker" --merge v-1
 sleep 1
 FAKE_REPORT=$'fixed\nVERDICT: APPROVED' \
-  "$worker" vr-final --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+  "$worker" vr-final --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 expect_exit 0 'Merged v-1' "$worker" --merge v-1
 git -C "$repo" checkout -q -- src/app.txt
 # A reviewer without a verdict line keeps the old behaviour (counts as a review) and is marked missing.
 run_edit v-2 .squad/plans/risky.md "src/app.txt=legacy"
 sleep 1
-"$worker" vr-3 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+"$worker" vr-3 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 grep -qx 'verdict=missing' "$(last_status vr-3)" || fail "missing verdict not recorded"
 expect_exit 0 'Merged v-2' "$worker" --merge v-2
 git -C "$repo" checkout -q -- src/app.txt
@@ -444,7 +446,7 @@ git -C "$repo" checkout -q -- src/app.txt
 run_edit v-3 .squad/plans/risky.md "src/app.txt=forced"
 sleep 1
 FAKE_REPORT=$'bad\nVERDICT: CHANGES_REQUESTED' \
-  "$worker" vr-4 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --brief 'Review' >/dev/null
+  "$worker" vr-4 --engine agy --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 expect_exit 3 'requested changes' "$worker" --merge v-3
 expect_exit 0 'review override for v-3: ship it' "$worker" --merge v-3 --override-review 'ship it'
 git -C "$repo" checkout -q -- src/app.txt

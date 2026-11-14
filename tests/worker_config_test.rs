@@ -222,3 +222,45 @@ fn codex_refresh_requires_timestamp_advancement_and_can_be_refreshed_again() {
         .success()
         .stdout(predicate::str::contains("live: codex debug models"));
 }
+
+#[test]
+#[cfg(unix)]
+fn global_setup_works_without_workspace_and_preserves_on_cancel() {
+    let f = Fixture::new();
+    fs::remove_dir(f.dir.path().join(".squad")).unwrap();
+    f.cli("agy", "#!/bin/sh\ncase \"$1\" in\nmodels) printf 'fixture-id\\tFriendly fixture\\n';;\n--help) echo '--effort (low|high)' >&2;;\nesac\n");
+    let saved = f.dir.path().join("home/.squad/worker-models.json");
+    f.command()
+        .args(["config", "workers", "--global", "--timeout", "2"])
+        .write_stdin("y\n\n1\n2\n1\n0\n1\n1\ny\n")
+        .assert()
+        .success();
+    let original = fs::read_to_string(&saved).unwrap();
+    assert!(f
+        .dir
+        .path()
+        .join("home/.squad/worker-model-cache.json")
+        .exists());
+    f.command()
+        .args(["config", "workers", "--global"])
+        .write_stdin("q\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cancelled"));
+    assert_eq!(fs::read_to_string(&saved).unwrap(), original);
+    f.command()
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("global"));
+    f.command()
+        .args(["config", "workers", "--global"])
+        .env("HOME", "")
+        .assert()
+        .failure();
+    f.command()
+        .args(["config", "workers", "--global"])
+        .env_remove("HOME")
+        .assert()
+        .failure();
+}

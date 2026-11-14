@@ -13,6 +13,11 @@ releases.
   custom setup (choose the manager, which workers to enable, and their
   preference order). The saved order becomes the manager's preference order,
   shown as "in the order the human chose".
+- High-risk plans now refuse non-strong worker launches unless `--tier-reason`
+  records an override; workers track attempt counts and include previous-round
+  report and diff context. `--verify` runs an acceptance command and blocks
+  `--merge` on failure; printed reports are capped. Manager startup uses a
+  compact mapped model catalog and a shorter manager role prompt.
 - Structured reviewer verdict: `reviewer` and `security` workers end their report
   with `VERDICT: APPROVED` or `VERDICT: CHANGES_REQUESTED`, recorded as `verdict=`
   in the status file. `squad-worker --merge` no longer counts a reviewer that

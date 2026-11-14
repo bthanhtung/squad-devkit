@@ -137,6 +137,8 @@ Roles: `dev`, `tester`, `reviewer`, `researcher`, or any name; a role with a fil
 in `.squad/roles/` gets that prompt. Use `--project <path>` to work in another
 repository.
 
+High-risk plans require `--model-tier strong`; `--tier-reason "<reason>"` records an override. `--verify '<acceptance command>'` runs after the worker in its worktree and blocks `--merge` on failure. Fix rounds receive the previous report and diff stat automatically.
+
 In a git repository, editing workers run in their own worktree under
 `.squad/worktrees/` on branch `squad/<id>`, started from a snapshot of
 your working tree (including uncommitted and new files). Your files and index
@@ -182,6 +184,8 @@ shown separately because they cost far less.
 | `SQUAD_WORKER_CLAUDE_MODEL` | `haiku` | Default model for Claude workers |
 | `SQUAD_WORKER_CODEX_PROFILE` | CLI configuration | Default Codex profile for workers |
 | `SQUAD_WORKER_TIMEOUT` / `SQUAD_WORKER_STALL` | `45` / `10` | Minutes before a run is stopped / counted as stuck |
+| `SQUAD_WORKER_VERIFY_TIMEOUT` | `10` | Minutes allowed for `--verify` |
+| `SQUAD_WORKER_REPORT_LINES` | `40` | Maximum report lines printed by a worker |
 | `SQUAD_WORKER_PANE_HOLD` | `60` | Seconds a finished monitor pane stays open |
 | `SQUAD_WORKER_WORKTREE` | `auto` | `0` disables git worktree isolation |
 | `SQUAD_WORKER_SANDBOX` | `1` | `0` disables engine sandbox (Codex and Claude workers) |
@@ -327,6 +331,8 @@ and exact ID, assign fast/balanced/strong tiers, and choose supported reasoning
 effort independently. Terminal init offers setup; scripted init never fetches
 models or waits for input. Re-init preserves selections. Setup reviews changes
 before saving `.squad/worker-models.json`; `q` or EOF cancels without replacing it.
+Run `squad config workers --global` from anywhere to save defaults and the discovery
+cache under `$HOME/.squad`; HOME must name an existing absolute directory.
 
 Discovery uses installed `agy models` and `codex debug models`, with bounded
 child processes and no inference. Refresh, retry, or choose an explicitly labeled
@@ -338,6 +344,7 @@ No credentials or shell/provider configuration are read or changed by setup.
 
 ```sh
 squad config workers
+squad config workers --global
 squad-worker --models                       # installed engines; JSON, no paid calls
 squad-worker --models --engine codex        # known engine, even if not installed
 squad-devkit --workers codex,claude          # manager sees only enabled installed candidates
@@ -357,7 +364,8 @@ Model names reject control characters. Catalog `candidate` is configured or buil
 Catalog mode never creates tasks/worktrees or launches engines. Use
 `squad-worker --models --project DIR` to inspect an external project's mappings.
 Both launch and catalog search project ancestors first, then the squad workspace;
-the first worker-models.json found supplies the saved tiers. Saved effort applies
+then `$HOME/.squad/worker-models.json` if neither search found a file. The first
+file supplies all saved tiers; files are not merged. Saved effort applies
 only when that saved model wins: Codex gets `-c model_reasoning_effort="VALUE"`, AGY
 gets `--effort VALUE`. Environment/explicit model overrides use CLI effort defaults.
 Codex uses its CLI configuration unless `--profile` or

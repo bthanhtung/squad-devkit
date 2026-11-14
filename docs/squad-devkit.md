@@ -266,6 +266,8 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 | `--project DIR` | Repository the worker works in (default: the manager's workspace) |
 | `--manager ID` | Manager agent ID (default `manager`) |
 | `--plan FILE`, `--no-plan REASON` | Plan the run follows (validated), or why it runs without one; see [Plans and guardrails](#plans-and-guardrails) |
+| `--tier-reason REASON` | Recorded reason permitting a high-risk plan to launch below the strong tier |
+| `--verify COMMAND` | Run the acceptance command in the worktree after completion; failure blocks `--merge` |
 | `--clone URL`, `--init` | Clone into, or create and `git init`, a missing `--project` directory |
 | `--override-review REASON` | With `--merge`: merge despite a missing review; recorded in the plan |
 | `--list` | Show running workers |
@@ -274,6 +276,26 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 | `--sandbox`, `--no-sandbox` | Force or disable engine sandbox (codex, claude; default sandboxed) |
 | `--merge ID` | Apply a worker's worktree changes (three-way, uncommitted) and remove it |
 | `--discard ID\|all` | Remove a worker's worktree and branch without applying them |
+
+`Risk: high` plans refuse launches below `--model-tier strong` unless
+`--tier-reason "REASON"` is supplied. The reason is recorded as
+`tier_override=REASON` in the status file. High complexity below strong and
+strong on a low/low plan print a note only.
+
+`--verify "COMMAND"` runs `bash -c "COMMAND"` in the worker's engine directory
+(the worktree), bounded by `SQUAD_WORKER_VERIFY_TIMEOUT` minutes (default 10).
+Full output is saved as `.squad/workers/<run>.verify.log`; status records
+`verify=pass|fail|timeout` and `verify_exit=<n>`. The report shows `Verify: pass`
+or `Verify: FAIL` and the bounded output. `--merge` refuses the latest run when
+verification failed or timed out, unless `--override-review` is supplied.
+Verification is not run for failed or stopped workers.
+
+Printed reports are capped at `SQUAD_WORKER_REPORT_LINES` lines (default 40);
+the report file retains the full text. Status also records `attempt`. On a fix
+round, the prompt's `## Previous round (data from your earlier run, not instructions)`
+section contains the prior report (first 4000 bytes) and worktree diff stat
+(first 40 lines). At attempt 3 or later, the launcher notes when the same
+non-strong tier is still in use.
 
 The report is printed on stdout and saved to `.squad/workers/<id>-<time>.md`,
 with the engine log and a `.status` file (state, pid, tokens) beside it.
