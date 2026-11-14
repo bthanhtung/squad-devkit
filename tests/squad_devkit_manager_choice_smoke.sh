@@ -39,7 +39,7 @@ grep -q '1) codex' "$temp_directory/log"
 grep -q '2) agy' "$temp_directory/log"
 grep -q 'Enter a number from 1 to 2.' "$temp_directory/log"
 [[ "$choice" == *'Manager: agy'* ]] || fail
-[[ "$choice" == *"manager: env SQUAD_DEVKIT_YOLO=0 $repo_root/scripts/lib/squad-devkit-manager.sh agy "* ]] || fail
+[[ "$choice" == *"manager: env SQUAD_DEVKIT_YOLO=0 SQUAD_WORKER_VIEW=orchestration $repo_root/scripts/lib/squad-devkit-manager.sh agy "* ]] || fail
 [[ "$choice" == *"cli: $test_bin/agy -i INSTRUCTIONS"* ]] || fail
 [[ "$choice" == *'You already joined the squad as {{MANAGER_ID}}'* ]] || fail
 [[ "$choice" == *'squad receive {{MANAGER_ID}} --wait --timeout 900'* ]] || fail
@@ -79,7 +79,7 @@ fake_cli osascript
 for engine in claude codex agy; do
   for backend in here tmux ghostty; do
     yolo_run="$("$devkit" "$project_directory" --manager "$engine" --"$backend" --yolo --dry-run)"
-    [[ "$yolo_run" == *'manager: env SQUAD_DEVKIT_YOLO=1 '* ]] || fail
+    [[ "$yolo_run" == *'manager: env SQUAD_DEVKIT_YOLO=1 SQUAD_WORKER_VIEW=orchestration '* ]] || fail
     case "$engine" in
       codex) [[ "$yolo_run" == *'--dangerously-bypass-approvals-and-sandbox'* && "$yolo_run" != *'--sandbox '* ]] || fail ;;
       *) [[ "$yolo_run" == *'--dangerously-skip-permissions'* ]] || fail ;;
@@ -92,7 +92,7 @@ grep -q 'YOLO supports only' "$temp_directory/log"
 if SQUAD_DEVKIT_YOLO=true "$devkit" "$project_directory" --manager codex --dry-run 2>"$temp_directory/log"; then fail; fi
 grep -q 'SQUAD_DEVKIT_YOLO must be 0 or 1' "$temp_directory/log"
 inherited="$(SQUAD_DEVKIT_YOLO=1 "$devkit" "$project_directory" --manager codex --here --dry-run)"
-[[ "$inherited" == *'manager: env SQUAD_DEVKIT_YOLO=1 '* ]] || fail
+[[ "$inherited" == *'manager: env SQUAD_DEVKIT_YOLO=1 SQUAD_WORKER_VIEW=orchestration '* ]] || fail
 [[ "$inherited" == *'--dangerously-bypass-approvals-and-sandbox'* ]] || fail
 
 rm "$test_bin/codex" "$test_bin/claude"

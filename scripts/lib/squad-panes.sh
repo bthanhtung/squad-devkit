@@ -15,7 +15,7 @@ squad_panes_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Serialise splits so parallel workers stack instead of splitting the same pane.
 squad_panes_lock() {
-  local lock="$1/.pane.lock"
+  local lock="$1/${2:-.pane.lock}"
   for _ in $(seq 1 40); do
     mkdir "$lock" 2>/dev/null && return 0
     sleep 0.25
@@ -24,7 +24,7 @@ squad_panes_lock() {
 }
 
 squad_panes_unlock() {
-  rmdir "$1/.pane.lock" 2>/dev/null || true
+  rmdir "$1/${2:-.pane.lock}" 2>/dev/null || true
 }
 
 # Resolve one Orca build; never fall through to a different runtime.

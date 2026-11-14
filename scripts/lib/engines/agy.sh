@@ -7,11 +7,24 @@ engine_agy_check_deps() {
 }
 
 engine_agy_build_command() {
+  squad_engine_require_jq || return 1
   engine_command=(agy -p "$prompt" --mode accept-edits --output-format stream-json)
-  [[ "$yolo" != 1 ]] || engine_command+=(--dangerously-skip-permissions)
+  if [[ "$yolo" == 1 ]]; then
+    engine_command+=(--dangerously-skip-permissions)
+  else
+    # Headless AGY ends the turn when any command is denied, so non-YOLO workers run every
+    # command inside AGY's sandbox (no writes outside the workspace and temp dirs, no network).
+    local rules=('command(*)')
+    local candidate_plan="${plan_path:-none}"
+    if [[ "$candidate_plan" != "none" && "$candidate_plan" != *'('* && "$candidate_plan" != *')'* ]]; then
+      rules+=("read_file($candidate_plan)")
+    fi
+    local settings
+    settings="$(jq -cn --args '{permissions:{allow:$ARGS.positional}}' "${rules[@]}")" || return 1
+    engine_command+=(--sandbox --settings "$settings")
+  fi
   [[ -z "$model_effort" ]] || engine_command+=(--effort "$model_effort")
   [[ -z "$model" ]] || engine_command+=(--model "$model")
-  squad_engine_require_jq
 }
 
 # Native AGY streams end with {event:result,result:{status,response}} and may

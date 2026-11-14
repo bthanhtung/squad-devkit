@@ -147,8 +147,29 @@ printf '{"event":"result","result":{"status":"%s","response":"agy report"}}\n' "
 EOF
 chmod +x "$tmp/bin/agy"
 squad_engine_load agy
+agy_settings() {
+  local i
+  for ((i = 0; i < ${#engine_command[@]}; i++)); do
+    if [[ "${engine_command[i]}" == "--settings" ]]; then
+      printf '%s' "${engine_command[i+1]}"
+      return 0
+    fi
+  done
+  return 1
+}
+unset plan_path || true
 model_effort=low squad_engine build_command || fail
-[[ "${engine_command[*]}" == "agy -p do the task --mode accept-edits --output-format stream-json --effort low --model opus" ]] || fail
+[[ "$(agy_settings | jq -c .)" == '{"permissions":{"allow":["command(*)"]}}' ]] || fail
+[[ "${engine_command[*]}" == "agy -p do the task --mode accept-edits --output-format stream-json --sandbox --settings {\"permissions\":{\"allow\":[\"command(*)\"]}} --effort low --model opus" ]] || fail
+plan_path=/tmp/p/plan.md squad_engine build_command || fail
+[[ "$(agy_settings | jq -c .permissions.allow)" == '["command(*)","read_file(/tmp/p/plan.md)"]' ]] || fail
+plan_path=none squad_engine build_command || fail
+[[ "$(agy_settings | jq -c .permissions.allow)" == '["command(*)"]' ]] || fail
+yolo=1 squad_engine build_command || fail
+[[ "${engine_command[*]}" == *'--dangerously-skip-permissions'* ]] || fail
+[[ "${engine_command[*]}" != *'--sandbox'* && "${engine_command[*]}" != *'--settings'* ]] || fail
+yolo=0 model_effort=""
+unset plan_path || true
 : >"$absolute_report"
 squad_engine run_and_extract_report || fail
 [[ "$(cat "$absolute_report")" == 'agy report' ]] || fail

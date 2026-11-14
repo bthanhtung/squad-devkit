@@ -22,7 +22,7 @@ work and stop when they are done, so idle agents cost nothing.
 
 <p align="center"><sub>A real run in tmux: three Claude haiku workers fix a bug, write tests, and update docs in parallel, each in its own git worktree, then everything is merged and the tests pass.</sub></p>
 
-**Contents:** [Highlights](#highlights) · [Install](#install) ·
+**Contents:** [Highlights](#highlights) · [Demos](#demos) · [Install](#install) ·
 [Usage](#usage) · [Workers](#workers) · [Monitor and savings](#monitor-and-savings) ·
 [Configuration](#configuration) · [Project status](#project-status) · [Security](#security) ·
 [FAQ](#faq) · [Contributing](#contributing) · [Credits](#credits) · [License](#license) ·
@@ -53,6 +53,26 @@ work and stop when they are done, so idle agents cost nothing.
 - **Lean by design.** Instructions live in the system prompt, workers start with
   MCP servers off, old run data is pruned automatically, and a Codex manager
   takes over if Claude Code hits its usage limit.
+
+## Demos
+
+**Setup wizard** — detect installed AI CLIs and choose the manager and worker preference order (`squad-devkit --setup`):
+
+![Setup wizard](./assets/demo/setup-wizard.gif)
+
+**Orchestration view** — live graph, pipeline, and tree views switched with keys `g`, `p`, and `t`:
+
+![Orchestration view graph/pipeline/tree](./assets/demo/orchestration-graph.gif)
+
+**Hierarchy mode** — root → sub-manager → workers with branch zoom (`1`–`9` to zoom in, `Esc` to return):
+
+![Hierarchy mode](./assets/demo/hierarchy.gif)
+
+**Classic panes (`--view panes`)** — per-worker split monitor panes beside the manager:
+
+![Classic panes](./assets/demo/panes.gif)
+
+Regenerate with `vhs scripts/demo/<name>.tape`.
 
 ## Install
 
@@ -145,9 +165,25 @@ three-way merge and leaves conflict markers if two workers changed the same
 lines. Reviewers and researchers read the project directly; `--no-worktree`
 does the same for any role.
 
+### Hierarchy mode
+
+For high-complexity tasks that split into two or more independent areas, the root manager can delegate each area to a sub-manager instead of briefing every worker directly (`squad-worker sm-<area> --role sub-manager`). The sub-manager plans child tasks, reviews their changes, and sends a single summary back to root.
+
+- **When it saves tokens**: On large multi-area tasks, delegating keeps the root manager's context lean and uses cost-effective models for localized planning and review loops. On small or moderate tasks, brief workers directly to avoid the 2–3 turn sub-manager overhead.
+- **Flags**:
+  - `--role sub-manager`: launches the sub-manager workflow (`scripts/squad-submanager.sh`, `templates/devkit/sub-manager.md`).
+  - `--parent <id>`: tracks hierarchy relationships (depth is limited to 2; sub-managers cannot spawn sub-managers).
+  - `--budget-tokens <n>`: branch token budget cap (default 600,000); stops before starting a turn or child when the branch total exceeds it.
+  - `--max-children <1-6>`: maximum children the sub-manager may plan (default 3; prefer 1–3).
+  - `squad-worker --tree [--json]`: displays worker hierarchy and branch token totals in text or JSON.
+- **Root authority**: Authority to merge (`squad-worker --merge sm-<area>`), commit, and push remains strictly with the root manager; sub-managers cannot merge worktrees or push code.
+- **Sandbox execution**: The outer driver launches and coordinates child workers in the sub-manager's worktree because sandboxed AI engines (like Antigravity `agy`) have no network access and cannot start child AI workers or write outside the worktree directly.
+
 ## Monitor and savings
 
-Each worker pane streams its activity (commands, file changes, tool calls,
+In a manager session, the first worker opens one live **orchestration view** (`squad-orchestration`) beside the manager: it shows the manager → workers flow grouped by plan, each worker's state, engine/model, elapsed time, tokens, fix rounds, and the message timeline (briefs, questions, answers, completions, failures). Later workers update the same view without opening more panes. Pass `squad-devkit --view panes` (or set `SQUAD_WORKER_VIEW=panes`, or `view=panes` in `~/.config/squad-devkit/config`) to open one monitor pane per worker instead (`panes` remains the default when running `squad-worker` directly).
+
+In `panes` mode, each worker pane streams its activity (commands, file changes, tool calls,
 messages) under a single live status line, without redrawing the screen, so it
 never flickers. When the run ends it shows a summary, the merge command, and the
 report, then closes itself 60 seconds later.
@@ -182,7 +218,8 @@ shown separately because they cost far less.
 | `SQUAD_WORKER_CLAUDE_MODEL` | `haiku` | Default model for Claude workers |
 | `SQUAD_WORKER_CODEX_PROFILE` | CLI configuration | Default Codex profile for workers |
 | `SQUAD_WORKER_TIMEOUT` / `SQUAD_WORKER_STALL` | `45` / `10` | Minutes before a run is stopped / counted as stuck |
-| `SQUAD_WORKER_PANE_HOLD` | `60` | Seconds a finished monitor pane stays open |
+| `SQUAD_WORKER_VIEW` | `orchestration` (manager) / `panes` (direct) | Worker progress view: `orchestration` (one live flow view) or `panes` (one split per worker; `--view`, or `view=` in config) |
+| `SQUAD_WORKER_PANE_HOLD` | `60` | Seconds a finished monitor pane stays open (`panes` view) |
 | `SQUAD_WORKER_WORKTREE` | `auto` | `0` disables git worktree isolation |
 | `SQUAD_WORKER_SANDBOX` | `1` | `0` disables engine sandbox (Codex and Claude workers) |
 | `SQUAD_DEVKIT_ROUTER_URL` | unset | Optional advisory triage router for `squad-route` |
@@ -283,6 +320,12 @@ configuration. Unsupported engines reject YOLO. YOLO conflicts with worker
 Claude uses `--dangerously-skip-permissions` with session sandboxing disabled,
 Codex uses `--dangerously-bypass-approvals-and-sandbox`, and AGY uses
 `--dangerously-skip-permissions` without `--sandbox`.
+
+Without YOLO, AGY workers run with `--sandbox` and a session-only `--settings`
+that allows every command inside the sandbox, because headless AGY stops the
+whole run when a command is denied; the sandbox blocks writes outside the
+worktree and temp directories and blocks network access; tests that need files
+elsewhere in $HOME fail there and should be rerun by the manager.
 
 Use only in an environment you trust: this bypasses engine permission checks
 and engine sandboxing, not OS/admin restrictions. Conversational instructions

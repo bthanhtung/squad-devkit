@@ -22,7 +22,7 @@ usage() {
   cat <<'EOF'
 Usage: squad-devkit [project-name-or-directory] [objective] [--task objective]
                     [--manager CLI] [--workers LIST]
-                    [--disable-workers LIST] [--setup] [--doctor] [--list] [--ghostty] [--tmux]
+                    [--disable-workers LIST] [--view MODE] [--setup] [--doctor] [--list] [--ghostty] [--tmux]
                     [--dry-run] [--no-attach] [--no-prompt]
 
 Start a manager (Claude Code by default) for a project in the current terminal.
@@ -48,6 +48,7 @@ Without an objective the manager opens an interactive chat and asks for one firs
                           (or SQUAD_DEVKIT_WORKERS, or workers= in the config file)
   --disable-workers LIST  Exclude these worker engines
                           (or SQUAD_DEVKIT_DISABLE_WORKERS, or disabled_workers=)
+  --view MODE   How worker progress is shown: orchestration (one live flow view, default) or panes (one split per worker); or SQUAD_WORKER_VIEW / view= in the config file
   --doctor      Diagnose environment: core tools, manager, worker engines, and multiplexer/panes
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
   --tmux        Run the manager in a tmux session; re-running attaches to it
@@ -89,6 +90,9 @@ doctor=0
 manager_client="${SQUAD_DEVKIT_MANAGER:-}"
 workers_opt="${SQUAD_DEVKIT_WORKERS:-}"
 disable_workers_opt="${SQUAD_DEVKIT_DISABLE_WORKERS:-}"
+view_opt="${SQUAD_WORKER_VIEW:-}"
+view_source=""
+[[ -z "$view_opt" ]] || view_source="env"
 backend="${SQUAD_DEVKIT_BACKEND:-here}"
 while (( $# > 0 )); do
   case "$1" in
@@ -123,6 +127,23 @@ while (( $# > 0 )); do
       ;;
     --workers=*) workers_opt="${1#*=}" ;;
     --disable-workers=*) disable_workers_opt="${1#*=}" ;;
+    --view)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      view_opt="$2"
+      view_source=flag
+      shift
+      ;;
+    --view=*)
+      view_opt="${1#*=}"
+      if [[ -z "$view_opt" ]]; then
+        echo "Missing value for --view" >&2
+        exit 2
+      fi
+      view_source=flag
+      ;;
     --task|--prompt)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
@@ -153,6 +174,20 @@ if [[ "$backend" != here && "$backend" != ghostty && "$backend" != tmux ]]; then
   echo "Unknown backend: $backend (use here, ghostty, or tmux)" >&2
   exit 2
 fi
+if [[ -z "$view_opt" ]]; then
+  view_opt="$(devkit_config_get view)"
+  if [[ -n "$view_opt" ]]; then
+    view_source=config
+  else
+    view_opt=orchestration
+    view_source=default
+  fi
+fi
+case "$view_opt" in
+  orchestration|panes) ;;
+  *) echo 'SQUAD_WORKER_VIEW must be orchestration or panes' >&2; exit 2 ;;
+esac
+export SQUAD_WORKER_VIEW="$view_opt"
 if [[ -z "$objective" && -n "${SQUAD_DEVKIT_TASK:-}" ]]; then
   objective="$SQUAD_DEVKIT_TASK"
 fi
@@ -509,6 +544,7 @@ run_doctor() {
     pane_support="Ghostty (splits supported on launch)"
   fi
   printf '  Monitor pane mode: %s\n' "$pane_support"
+  printf '  View: %s (%s)\n' "$view_opt" "$view_source"
 
   printf '\nResult: '
   if (( status == 0 )); then
@@ -670,7 +706,7 @@ else
 fi
 manager_prompt+=$'\n\n'"The human's messages in the chat are their requests. When a message gives you work, start investigating and planning right away, without asking for the objective again unless it is genuinely ambiguous. Do not repeat these instructions to the human."
 manager_command="$(shell_join "$script_dir/lib/squad-devkit-manager.sh" "$manager_client" "$manager_prompt" "$objective")"
-manager_command="$(shell_join env "SQUAD_DEVKIT_YOLO=${SQUAD_DEVKIT_YOLO:-0}") $manager_command"
+manager_command="$(shell_join env "SQUAD_DEVKIT_YOLO=${SQUAD_DEVKIT_YOLO:-0}" "SQUAD_WORKER_VIEW=$view_opt") $manager_command"
 manager_title="$(manager_label "$manager_client")"
 
 if (( dry_run == 1 )); then
@@ -730,7 +766,7 @@ prepare_project() {
   local role=""
   local source=""
   local destination=""
-  for role in manager-devkit dev tester reviewer researcher ui-ux security; do
+  for role in manager-devkit dev tester reviewer researcher ui-ux security sub-manager; do
     source="$script_dir/../templates/devkit/$role.md"
     destination="$project_directory/.squad/roles/$role.md"
     if [[ ! -e "$destination" ]]; then

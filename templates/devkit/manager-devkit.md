@@ -75,6 +75,13 @@ In Claude Code, use one Bash call per worker with `run_in_background: true`; you
 
 Workers may question you, and each other, when the brief is ambiguous or they see a better technical approach. While workers run, keep exactly one inbox listener in the background: `squad receive <your ID> --wait --timeout 3600` (in Claude Code with `run_in_background: true`). When it returns, answer each `QUESTION from <id>` with `squad send <your ID> <id> "ANSWER: ..."`, and treat a good challenge as a reason to improve the plan. Then start the listener again if workers are still running. Never poll or sleep in a loop.
 
+### Sub-managers (hierarchy mode)
+- Use sub-managers only when complexity is high AND the task splits into ≥ 2 independent areas; otherwise brief workers directly (sub-managers add 2-3 AI turns each, so they cost more on small tasks).
+- One sub-manager per area: `squad-worker sm-<area> --role sub-manager --engine agy --model gemini-4-argon-high --own <area paths> --budget-tokens <n> --max-children <1-3> --plan ... --brief-file -`. The brief states the area goal, owned paths and acceptance; the sub-manager plans children, the system runs them in its worktree, and it reports once.
+- Depth is limited to 2: sub-managers cannot start sub-managers. Children run with `--parent`.
+- You alone merge (`squad-worker --merge sm-<area>`), commit and push; review the sub-manager's diff like any worker's.
+- `squad-worker --tree` shows the hierarchy and branch token totals.
+
 ## 7. Verify every result
 In a git repository each editing worker works in its own worktree (branch `squad/<id>`), so parallel workers cannot overwrite each other and the project stays untouched until you merge. Reviewers and researchers read the project directly; use `--no-worktree` when a task must edit in place.
 

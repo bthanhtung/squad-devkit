@@ -55,6 +55,7 @@ _squad_devkit() {
     '--setup[Choose and save default manager CLI]' \
     '--workers[Enable only these worker engines]:workers:(claude codex opencode grok agy ccr)' \
     '--disable-workers[Exclude worker engines]:workers:(claude codex opencode grok agy ccr)' \
+    '--view[How worker progress is shown]:view:(orchestration panes)' \
     '--doctor[Diagnose environment and tools]' \
     '--list[List git projects found on machine]' \
     '--ghostty[Run manager in a Ghostty window]' \
@@ -76,7 +77,7 @@ _squad_devkit() {
 _squad_worker() {
   _arguments -s -S \
     '--engine[Worker engine]:engine:(claude codex opencode grok agy ccr)' \
-    '--role[Role prompt]:role:(dev tester reviewer researcher ui-ux security manager-devkit)' \
+    '--role[Role prompt]:role:(dev tester reviewer researcher ui-ux security manager-devkit sub-manager)' \
     '--title[Task title]:title:' \
     '--brief[Task brief]:brief:' \
     '--brief-file[Read brief from file]:file:_files' \
@@ -100,6 +101,11 @@ _squad_worker() {
     '--override-review[Reason for overriding review]:reason:' \
     '--own[Files this worker may change (comma-separated paths or globs)]:paths:_files' \
     '--no-plan-context[Do not add plan Goal, Findings and Decisions to the prompt]' \
+    '--parent[Parent worker ID]:parent:' \
+    '--budget-tokens[Token budget for sub-manager branch]:budget:' \
+    '--max-children[Maximum children for sub-manager]:max-children:' \
+    '--tree[Show worker hierarchy and branch token totals]' \
+    '--json[JSON output with --tree]' \
     '--manager[Manager agent ID]:manager:' \
     '--list[Show running workers]' \
     '--stop[Stop a running worker]:worker:_squad_devkit_workers_running' \

@@ -32,8 +32,10 @@ Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FIL
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
                     [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
                     [--plan FILE | --no-plan "REASON"] [--clone URL] [--init]
-                    [--own PATHS] [--no-plan-context]
+                    [--own PATHS] [--no-plan-context] [--parent ID]
+                    [--budget-tokens N] [--max-children N]
        squad-worker --list
+       squad-worker --tree [--json]
        squad-worker --stop <worker-id|all>
        squad-worker --merge <worker-id> [--project DIR] [--override-review "REASON"]
        squad-worker --diff <worker-id> [--project DIR]
@@ -91,7 +93,13 @@ Options:
   --override-review REASON
                      With --merge: merge despite a missing review of a high-risk or
                      sensitive patch; the reason is recorded in the plan
+  --parent ID        Parent worker ID for hierarchy tracking (depth 2)
+  --budget-tokens N  Token budget for a sub-manager branch (default 600000;
+                     requires --role sub-manager)
+  --max-children N   Maximum children for a sub-manager (1-6, default 3;
+                     requires --role sub-manager)
   --list             Show worker runs that are still running
+  --tree [--json]    Show worker hierarchy and branch token totals (text or JSON)
   --stop ID|all      Stop a running worker (or all of them); it reports to the manager
   --merge ID         Apply a worker's worktree changes to the project (three-way;
                      conflicts are left as markers) and remove the worktree
@@ -103,9 +111,9 @@ SQUAD_WORKER_CLAUDE_TOOLS, SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS (optional scoped
 Bash allow rules), SQUAD_WORKER_CLAUDE_PERMISSION_MODE (default
 acceptEdits, shell sandboxed), SQUAD_WORKER_CCR_TOOLS, SQUAD_WORKER_TIMEOUT (minutes),
 SQUAD_WORKER_STALL (minutes without log output before a run counts as stuck,
-default 10), SQUAD_WORKER_PANES=0, SQUAD_WORKER_PANE_HOLD (seconds a finished
-monitor pane stays open, default 60), SQUAD_WORKER_WORKTREE (auto, 1, or 0),
-SQUAD_WORKER_SANDBOX (1 or 0).
+default 10), SQUAD_WORKER_VIEW (panes or orchestration), SQUAD_WORKER_PANES=0,
+SQUAD_WORKER_PANE_HOLD (seconds a finished monitor pane stays open, default 60),
+SQUAD_WORKER_WORKTREE (auto, 1, or 0), SQUAD_WORKER_SANDBOX (1 or 0).
 EOF
 }
 
@@ -145,6 +153,13 @@ worktree_mode="${SQUAD_WORKER_WORKTREE:-auto}"
 sandbox_mode="${SQUAD_WORKER_SANDBOX:-1}"
 sandbox_flag_set=""
 yolo="${SQUAD_DEVKIT_YOLO:-0}"
+view="${SQUAD_WORKER_VIEW:-panes}"
+parent_id=""
+depth=1
+budget_tokens=""
+max_children=""
+tree_json=0
+prompt_file=""
 id_pattern='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 # Collapses a free-text reason to one trimmed line of at most 200 characters and
 # prints it: one_line_reason <flag> <text>. Returns 1 when nothing is left.
@@ -160,7 +175,7 @@ one_line_reason() {
 while (( $# > 0 )); do
   case "$1" in --models|--engine|--project) ;; *) catalog_incompatible=1 ;; esac
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own)
+    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own|--parent|--budget-tokens|--max-children)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -181,6 +196,9 @@ while (( $# > 0 )); do
         --clone) clone_url="$2" ;;
         --own) owned_paths="${owned_paths:+$owned_paths,}$2" ;;
         --override-review) override_review="$(one_line_reason --override-review "$2")" || exit 2 ;;
+        --parent) parent_id="$2" ;;
+        --budget-tokens) budget_tokens="$2" ;;
+        --max-children) max_children="$2" ;;
         --project) project_directory="$2" ;;
         --timeout) timeout_minutes="$2" ;;
         --stop) action=stop; stop_target="$2" ;;
@@ -202,6 +220,8 @@ while (( $# > 0 )); do
     --no-sandbox) sandbox_mode=0; sandbox_flag_set+=n ;;
     --models) models=1 ;;
     --list) action=list ;;
+    --tree) action=tree ;;
+    --json) tree_json=1 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
@@ -218,6 +238,34 @@ done
 if [[ -n "$override_review" && "$action" != merge ]]; then
   echo "--override-review only applies to --merge" >&2
   exit 2
+fi
+if (( tree_json == 1 )) && [[ "$action" != tree ]]; then
+  echo "--json only applies to --tree" >&2
+  exit 2
+fi
+if [[ -n "$budget_tokens" || -n "$max_children" ]] && [[ "$role" != sub-manager ]]; then
+  echo "--budget-tokens/--max-children need --role sub-manager" >&2
+  exit 2
+fi
+if [[ "$role" == sub-manager && -n "$parent_id" ]]; then
+  echo "sub-managers cannot be nested" >&2
+  exit 2
+fi
+if [[ -n "$parent_id" && ! "$parent_id" =~ $id_pattern ]]; then
+  echo "Invalid parent id: $parent_id" >&2
+  exit 2
+fi
+if [[ "$role" == sub-manager ]]; then
+  budget_tokens="${budget_tokens:-600000}"
+  max_children="${max_children:-3}"
+  if [[ ! "$budget_tokens" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--budget-tokens must be a positive integer" >&2
+    exit 2
+  fi
+  if [[ ! "$max_children" =~ ^[1-6]$ ]]; then
+    echo "--max-children must be 1-6" >&2
+    exit 2
+  fi
 fi
 
 require_command() {
@@ -587,6 +635,157 @@ if [[ "$action" == list || "$action" == stop ]]; then
   exit 0
 fi
 
+if [[ "$action" == tree ]]; then
+  if [[ -n "$project_directory" && -d "$project_directory/.squad" && -z "${SQUAD_DEVKIT_WORKSPACE:-}" ]]; then
+    export SQUAD_DEVKIT_WORKSPACE="$project_directory"
+  fi
+  workspace_root="$(find_workspace)"
+  cd "$workspace_root"
+  {
+    while IFS= read -r file; do
+      [[ -n "$file" && -f "$file" ]] || continue
+      printf -- '---FILE---\t%s\n' "$file"
+      cat "$file"
+      printf '\n'
+    done < <(ls -t .squad/workers/*.status 2>/dev/null)
+  } | awk -v manager="$manager_id" -v since="${SQUAD_DEVKIT_SESSION_START:-}" -v json="$tree_json" '
+    function json_escape(s,   out) {
+      out = s
+      gsub(/\\/, "\\\\", out)
+      gsub(/"/, "\\\"", out)
+      gsub(/\r/, "\\r", out)
+      gsub(/\n/, "\\n", out)
+      gsub(/\t/, "\\t", out)
+      return out
+    }
+    function flush_file(   t_in, t_out, tok, take) {
+      if (cur_file == "" || cur_id == "") return
+      if (since != "" && (cur_started == "" || (cur_started + 0) < (since + 0))) return
+      take = 0
+      if (!(cur_id in seen)) {
+        take = 1
+        seen[cur_id] = 1
+        order[++n_ids] = cur_id
+      } else if (cur_started != "" && (best_started[cur_id] == "" || (cur_started + 0) > (best_started[cur_id] + 0))) {
+        take = 1
+      } else if (cur_started != "" && best_started[cur_id] != "" && (cur_started + 0) == (best_started[cur_id] + 0) && cur_file > best_file[cur_id]) {
+        take = 1
+      }
+      if (take) {
+        best_file[cur_id] = cur_file
+        best_started[cur_id] = cur_started
+        w_parent[cur_id] = cur_parent
+        w_depth[cur_id] = cur_depth
+        w_role[cur_id] = (cur_role != "" ? cur_role : "dev")
+        w_engine[cur_id] = cur_engine
+        w_state[cur_id] = cur_state
+        if (cur_tok_in != "" || cur_tok_out != "") {
+          t_in = (cur_tok_in != "" ? cur_tok_in + 0 : 0)
+          t_out = (cur_tok_out != "" ? cur_tok_out + 0 : 0)
+          tok = t_in + t_out
+        } else if (cur_tok != "") {
+          tok = cur_tok + 0
+        } else {
+          tok = 0
+        }
+        w_tokens[cur_id] = tok
+      }
+    }
+    /^---FILE---\t/ {
+      flush_file()
+      cur_file = substr($0, 12)
+      cur_id = ""; cur_parent = ""; cur_depth = ""; cur_role = ""
+      cur_engine = ""; cur_state = ""; cur_started = ""
+      cur_tok_in = ""; cur_tok_out = ""; cur_tok = ""
+      next
+    }
+    {
+      eq = index($0, "=")
+      if (eq > 0) {
+        k = substr($0, 1, eq - 1)
+        v = substr($0, eq + 1)
+        if (k == "worker" || (k == "id" && cur_id == "")) cur_id = v
+        else if (k == "parent") cur_parent = v
+        else if (k == "depth") cur_depth = v
+        else if (k == "role") cur_role = v
+        else if (k == "engine") cur_engine = v
+        else if (k == "state") cur_state = v
+        else if (k == "started") cur_started = v
+        else if (k == "tokens_in") cur_tok_in = v
+        else if (k == "tokens_out") cur_tok_out = v
+        else if (k == "tokens") cur_tok = v
+      }
+    }
+    END {
+      flush_file()
+      for (i = 1; i <= n_ids; i++) {
+        for (j = i + 1; j <= n_ids; j++) {
+          if (order[i] > order[j]) {
+            tmp = order[i]; order[i] = order[j]; order[j] = tmp
+          }
+        }
+      }
+      for (i = 1; i <= n_ids; i++) {
+        id = order[i]
+        if (w_depth[id] == "" || (w_depth[id] + 0) < 1) {
+          w_depth[id] = (w_parent[id] != "" ? 2 : 1)
+        } else {
+          w_depth[id] = w_depth[id] + 0
+        }
+        branch_tokens[id] = w_tokens[id]
+      }
+      for (i = 1; i <= n_ids; i++) {
+        id = order[i]
+        p = w_parent[id]
+        if (p != "" && (p in seen)) {
+          branch_tokens[p] += w_tokens[id]
+        }
+      }
+      n_out = 0
+      for (i = 1; i <= n_ids; i++) {
+        id = order[i]
+        p = w_parent[id]
+        if (p == "" || !(p in seen)) {
+          out_order[++n_out] = id
+          for (j = 1; j <= n_ids; j++) {
+            cid = order[j]
+            if (w_parent[cid] == id) {
+              out_order[++n_out] = cid
+            }
+          }
+        }
+      }
+      if (json == 1) {
+        printf "["
+        for (i = 1; i <= n_out; i++) {
+          id = out_order[i]
+          if (i > 1) printf ","
+          printf "{\"id\":\"%s\",\"parent\":\"%s\",\"depth\":%d,\"role\":\"%s\",\"engine\":\"%s\",\"state\":\"%s\",\"tokens\":%d,\"branch_tokens\":%d}", \
+            json_escape(id), json_escape(w_parent[id]), w_depth[id], json_escape(w_role[id]), \
+            json_escape(w_engine[id]), json_escape(w_state[id]), w_tokens[id], branch_tokens[id]
+        }
+        printf "]\n"
+      } else {
+        printf "%s\n", manager
+        for (i = 1; i <= n_out; i++) {
+          id = out_order[i]
+          p = w_parent[id]
+          if (p == "" || !(p in seen)) {
+            if (w_role[id] == "sub-manager") {
+              printf "  └─ %s  %s  %s  %s  %d  branch %d\n", id, w_role[id], w_engine[id], w_state[id], w_tokens[id], branch_tokens[id]
+            } else {
+              printf "  └─ %s  %s  %s  %s  %d\n", id, w_role[id], w_engine[id], w_state[id], w_tokens[id]
+            }
+          } else {
+            printf "    └─ %s  %s  %s  %s  %d\n", id, w_role[id], w_engine[id], w_state[id], w_tokens[id]
+          }
+        }
+      }
+    }
+  '
+  exit 0
+fi
+
 if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
   require_command git
   workspace_root="$(find_workspace)"
@@ -661,6 +860,41 @@ if [[ ! "$role" =~ $id_pattern ]]; then
   echo "Invalid role: $role" >&2
   exit 2
 fi
+if [[ "$role" == sub-manager ]]; then
+  case "$engine" in
+    agy|claude|codex) ;;
+    *) echo "sub-manager engine must be agy, claude or codex" >&2; exit 2 ;;
+  esac
+fi
+resolve_hierarchy() {
+  local ws="$1" previous_status parent_status parent_depth
+  if [[ -z "$parent_id" ]]; then
+    previous_status="$(cd "$ws" && worker_status_files "$worker_id" | head -n 1)"
+    [[ -z "$previous_status" ]] || parent_id="$(status_get "$ws/$previous_status" parent)"
+  fi
+  if [[ "$role" == sub-manager && -n "$parent_id" ]]; then
+    echo "sub-managers cannot be nested" >&2
+    exit 2
+  fi
+  depth=1
+  if [[ -n "$parent_id" ]]; then
+    parent_status="$(cd "$ws" && worker_status_files "$parent_id" | head -n 1)"
+    if [[ -n "$parent_status" ]]; then
+      parent_depth="$(status_get "$ws/$parent_status" depth)"
+      [[ "$parent_depth" =~ ^[1-9][0-9]*$ ]] || parent_depth=1
+      depth=$(( parent_depth + 1 ))
+    else
+      depth=2
+    fi
+    if (( depth > 2 )); then
+      echo "hierarchy depth limit is 2" >&2
+      exit 2
+    fi
+  fi
+}
+if early_workspace="$(find_workspace 2>/dev/null)"; then
+  resolve_hierarchy "$early_workspace"
+fi
 if [[ "$sandbox_flag_set" == *s* && "$sandbox_flag_set" == *n* ]]; then
   echo "--sandbox and --no-sandbox are mutually exclusive" >&2
   exit 2
@@ -668,6 +902,10 @@ fi
 case "$yolo" in
   0|1) ;;
   *) echo 'SQUAD_DEVKIT_YOLO must be 0 or 1' >&2; exit 2 ;;
+esac
+case "$view" in
+  orchestration|orchestration-branches|panes) ;;
+  *) echo 'SQUAD_WORKER_VIEW must be orchestration or panes (or orchestration-branches)' >&2; exit 2 ;;
 esac
 if [[ "$yolo" == 1 ]]; then
   case "$engine" in
@@ -785,6 +1023,7 @@ export SQUAD_WORKTREE_WORKSPACE="$workspace_root"
 # which defaults to the workspace itself.
 project_directory="${project_directory:-$workspace_root}"
 cd "$workspace_root"
+resolve_hierarchy "$workspace_root"
 
 # Join under the engine's own client type. squad builds from mco-org (the
 # documented install) accept only claude, codex, gemini, and opencode, so on
@@ -822,6 +1061,7 @@ finish_run() {
     stop_reason="${stop_reason:-wrapper exited before finalization (exit $exit_status)}"
     write_status failed "$exit_status"
   fi
+  [[ -z "$prompt_file" ]] || rm -f "$prompt_file"
   squad leave "$worker_id" >/dev/null 2>&1 || true
 }
 trap finish_run EXIT
@@ -968,6 +1208,8 @@ write_status() {
     else
       printf 'plan=%s\n' "$plan_path"
     fi
+    printf 'parent=%s\ndepth=%s\nbudget_tokens=%s\nmax_children=%s\n' \
+      "$parent_id" "$depth" "$budget_tokens" "$max_children"
   } >"$status_file.tmp"
   mv "$status_file.tmp" "$status_file"
   squad_record_status "$status_file"
@@ -979,6 +1221,111 @@ printf 'squad-worker: %s (%s) %s\n' "$worker_id" "$engine" "$(squad_worker_model
 
 # Live monitor for this run beside the manager (see lib/squad-panes.sh).
 open_monitor_pane() {
+  if [[ "$view" == orchestration || "$view" == orchestration-branches ]]; then
+    local root_mgr="${SQUAD_MANAGER_ID:-${SQUAD_SM_MANAGER:-}}"
+    if [[ -z "$root_mgr" ]]; then
+      if [[ -n "$parent_id" && "$manager_id" == "$parent_id" ]]; then
+        root_mgr=manager
+      else
+        root_mgr="$manager_id"
+      fi
+    fi
+    _open_orchestration_split() {
+      local marker="$1" orchestration_script="$2" pane_title="$3" branch_root="${4:-}"
+      local monitor_pid="" existing_marker=""
+      if [[ -f "$marker" ]]; then
+        IFS= read -r monitor_pid <"$marker" || true
+        if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+          return 0
+        fi
+      elif [[ -z "$branch_root" && -n "$parent_id" ]]; then
+        for existing_marker in "$workspace_root/$output_directory"/.orchestration-*.pid; do
+          [[ -f "$existing_marker" && "$existing_marker" != */.orchestration-branch-*.pid ]] || continue
+          IFS= read -r monitor_pid <"$existing_marker" || true
+          if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+            return 0
+          fi
+        done
+      fi
+      if ! squad_panes_lock "$workspace_root/$output_directory" .orchestration.lock; then
+        echo "squad-worker: timed out waiting for pane lock; check $workspace_root/$output_directory/.orchestration.lock" >&2
+        return 1
+      fi
+      if [[ -f "$marker" ]]; then
+        IFS= read -r monitor_pid <"$marker" || true
+        if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+          squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
+          return 0
+        fi
+      elif [[ -z "$branch_root" && -n "$parent_id" ]]; then
+        for existing_marker in "$workspace_root/$output_directory"/.orchestration-*.pid; do
+          [[ -f "$existing_marker" && "$existing_marker" != */.orchestration-branch-*.pid ]] || continue
+          IFS= read -r monitor_pid <"$existing_marker" || true
+          if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+            squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
+            return 0
+          fi
+        done
+      fi
+      local ready_file
+      ready_file="$(mktemp "$workspace_root/$output_directory/.monitor-ready.XXXXXXXX")" || {
+        squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
+        return 1
+      }
+      rm -f "$ready_file"
+      {
+        printf '#!/bin/bash\n'
+        printf 'export SQUAD_WORKER_MONITOR_READY=%q\n' "$ready_file"
+        printf 'export SQUAD_DEVKIT_MANAGER_WRAPPER_PID=%q\n' "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}"
+        printf 'export SQUAD_DEVKIT_SESSION_START=%q\n' "${SQUAD_DEVKIT_SESSION_START:-}"
+        printf 'export SQUAD_MANAGER_ID=%q\n' "${SQUAD_MANAGER_ID:-$root_mgr}"
+        if [[ -n "$branch_root" ]]; then
+          printf 'exec %q --root %q %q\n' "$script_dir/squad-orchestration.sh" "$branch_root" "$workspace_root/$output_directory"
+        else
+          printf 'exec %q %q\n' "$script_dir/squad-orchestration.sh" "$workspace_root/$output_directory"
+        fi
+      } >"$orchestration_script"
+      chmod +x "$orchestration_script"
+      if ! squad_open_monitor "$workspace_root/$orchestration_script" "$pane_title" "$workspace_root" \
+        "$workspace_root/$output_directory" "$workspace_root/$orchestration_script" "$([[ "$required_split" == 1 ]] && printf required)"; then
+        rm -f "$ready_file"
+        squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
+        return 1
+      fi
+      local max_wait=4
+      (( required_split == 1 )) && max_wait=40
+      for _ in $(seq 1 "$max_wait"); do
+        if [[ -f "$ready_file" ]]; then
+          IFS= read -r monitor_pid <"$ready_file" || true
+          if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+            printf '%s\n' "$monitor_pid" >"$marker"
+            rm -f "$ready_file"
+            squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
+            return 0
+          fi
+        fi
+        sleep 0.25
+      done
+      rm -f "$ready_file"
+      squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
+      (( required_split == 1 )) || return 0
+      echo "squad-worker: monitor did not render or exited; fix the terminal or use tmux" >&2
+      return 1
+    }
+    _open_orchestration_split \
+      "$workspace_root/$output_directory/.orchestration-${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-$root_mgr}.pid" \
+      "$output_directory/orchestration.sh" \
+      "squad orchestration" \
+      "" || return 1
+    if [[ "$view" == orchestration-branches && -n "$parent_id" ]]; then
+      _open_orchestration_split \
+        "$workspace_root/$output_directory/.orchestration-branch-$parent_id.pid" \
+        "$output_directory/orchestration-branch-$parent_id.sh" \
+        "squad orchestration · $parent_id" \
+        "$parent_id" || return 1
+    fi
+    return 0
+  fi
   local pane_script="$output_directory/$run_name.monitor.sh"
   local dashboard_script="$output_directory/dashboard.sh"
   local ready_file
@@ -1032,11 +1379,39 @@ absolute_log="$workspace_root/$log_file"
 # shellcheck disable=SC2034 # read by lib/engines/*.sh
 engine_command=()
 status=0
-squad_engine build_command || status=$?
+if [[ "$role" == sub-manager ]]; then
+  if [[ ! -x "$script_dir/squad-submanager.sh" ]]; then
+    failure_reason="sub-manager driver missing"
+    echo "squad-worker: $failure_reason" >&2
+    status=1
+  else
+    prompt_file="$workspace_root/$output_directory/$run_name.prompt"
+    printf '%s\n' "$prompt" >"$prompt_file"
+  fi
+else
+  squad_engine build_command || status=$?
+fi
 
 run_engine() {
   cd "$engine_directory"
   unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+  if [[ "$role" == sub-manager ]]; then
+    export SQUAD_SM_ID="$worker_id" \
+      SQUAD_SM_TASK="$task_id" \
+      SQUAD_SM_MANAGER="$manager_id" \
+      SQUAD_SM_WORKSPACE="$workspace_root" \
+      SQUAD_SM_DIR="$engine_directory" \
+      SQUAD_SM_PROMPT_FILE="$prompt_file" \
+      SQUAD_SM_LOG="$absolute_log" \
+      SQUAD_SM_REPORT="$absolute_report" \
+      SQUAD_SM_ENGINE="$engine" \
+      SQUAD_SM_MODEL="$model" \
+      SQUAD_SM_PLAN="$plan_path" \
+      SQUAD_SM_BUDGET="$budget_tokens" \
+      SQUAD_SM_MAX_CHILDREN="$max_children" \
+      SQUAD_SM_WORKER="$script_dir/squad-worker.sh"
+    exec "$script_dir/squad-submanager.sh"
+  fi
   squad_engine run_and_extract_report
 }
 
@@ -1106,6 +1481,10 @@ if (( status == 0 )); then
     printf '\nsquad-worker: %s\n' "$stop_reason" >>"$log_file"
   fi
 fi
+if [[ -n "$prompt_file" ]]; then
+  rm -f "$prompt_file"
+  prompt_file=""
+fi
 
 reported_model="$(squad_engine reported_models "$log_file")"
 [[ -z "$reported_model" ]] || actual_model="$reported_model"
@@ -1164,7 +1543,7 @@ if [[ -s "$report_file" ]]; then
 fi
 if (( status != 0 )) || [[ -z "${report//[[:space:]]/}" ]]; then
   if [[ -z "${report//[[:space:]]/}" ]]; then
-    failure_reason="${stop_reason:-worker returned no report (engine exit $status)}"
+    failure_reason="${failure_reason:-${stop_reason:-worker returned no report (engine exit $status)}}"
   fi
   (( status != 0 )) || status=1
   state=failed

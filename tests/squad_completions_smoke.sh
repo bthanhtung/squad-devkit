@@ -23,6 +23,8 @@ check_bash _squad_devkit ccr squad-devkit --disable-workers cc
 check_bash _squad_worker strong squad-worker dev-1 --model-tier st
 check_bash _squad_worker --models squad-worker --models
 check_bash _squad_worker opencode squad-worker worker-1 --engine open
+check_bash _squad_worker sub-manager squad-worker dev-1 --role sub
+check_bash _squad_worker --tree squad-worker --tre
 
 command -v zsh >/dev/null || fail 'zsh is required for completion checks'
 # Exercise the real Zsh completion system in a pseudo terminal, including _arguments.
@@ -52,5 +54,7 @@ check 'squad-devkit --manager co' 'squad-devkit --manager codex '
 check 'squad-devkit --workers ag' 'squad-devkit --workers agy '
 check 'squad-devkit --disable-workers cc' 'squad-devkit --disable-workers ccr '
 check 'squad-worker worker-1 --engine open' 'squad-worker worker-1 --engine opencode '
+check 'squad-worker dev-1 --role sub' 'squad-worker dev-1 --role sub-manager '
+check 'squad-worker dev-1 --tre' 'squad-worker dev-1 --tree '
 ZSH
 printf 'PASS: Bash and Zsh completions\n'

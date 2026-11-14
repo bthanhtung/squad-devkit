@@ -27,8 +27,8 @@ unset TMUX TMUX_PANE SQUAD_DEVKIT_GHOSTTY_TERMINAL SQUAD_MANAGER_ID SQUAD_DEVKIT
   ZELLIJ ZELLIJ_SESSION_NAME DISPLAY WAYLAND_DISPLAY
 export TERM_PROGRAM=test-terminal SQUAD_WORKER_PANES=0 SQUAD_WORKER_DASHBOARD=0
 
-# The seven roles the launcher copies, in the order the copy loop runs them.
-expected_roles="$(printf '%s\n' dev manager-devkit researcher reviewer security tester ui-ux | LC_ALL=C sort)"
+# The eight roles the launcher copies, in the order the copy loop runs them.
+expected_roles="$(printf '%s\n' dev manager-devkit researcher reviewer security sub-manager tester ui-ux | LC_ALL=C sort)"
 template_marker='<!-- squad-devkit template'
 
 # Fake engines only: claude starts the manager, codex runs workers. Neither calls a model.
@@ -81,12 +81,12 @@ grep -q '^manager: ' "$temp_directory/dry-run" || fail
 [[ ! -e "$project_directory/.squad" ]] || fail
 pass 'dry run prints the manager command and creates no .squad'
 
-# Fresh project: prepare_project copies all seven role templates.
+# Fresh project: prepare_project copies all eight role templates.
 launch
 while IFS= read -r role; do
   cmp -s "$repo_root/templates/devkit/$role.md" "$roles_directory/$role.md" || fail "$role.md not copied"
 done <<<"$expected_roles"
-pass 'fresh project gets all seven role templates copied verbatim'
+pass 'fresh project gets all eight role templates copied verbatim'
 [[ "$(cat "$temp_directory/launch-stderr")" != *'keeping customized'* ]] || fail
 pass 'fresh launch prints no customized-role note'
 
@@ -97,10 +97,10 @@ grep -qF "$policy" "$roles_directory/manager-devkit.md" || fail
 grep -qF "$policy" "$engine_log" || fail
 pass 'manager-devkit: default team is manager plus dev, ui-ux and security opt-in, in template and launched prompt'
 
-# Templates: exactly the seven roles, each marked, and every one is in the copy loop.
+# Templates: exactly the eight roles, each marked, and every one is in the copy loop.
 template_roles="$(for file in "$repo_root"/templates/devkit/*.md; do basename "$file" .md; done | LC_ALL=C sort)"
 [[ "$template_roles" == "$expected_roles" ]] || fail "templates/devkit has: $template_roles"
-pass 'templates/devkit contains exactly the seven expected role files'
+pass 'templates/devkit contains exactly the eight expected role files'
 for file in "$repo_root"/templates/devkit/*.md; do
   [[ "$(head -n 1 "$file")" == "$template_marker"* ]] || fail "$file does not start with the template marker"
 done
@@ -140,11 +140,11 @@ bash_roles="$(
   printf '%s\n' "${COMPREPLY[@]}" | LC_ALL=C sort
 )"
 [[ "$bash_roles" == "$expected_roles" ]] || fail "bash --role completion: $bash_roles"
-pass 'bash completion offers exactly the seven roles for squad-worker --role'
+pass 'bash completion offers exactly the eight roles for squad-worker --role'
 zsh_roles="$(sed -n "s/.*'--role\[Role prompt\]:role:(\([^)]*\))'.*/\1/p" "$repo_root/scripts/completions/_squad-devkit" |
   tr ' ' '\n' | LC_ALL=C sort)"
 [[ "$zsh_roles" == "$expected_roles" ]] || fail "zsh --role completion: $zsh_roles"
-pass 'zsh completion offers exactly the seven roles for squad-worker --role'
+pass 'zsh completion offers exactly the eight roles for squad-worker --role'
 
 # Workers: security, reviewer, and researcher run in place; no worktree.
 # The launcher leaves "manager" on exit (racy to rejoin), so the workers report to "lead".

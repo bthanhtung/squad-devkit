@@ -22,7 +22,7 @@ _squad_devkit() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--manager --setup --workers --disable-workers --doctor --list --ghostty --tmux --yolo --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
+  local opts="--manager --setup --workers --disable-workers --view --doctor --list --ghostty --tmux --yolo --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
   local managers="claude codex agy gemini grok opencode"
 
   case "$prev" in
@@ -35,6 +35,11 @@ _squad_devkit() {
       local engines="claude codex opencode grok agy ccr"
       # shellcheck disable=SC2207
       COMPREPLY=( $(compgen -W "$engines" -- "$cur") )
+      return 0
+      ;;
+    --view)
+      # shellcheck disable=SC2207
+      COMPREPLY=( $(compgen -W "orchestration panes" -- "$cur") )
       return 0
       ;;
     --task|--prompt)
@@ -58,9 +63,9 @@ _squad_worker() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review --own --no-plan-context -h --help"
+  local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review --own --no-plan-context --parent --budget-tokens --max-children --tree --json -h --help"
   local engines="claude codex opencode grok agy ccr"
-  local roles="dev tester reviewer researcher ui-ux security manager-devkit"
+  local roles="dev tester reviewer researcher ui-ux security manager-devkit sub-manager"
   local profiles="high medium max"
 
   case "$prev" in
@@ -81,6 +86,9 @@ _squad_worker() {
       ;;
     --model)
       # Model names belong to the installed engine/provider, not a fixed catalog.
+      return 0
+      ;;
+    --parent|--budget-tokens|--max-children)
       return 0
       ;;
     --profile)

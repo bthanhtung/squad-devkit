@@ -289,17 +289,17 @@ run_setup_wizard() {
   printf '  Managers:\n' >&2
   for client in "${manager_clients[@]}"; do
     if command -v "$client" >/dev/null 2>&1; then
-      printf '    %-9s %-16s installed\n' "$client" "$(manager_label "$client")" >&2
+      printf '    %-9s %-15s %s\n' "$client" "installed" "$(manager_label "$client")" >&2
     else
-      printf '    %-9s %-16s not installed\n' "$client" "$(manager_label "$client")" >&2
+      printf '    %-9s %-15s %s\n' "$client" "not installed" "$(manager_label "$client")" >&2
     fi
   done
   printf '  Workers:\n' >&2
   for engine in "${worker_engine_order[@]}"; do
     if command -v "$engine" >/dev/null 2>&1; then
-      printf '    %-9s %-16s installed\n' "$engine" "$(worker_role_label "$engine")" >&2
+      printf '    %-9s %-15s %s\n' "$engine" "installed" "$(worker_role_label "$engine")" >&2
     else
-      printf '    %-9s %-16s not installed\n' "$engine" "$(worker_role_label "$engine")" >&2
+      printf '    %-9s %-15s %s\n' "$engine" "not installed" "$(worker_role_label "$engine")" >&2
     fi
   done
 

@@ -7,6 +7,8 @@ releases.
 ## [Unreleased]
 
 ### Added
+- Hierarchy mode (`squad-worker <id> --role sub-manager`, `scripts/squad-submanager.sh`, `templates/devkit/sub-manager.md`, `--parent`, `--budget-tokens`, `--max-children`, `squad-worker --tree [--json]`): delegates complex tasks across multiple independent areas to sub-managers who plan and review child workers running in the sub-manager's worktree. The outer driver runs child workers directly so sandboxed engines without network access can execute children safely, while authority to merge, commit, and push remains strictly with the root manager.
+- Orchestration view (`squad-orchestration`, `squad-devkit --view orchestration|panes`, `SQUAD_WORKER_VIEW`, `view=` in config): manager sessions now default to `orchestration`, where the first worker opens a single live orchestration view beside the manager and later workers reuse it. Pass `--view panes`, set `SQUAD_WORKER_VIEW=panes`, or set `view=panes` in `~/.config/squad-devkit/config` to return to one monitor split pane per worker (standalone `squad-worker` runs still default to `panes`). `install-devkit.sh` links `squad-orchestration` into the bin directory, and `squad-devkit --doctor` reports `View: <mode> (<flag|env|config|default>)`.
 - Interactive setup wizard (`squad-devkit --setup`, and the first interactive
   `install-devkit.sh` run): detects installed AI CLIs and offers a default
   setup (manager plus every worker in the built-in trust order) or a personal
@@ -51,6 +53,7 @@ releases.
   structured stream JSON, verifying a single terminal `SUCCESS` event and
   extracting assistant/result model usage evidence.
 - Add session-only `--yolo` for Claude, Codex, and AGY managers/workers, with explicit backend/fallback inheritance and sandbox conflict checks.
+- AGY workers run inside AGY's sandbox with all commands allowed (headless AGY aborts on any denied command).
 - Plan guardrails: `squad-worker --plan FILE` validates a plan
   (`templates/devkit/plan.md.example`) and records it in the status file and
   report; manager context requires it unless `--no-plan "REASON"` or

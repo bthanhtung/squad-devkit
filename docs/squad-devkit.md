@@ -50,7 +50,7 @@ least one manager CLI and, for workers, `codex` and/or `ccr`
 /absolute/path/to/squad/scripts/install-devkit.sh
 ```
 
-The installer links `squad-devkit`, `squad-worker`, and `squad-monitor` into
+The installer links `squad-devkit`, `squad-worker`, `squad-monitor`, and `squad-orchestration` into
 `~/.local/bin` (set `SQUAD_DEVKIT_BIN_DIR` for another directory). It then picks the manager as
 described below and lists the worker engines it found.
 
@@ -274,6 +274,10 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 | `--sandbox`, `--no-sandbox` | Force or disable engine sandbox (codex, claude; default sandboxed) |
 | `--merge ID` | Apply a worker's worktree changes (three-way, uncommitted) and remove it |
 | `--discard ID\|all` | Remove a worker's worktree and branch without applying them |
+| `--parent ID` | Parent worker ID for hierarchy tracking (depth 2) |
+| `--budget-tokens N` | Token budget cap for sub-manager branch (default 600000) |
+| `--max-children N` | Maximum children for a sub-manager (1–6, default 3) |
+| `--tree` | Show worker hierarchy and branch token totals (`--json` for JSON) |
 
 The report is printed on stdout and saved to `.squad/workers/<id>-<time>.md`,
 with the engine log and a `.status` file (state, pid, tokens) beside it.
@@ -307,6 +311,31 @@ edit them.)
   `SQUAD_WORKER_WORKTREE=0` turns isolation off.
 
 Housekeeping never removes runs whose worktree is still unmerged.
+
+### Hierarchy mode
+
+When a task has high complexity and splits cleanly into two or more independent areas, the root manager can delegate each area to a sub-manager instead of planning and briefing every task directly:
+
+```sh
+squad-worker sm-api --role sub-manager --engine agy --model gemini-4-argon-high \
+  --own src/api/ --budget-tokens 600000 --max-children 3 \
+  --plan .squad/plans/feature.md --brief-file - <<'BRIEF'
+Implement the v2 auth endpoints.
+Files you own: src/api/auth/
+Acceptance: All unit tests pass, OpenAPI schema validated.
+Verify: npm test
+BRIEF
+```
+
+- **When it saves tokens**: On large multi-area tasks, delegating keeps the root manager's context window lean while cost-effective models handle localized planning and review loops. On small or moderate tasks, brief workers directly to avoid the 2–3 turn sub-manager overhead.
+- **Flags and controls**:
+  - `--role sub-manager`: uses the sub-manager driver (`scripts/squad-submanager.sh`) and role prompt (`templates/devkit/sub-manager.md`).
+  - `--parent ID`: records parent-child hierarchy. Hierarchy depth is capped at 2 (sub-managers cannot start sub-managers).
+  - `--budget-tokens N`: sets the token budget cap for the entire branch (sub-manager turns plus children; default 600,000). The driver stops before initiating a new turn or child when the branch total exceeds the budget.
+  - `--max-children N`: limits the number of children the sub-manager may plan (1–6, default 3; prefer 1–3).
+  - `squad-worker --tree [--json]`: displays the active worker hierarchy, states, models, and branch token usage totals in text or JSON.
+- **Root authority**: Authority to merge (`squad-worker --merge sm-<area>`), commit, and push remains strictly with the root manager. Sub-managers plan and review in their own worktree, but cannot merge worktrees or push code.
+- **Sandbox execution**: The driver orchestrates child workers directly in the sub-manager's worktree. Sandboxed AI engines (such as Antigravity `agy`) have no network access and cannot start child AI workers or write outside their worktree, so the outer driver handles child execution and passes results back to the sub-manager for review.
 
 ## Plans and guardrails
 
@@ -356,7 +385,7 @@ commit or push that cannot be verified is denied; run it as plain
 `git -C <repo> <op>`.
 
 **Installed commands.** The installer links `squad-devkit`, `squad-worker`,
-`squad-monitor`, `squad-route` (the advisory router, see below), and
+`squad-monitor`, `squad-orchestration`, `squad-route` (the advisory router, see below), and
 `squad-ask` (questions between workers).
 
 ### Limitations
@@ -470,9 +499,11 @@ demand, and `squad-devkit --clean-all` removes every finished run.
 
 ## Watching workers
 
-Every worker opens a live monitor next to the manager while it runs. The first
-worker opens to the manager's right, later workers stack below the previous one,
-and focus stays on the manager. squad-devkit uses the terminal the manager runs
+In a manager session, `orchestration` is the default view: the first worker opens one live `squad-orchestration` pane to the manager's right (or one orchestration window in terminals without a split API) showing the manager → workers flow grouped by plan, each worker's state, engine/model, elapsed time, tokens, fix rounds, and a message timeline (brief, QUESTION, ANSWER, completed/failed). Later workers reuse that pane without opening more splits.
+
+To open one live monitor pane per worker instead (the first worker to the manager's right, later workers stacked below the previous one), pass `squad-devkit --view panes`, set `SQUAD_WORKER_VIEW=panes`, or add `view=panes` to `~/.config/squad-devkit/config`. Standalone `squad-worker` runs default to `panes`. `squad-devkit --doctor` reports the active view and its source (`flag`, `env`, `config`, or `default`).
+
+squad-devkit uses the terminal the manager runs
 in (`scripts/lib/squad-panes.sh`), checked in this order:
 
 | Terminal | Detected by | How the monitor opens |

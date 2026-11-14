@@ -71,6 +71,8 @@ build_instructions() {
 export SQUAD_MANAGER_ID="$manager_id"
 export SQUAD_DEVKIT_WORKSPACE="$PWD"
 export SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$"
+SQUAD_WORKER_VIEW="${SQUAD_WORKER_VIEW:-$(devkit_config_get view)}"
+export SQUAD_WORKER_VIEW="${SQUAD_WORKER_VIEW:-orchestration}"
 
 # When Claude Code is the manager, a StopFailure hook hands the session to a
 # fallback manager once the account hits its usage or billing limit.
