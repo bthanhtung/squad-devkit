@@ -92,6 +92,7 @@ done
 echo 'PASS: catalog model names cannot inject prompt lines'
 rm "$project_directory/.squad/worker-models.json"
 rmdir "$project_directory/.squad"
+rm -f "$test_bin/agy"
 no_workers="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --disable-workers claude,codex,opencode,grok,agy,ccr)"
 [[ "$no_workers" != *provider_availability* ]] || fail
 session_name="$(printf '%s\n' "$dry_run" | awk '/^Session: / { print $2 }')"
