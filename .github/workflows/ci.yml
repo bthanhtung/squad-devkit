@@ -108,6 +108,7 @@ jobs:
           bash tests/squad_devkit_roles_smoke.sh
           bash tests/squad_devkit_clean_smoke.sh
           bash tests/squad_worker_plan_smoke.sh
+          bash tests/squad_worker_routing_smoke.sh
           PHASE4_GUARD_PARITY=1 bash tests/squad_devkit_manager_guard_smoke.sh
           SQUAD_RUST_DISABLE=1 bash tests/squad_devkit_manager_guard_smoke.sh
           bash tests/phase4_plan_parity.sh

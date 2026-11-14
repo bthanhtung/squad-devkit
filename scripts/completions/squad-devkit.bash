@@ -58,7 +58,7 @@ _squad_worker() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review --own --no-plan-context -h --help"
+  local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --tier-reason --verify --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review --own --no-plan-context -h --help"
   local engines="claude codex opencode grok agy ccr"
   local roles="dev tester reviewer researcher ui-ux security manager-devkit"
   local profiles="high medium max"
