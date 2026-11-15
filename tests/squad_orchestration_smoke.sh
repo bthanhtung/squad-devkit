@@ -1213,4 +1213,219 @@ done
 legacy_out="$(run_scope 120 --layout tree)"
 grep -q "legacy-1" <<< "$legacy_out" || { echo "FAIL: legacy rows should show when no manager id is known" >&2; exit 1; }
 
+# ==============================================================================
+# S. Auto-close when squad is idle
+# ==============================================================================
+autoclose_dir="$tmp/autoclose_workers"
+mkdir -p "$autoclose_dir"
+ac_now="$(date +%s)"
+cat > "$autoclose_dir/w-1.status" <<EOF
+worker=w-1
+manager=m-auto
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+state=completed
+started=$(( ac_now - 60 ))
+finished=$(( ac_now - 20 ))
+plan=/path/to/plan-auto.md
+EOF
+
+# 1. --once output unchanged (no countdown text)
+once_out="$(SQUAD_MANAGER_ID=m-auto "$root/scripts/squad-orchestration.sh" --once "$autoclose_dir")"
+if grep -qE "closing in|All done · closing" <<< "$once_out"; then
+  echo "FAIL: --once output contained countdown text" >&2
+  exit 1
+fi
+
+# 2. Fixture where all workers are completed, SQUAD_ORCHESTRATION_HOLD=1:
+#    live process exits within ~4 s with status 0, and a marker file containing its pid is removed.
+ac_out_1="$tmp/autoclose_1.log"
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=1 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-auto \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_1" 2>&1 &
+ac_pid_1="$!"
+echo "$ac_pid_1" > "$autoclose_dir/.orchestration-m-m_auto.pid"
+
+ac_exited_1=0
+ac_deadline_1=$(( $(date +%s) + 5 ))
+while (( $(date +%s) < ac_deadline_1 )); do
+  if ! kill -0 "$ac_pid_1" 2>/dev/null; then
+    ac_exited_1=1
+    break
+  fi
+  sleep 0.1
+done
+
+if (( ac_exited_1 == 0 )); then
+  echo "FAIL: live process with SQUAD_ORCHESTRATION_HOLD=1 did not exit within ~4 s" >&2
+  kill -9 "$ac_pid_1" 2>/dev/null || true
+  exit 1
+fi
+
+ac_status_1=0
+wait "$ac_pid_1" || ac_status_1=$?
+if (( ac_status_1 != 0 )); then
+  echo "FAIL: live process auto-close exited with status $ac_status_1, expected 0" >&2
+  cat "$ac_out_1" >&2
+  exit 1
+fi
+
+if [[ -f "$autoclose_dir/.orchestration-m-m_auto.pid" ]]; then
+  echo "FAIL: marker file was not removed on auto-close" >&2
+  exit 1
+fi
+
+# 3. Same with one worker state=running (pid = a live pid such as test's $$):
+#    still alive after 3 s; then kill it.
+cat > "$autoclose_dir/w-running.status" <<EOF
+worker=w-running
+manager=m-auto
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+state=running
+pid=$$
+started=$(( ac_now - 30 ))
+plan=/path/to/plan-auto.md
+EOF
+
+ac_out_run="$tmp/autoclose_run.log"
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=1 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-auto \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_run" 2>&1 &
+ac_pid_run="$!"
+
+sleep 3
+if ! kill -0 "$ac_pid_run" 2>/dev/null; then
+  echo "FAIL: live process with running worker unexpectedly exited" >&2
+  exit 1
+fi
+kill "$ac_pid_run" 2>/dev/null || true
+wait "$ac_pid_run" 2>/dev/null || true
+rm -f "$autoclose_dir/w-running.status"
+
+# 4. SQUAD_ORCHESTRATION_HOLD=0 → still alive after 3 s.
+ac_out_zero="$tmp/autoclose_zero.log"
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=0 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-auto \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_zero" 2>&1 &
+ac_pid_zero="$!"
+
+sleep 3
+if ! kill -0 "$ac_pid_zero" 2>/dev/null; then
+  echo "FAIL: live process with SQUAD_ORCHESTRATION_HOLD=0 unexpectedly exited" >&2
+  exit 1
+fi
+kill "$ac_pid_zero" 2>/dev/null || true
+wait "$ac_pid_zero" 2>/dev/null || true
+
+# 5. During countdown, write a new status with state=running → no exit.
+ac_out_dyn="$tmp/autoclose_dyn.log"
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=3 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-auto \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_dyn" 2>&1 &
+ac_pid_dyn="$!"
+
+sleep 1
+cat > "$autoclose_dir/w-new.status" <<EOF
+worker=w-new
+manager=m-auto
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+state=running
+pid=$$
+started=$(date +%s)
+plan=/path/to/plan-auto.md
+EOF
+
+sleep 3
+if ! kill -0 "$ac_pid_dyn" 2>/dev/null; then
+  echo "FAIL: live process exited despite worker becoming running during countdown" >&2
+  exit 1
+fi
+kill "$ac_pid_dyn" 2>/dev/null || true
+wait "$ac_pid_dyn" 2>/dev/null || true
+rm -f "$autoclose_dir/w-new.status"
+
+# 6. Fixture dir with only another manager's status files (manager=m-other, completed),
+#    SQUAD_MANAGER_ID=m-x, SQUAD_ORCHESTRATION_HOLD=1, live mode → process exits 0 within ~4 s.
+ac_empty_dir="$tmp/autoclose_empty"
+mkdir -p "$ac_empty_dir"
+cat > "$ac_empty_dir/w-other.status" <<EOF
+worker=w-other
+manager=m-other
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+state=completed
+started=$(( $(date +%s) - 60 ))
+finished=$(( $(date +%s) - 20 ))
+plan=/path/to/plan-other.md
+EOF
+
+ac_out_empty="$tmp/autoclose_empty.log"
+COLUMNS=100 \
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=1 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-x \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$ac_empty_dir" >"$ac_out_empty" 2>&1 &
+ac_pid_empty="$!"
+echo "$ac_pid_empty" > "$ac_empty_dir/.orchestration-m-m_x.pid"
+
+ac_exited_empty=0
+ac_deadline_empty=$(( $(date +%s) + 5 ))
+while (( $(date +%s) < ac_deadline_empty )); do
+  if ! kill -0 "$ac_pid_empty" 2>/dev/null; then
+    ac_exited_empty=1
+    break
+  fi
+  sleep 0.1
+done
+
+if (( ac_exited_empty == 0 )); then
+  echo "FAIL: empty-scope live process with SQUAD_ORCHESTRATION_HOLD=1 did not exit within ~4 s" >&2
+  kill -9 "$ac_pid_empty" 2>/dev/null || true
+  exit 1
+fi
+
+ac_status_empty=0
+wait "$ac_pid_empty" || ac_status_empty=$?
+if (( ac_status_empty != 0 )); then
+  echo "FAIL: empty-scope live process auto-close exited with status $ac_status_empty, expected 0" >&2
+  cat "$ac_out_empty" >&2
+  exit 1
+fi
+
+if [[ -f "$ac_empty_dir/.orchestration-m-m_x.pid" ]]; then
+  echo "FAIL: marker file was not removed on empty-scope auto-close" >&2
+  exit 1
+fi
+
+if ! grep -q "Nothing running · closing in" "$ac_out_empty"; then
+  echo "FAIL: empty-scope footer text did not include 'Nothing running · closing in'" >&2
+  cat "$ac_out_empty" >&2
+  exit 1
+fi
+
 echo "PASS: squad_orchestration_smoke"

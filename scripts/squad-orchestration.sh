@@ -590,6 +590,10 @@ STOPPED_COUNT=0
 LOST_COUNT=0
 TOTAL_TOKENS=0
 
+AUTO_CLOSE_PINNED=0
+AUTO_CLOSE_COUNTING=0
+AUTO_CLOSE_REMAINING=0
+
 FRAME_TPL=("" "" "" "")
 
 load_data() {
@@ -3501,8 +3505,23 @@ build_lifecycle_frame() {
   fi
 
   if (( is_live == 1 )); then
-    local keys="l layout  a all managers  h history  f focus  q quit"
-    (( focus == 0 )) || keys="l layout  a all managers  f unfocus  q quit"
+    local keys=""
+    if (( AUTO_CLOSE_PINNED == 1 )); then
+      keys="pinned · q quit"
+    elif (( AUTO_CLOSE_COUNTING == 1 )); then
+      if (( columns >= 80 )); then
+        if (( TOTAL_WORKERS == 0 )); then
+          keys="Nothing running · closing in ${AUTO_CLOSE_REMAINING}s · p keep open · Enter close now"
+        else
+          keys="All done · closing in ${AUTO_CLOSE_REMAINING}s · p keep open · Enter close now"
+        fi
+      else
+        keys="closing in ${AUTO_CLOSE_REMAINING}s · p keep · ⏎ close"
+      fi
+    else
+      keys="l layout  a all managers  h history  f focus  q quit"
+      (( focus == 0 )) || keys="l layout  a all managers  f unfocus  q quit"
+    fi
     trunc_str "$keys" "$columns"
     frame+="${dim}${REPLY}${reset}"$'\n'
   fi
@@ -3775,7 +3794,23 @@ build_frame_templates() {
   # 5. Legend (1 line)
   local legend_plain="Legend: ● running ✓ completed ✗ failed ⏸ stopped ? lost"
   local legend_disp
-  if (( ${#legend_plain} > columns )); then
+  if (( AUTO_CLOSE_PINNED == 1 )); then
+    legend_disp="pinned · q quit"
+    trunc_str "$legend_disp" "$columns"
+    legend_disp="${dim}${REPLY}${reset}"
+  elif (( AUTO_CLOSE_COUNTING == 1 )); then
+    if (( columns >= 80 )); then
+      if (( TOTAL_WORKERS == 0 )); then
+        legend_disp="Nothing running · closing in ${AUTO_CLOSE_REMAINING}s · p keep open · Enter close now"
+      else
+        legend_disp="All done · closing in ${AUTO_CLOSE_REMAINING}s · p keep open · Enter close now"
+      fi
+    else
+      legend_disp="closing in ${AUTO_CLOSE_REMAINING}s · p keep · ⏎ close"
+    fi
+    trunc_str "$legend_disp" "$columns"
+    legend_disp="${dim}${REPLY}${reset}"
+  elif (( ${#legend_plain} > columns )); then
     legend_disp="${legend_plain:0:$columns}"
   elif (( use_color == 1 )); then
     legend_disp="Legend: ${c_running}● running${reset} ${c_completed}✓ completed${reset} ${c_failed}✗ failed${reset} ${c_stopped}⏸ stopped${reset} ${c_failed}? lost${reset}"
@@ -3843,6 +3878,93 @@ if (( once == 1 )) || { [[ ! -t 1 ]] && [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" != 1
   exit 0
 fi
 
+squad_panes_lock() {
+  local lock="$1/${2:-.pane.lock}"
+  for _ in $(seq 1 40); do
+    mkdir "$lock" 2>/dev/null && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+squad_panes_unlock() {
+  rmdir "$1/${2:-.pane.lock}" 2>/dev/null || true
+}
+
+holding_orchestration_lock=0
+try_auto_close() {
+  if ! squad_panes_lock "$workers_dir" .orchestration.lock; then
+    idle_start_sec=$SECONDS
+    return 1
+  fi
+  holding_orchestration_lock=1
+
+  load_data
+
+  local cancel_close=0
+  if (( RUNNING_COUNT > 0 )); then
+    cancel_close=1
+  else
+    local check_now="${SQUAD_ORCHESTRATION_NOW:-$(date +%s)}"
+    local wi=0
+    while (( wi < TOTAL_WORKERS )); do
+      local st="${W_STARTED[$wi]}"
+      if [[ -n "$st" && "$st" =~ ^[0-9]+$ ]] && (( st >= check_now - 10 )); then
+        cancel_close=1
+        break
+      fi
+      wi=$(( wi + 1 ))
+    done
+  fi
+
+  if (( cancel_close == 1 )); then
+    if (( RUNNING_COUNT > 0 )); then
+      idle_start_sec=0
+      AUTO_CLOSE_COUNTING=0
+      AUTO_CLOSE_REMAINING=0
+    else
+      idle_start_sec=$SECONDS
+    fi
+    squad_panes_unlock "$workers_dir" .orchestration.lock
+    holding_orchestration_lock=0
+    build_frame_templates
+    subframe=0
+    return 1
+  fi
+
+  local mf
+  for mf in "$workers_dir"/.orchestration-*.pid; do
+    if [[ -f "$mf" ]]; then
+      local mpid=""
+      IFS= read -r mpid <"$mf" || true
+      mpid="${mpid//[[:space:]]/}"
+      if [[ "$mpid" == "$$" ]]; then
+        rm -f "$mf"
+      fi
+    fi
+  done
+
+  squad_panes_unlock "$workers_dir" .orchestration.lock
+  holding_orchestration_lock=0
+
+  [[ -z "$saved_tty" ]] || stty "$saved_tty" 2>/dev/null || true
+
+  if [[ -t 1 ]]; then
+    printf '\033[?2026l\033[?25h\033[0m\033[H\033[2J'
+    clear 2>/dev/null || true
+  fi
+
+  exit 0
+}
+
+cleanup_live_session() {
+  if (( holding_orchestration_lock == 1 )); then
+    squad_panes_unlock "$workers_dir" .orchestration.lock
+    holding_orchestration_lock=0
+  fi
+  [[ -z "$saved_tty" ]] || stty "$saved_tty" 2>/dev/null || true
+}
+
 # Interactive loop with two clocks:
 # - Data reload every SQUAD_ORCHESTRATION_INTERVAL (default 2s)
 # - Animation redraw at SQUAD_ORCHESTRATION_FPS (default 4 FPS) from cached templates
@@ -3861,11 +3983,34 @@ fi
 frames_per_reload=$(( interval * fps ))
 (( frames_per_reload >= 1 )) || frames_per_reload=1
 
+auto_close_hold=""
+if [[ -n "${SQUAD_ORCHESTRATION_HOLD:-}" ]]; then
+  if [[ "$SQUAD_ORCHESTRATION_HOLD" =~ ^[0-9]+$ ]]; then
+    auto_close_hold="$SQUAD_ORCHESTRATION_HOLD"
+  else
+    auto_close_hold=60
+  fi
+elif [[ -n "${SQUAD_WORKER_PANE_HOLD:-}" ]]; then
+  if [[ "$SQUAD_WORKER_PANE_HOLD" =~ ^[0-9]+$ ]]; then
+    auto_close_hold="$SQUAD_WORKER_PANE_HOLD"
+  else
+    auto_close_hold=60
+  fi
+else
+  auto_close_hold=60
+fi
+
+idle_start_sec=0
+is_pinned=0
+need_template_rebuild=0
+
 saved_tty=""
+trap 'cleanup_live_session' EXIT
+trap 'cleanup_live_session; trap - INT; kill -INT "$$"' INT
+trap 'cleanup_live_session; trap - TERM; kill -TERM "$$"' TERM
 if [[ -t 0 ]] && (( BASH_VERSINFO[0] < 4 )) && [[ "$frame_delay" == *.* ]]; then
   saved_tty="$(stty -g 2>/dev/null || true)"
   if [[ -n "$saved_tty" ]]; then
-    trap 'stty "$saved_tty" 2>/dev/null || true' EXIT INT TERM
     stty -icanon -echo 2>/dev/null || true
   fi
 fi
@@ -3882,9 +4027,56 @@ while true; do
 
   if (( need_reload == 1 || subframe >= frames_per_reload )); then
     load_data
-    build_frame_templates
     need_reload=0
     subframe=0
+    need_template_rebuild=1
+  fi
+
+  if (( RUNNING_COUNT == 0 )); then
+    if (( is_pinned == 1 )); then
+      if (( AUTO_CLOSE_PINNED != 1 || AUTO_CLOSE_COUNTING != 0 )); then
+        AUTO_CLOSE_PINNED=1
+        AUTO_CLOSE_COUNTING=0
+        AUTO_CLOSE_REMAINING=0
+        need_template_rebuild=1
+      fi
+    elif (( auto_close_hold > 0 )); then
+      if (( idle_start_sec == 0 )); then
+        idle_start_sec=$SECONDS
+      fi
+      rem=$(( auto_close_hold - (SECONDS - idle_start_sec) ))
+      (( rem < 0 )) && rem=0
+      if (( AUTO_CLOSE_COUNTING != 1 || AUTO_CLOSE_REMAINING != rem )); then
+        AUTO_CLOSE_COUNTING=1
+        AUTO_CLOSE_REMAINING="$rem"
+        need_template_rebuild=1
+      fi
+      if (( rem <= 0 )); then
+        try_auto_close
+      fi
+    else
+      if (( AUTO_CLOSE_COUNTING != 0 )); then
+        AUTO_CLOSE_COUNTING=0
+        AUTO_CLOSE_REMAINING=0
+        need_template_rebuild=1
+      fi
+    fi
+  else
+    idle_start_sec=0
+    if (( AUTO_CLOSE_COUNTING != 0 )); then
+      AUTO_CLOSE_COUNTING=0
+      AUTO_CLOSE_REMAINING=0
+      need_template_rebuild=1
+    fi
+    if (( is_pinned == 1 && AUTO_CLOSE_PINNED != 1 )); then
+      AUTO_CLOSE_PINNED=1
+      need_template_rebuild=1
+    fi
+  fi
+
+  if (( need_template_rebuild == 1 )); then
+    build_frame_templates
+    need_template_rebuild=0
   fi
 
   draw_fnum="${SQUAD_ORCHESTRATION_FRAME:-$frame_counter}"
@@ -3902,90 +4094,103 @@ while true; do
 
   if [[ -t 0 ]]; then
     key=""
+    key_pressed=0
     if (( BASH_VERSINFO[0] >= 4 )) || [[ "$frame_delay" != *.* ]]; then
-      IFS= read -r -s -t "$frame_delay" -n 1 key 2>/dev/null || true
+      if IFS= read -r -s -t "$frame_delay" -n 1 key 2>/dev/null; then
+        key_pressed=1
+      fi
     elif command -v perl >/dev/null 2>&1; then
-      key="$(perl -e 'vec($r="",0,1)=1; if(select($r,undef,undef,$ARGV[0])>0){sysread(STDIN,$c,1);print $c}' "$frame_delay" 2>/dev/null || true)"
+      key="$(perl -e 'vec($r="",0,1)=1; if(select($r,undef,undef,$ARGV[0])>0){sysread(STDIN,$c,1);print $c}else{exit 2}' "$frame_delay" 2>/dev/null)" && key_pressed=1
     else
       sleep "$frame_delay"
     fi
-    case "$key" in
-      q|Q)
-        exit 0
-        ;;
-      g|G)
-        layout="graph"
-        build_frame_templates
-        subframe=0
-        ;;
-      t|T)
-        layout="tree"
-        build_frame_templates
-        subframe=0
-        ;;
-      p|P)
-        layout="pipeline"
-        build_frame_templates
-        subframe=0
-        ;;
-      a|A)
-        all_managers=$(( 1 - all_managers ))
-        load_data
-        build_frame_templates
-        subframe=0
-        ;;
-      [1-9])
-        if (( key <= ${#SM_LIST[@]} )); then
-          zoom_target="${W_NAME[${SM_LIST[$(( key - 1 ))]}]}"
+    if (( key_pressed == 1 )); then
+      case "$key" in
+        q|Q)
+          exit 0
+          ;;
+        p|P)
+          is_pinned=1
+          AUTO_CLOSE_PINNED=1
+          AUTO_CLOSE_COUNTING=0
+          idle_start_sec=0
           build_frame_templates
           subframe=0
-        fi
-        ;;
-      z|Z)
-        if (( ${#SM_LIST[@]} > 0 )); then
-          next_sm_pos=0
-          if [[ -n "$zoom_target" ]]; then
-            sm_i=0
-            while (( sm_i < ${#SM_LIST[@]} )); do
-              if [[ "${W_NAME[${SM_LIST[$sm_i]}]}" == "$zoom_target" ]]; then
-                next_sm_pos=$(( (sm_i + 1) % ${#SM_LIST[@]} ))
-                break
-              fi
-              sm_i=$(( sm_i + 1 ))
-            done
+          ;;
+        ""|$'\n'|$'\r')
+          if (( AUTO_CLOSE_COUNTING == 1 )); then
+            try_auto_close
           fi
-          zoom_target="${W_NAME[${SM_LIST[$next_sm_pos]}]}"
+          ;;
+        g|G)
+          layout="graph"
           build_frame_templates
           subframe=0
-        fi
-        ;;
-      $'\033'|$'\177'|$'\010'|$'\b')
-        if [[ -z "$locked_root" && -n "$zoom_target" ]]; then
-          zoom_target=""
+          ;;
+        t|T)
+          layout="tree"
           build_frame_templates
           subframe=0
-        fi
-        ;;
-      f|F)
-        focus=$(( 1 - focus ))
-        build_frame_templates
-        subframe=0
-        ;;
-      h|H)
-        history_expanded=$(( 1 - history_expanded ))
-        build_frame_templates
-        subframe=0
-        ;;
-      $'\t'|l|L)
-        case "$layout" in
-          graph)    layout="pipeline" ;;
-          pipeline) layout="tree" ;;
-          tree)     layout="graph" ;;
-        esac
-        build_frame_templates
-        subframe=0
-        ;;
-    esac
+          ;;
+        a|A)
+          all_managers=$(( 1 - all_managers ))
+          load_data
+          build_frame_templates
+          subframe=0
+          ;;
+        [1-9])
+          if (( key <= ${#SM_LIST[@]} )); then
+            zoom_target="${W_NAME[${SM_LIST[$(( key - 1 ))]}]}"
+            build_frame_templates
+            subframe=0
+          fi
+          ;;
+        z|Z)
+          if (( ${#SM_LIST[@]} > 0 )); then
+            next_sm_pos=0
+            if [[ -n "$zoom_target" ]]; then
+              sm_i=0
+              while (( sm_i < ${#SM_LIST[@]} )); do
+                if [[ "${W_NAME[${SM_LIST[$sm_i]}]}" == "$zoom_target" ]]; then
+                  next_sm_pos=$(( (sm_i + 1) % ${#SM_LIST[@]} ))
+                  break
+                fi
+                sm_i=$(( sm_i + 1 ))
+              done
+            fi
+            zoom_target="${W_NAME[${SM_LIST[$next_sm_pos]}]}"
+            build_frame_templates
+            subframe=0
+          fi
+          ;;
+        $'\033'|$'\177'|$'\010'|$'\b')
+          if [[ -z "$locked_root" && -n "$zoom_target" ]]; then
+            zoom_target=""
+            build_frame_templates
+            subframe=0
+          fi
+          ;;
+        f|F)
+          focus=$(( 1 - focus ))
+          build_frame_templates
+          subframe=0
+          ;;
+        h|H)
+          history_expanded=$(( 1 - history_expanded ))
+          build_frame_templates
+          subframe=0
+          ;;
+        $'\t'|l|L)
+          case "$layout" in
+            graph)    layout="pipeline" ;;
+            pipeline) layout="tree" ;;
+            tree)     layout="graph" ;;
+          esac
+          build_frame_templates
+          subframe=0
+          ;;
+      esac
+    fi
   else
     sleep "$frame_delay"
   fi
