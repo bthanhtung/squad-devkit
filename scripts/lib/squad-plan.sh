@@ -77,6 +77,9 @@ plan_validate() {
     return 1
   fi
   for section in Triage Goal Perspectives Tasks Acceptance; do
+    if [[ "$section" == Perspectives && "$(plan_triage_level "$file" Risk)" == low && "$(plan_triage_level "$file" Complexity)" == low ]]; then
+      continue
+    fi
     if ! plan_has_section "$file" "$section"; then
       printf 'missing section: ## %s\n' "$section"
       missing=1
@@ -272,4 +275,35 @@ squad_record_status() {
     printf 'squad-worker: could not index status in SQLite: %s\n' "$file" >&2
   fi
   return 0
+}
+
+# Exact IDs in top-level bullets or ### headings; nested lines belong to the entry.
+# Prints the task body only when exactly one nonempty entry matches.
+plan_task() {
+  plan_section "$1" Tasks | TASK_ID="$2" awk '
+    /^- / || /^### / {
+      line = $0
+      sub(/^(- |### )/, "", line)
+      id = line
+      sub(/[ \t:(].*$/, "", id)
+      inside = (id == ENVIRON["TASK_ID"])
+      if (inside) {
+        matches++
+        sub(/^[^ \t:(]+[ \t]*/, "", line)
+        sub(/^\([^)]*\)[ \t]*/, "", line)
+        sub(/^:[ \t]*/, "", line)
+        body = body line "\n"
+        if (line ~ /[^ \t]/) nonempty = 1
+      }
+      next
+    }
+    inside {
+      body = body $0 "\n"
+      if ($0 ~ /[^ \t]/) nonempty = 1
+    }
+    END {
+      if (matches != 1 || !nonempty) exit 1
+      printf "%s", body
+    }
+  '
 }

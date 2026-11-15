@@ -60,7 +60,7 @@ work and stop when they are done, so idle agents cost nothing.
 
 ![Setup wizard](./assets/demo/setup-wizard.gif)
 
-**Orchestration view** — live graph, pipeline, and tree views switched with keys `g`, `p`, and `t` (and `a` / `--all-managers` to show every manager in the workspace):
+**Orchestration view** — live lifecycle graph, detailed cards, pipeline, and tree views (`g` graph, `c` cards, `t` tree, Tab / `l` cycles; `p` pins the pane) (and `a` / `--all-managers` to show every manager in the workspace):
 
 ![Orchestration view graph/pipeline/tree](./assets/demo/orchestration-graph.gif)
 
@@ -193,6 +193,10 @@ For high-complexity tasks that split into two or more independent areas, the roo
 ## Monitor and savings
 
 In a manager session, the first worker opens one live **orchestration view** (`squad-orchestration`) beside the manager: it shows the manager → workers flow grouped by plan, each worker's state, engine/model, elapsed time, tokens, fix rounds, and the message timeline (briefs, questions, answers, completions, failures). Later workers update the same view without opening more panes. Pass `squad-devkit --view panes` (or set `SQUAD_WORKER_VIEW=panes`, or `view=panes` in `~/.config/squad-devkit/config`) to open one monitor pane per worker instead (`panes` remains the default when running `squad-worker` directly).
+
+In the orchestration view, press `c` for cards with live activity, verification and merge status; select a worker with `j`/`k` and press `i` for details. See [watching workers](docs/squad-devkit.md#watching-workers) for layouts and controls. Set `SQUAD_DEVKIT_NOTIFY=0` to disable desktop notifications.
+
+Use `squad-worker dev-1 --plan .squad/plans/feature.md --task` to brief a worker from its plan task, `squad-devkit --stats --days 7` for recent run statistics, or `squad-devkit --doctor --split-test` to check a monitor split.
 
 In `panes` mode, each worker pane streams its activity (commands, file changes, tool calls,
 messages) under a single live status line, without redrawing the screen, so it

@@ -374,11 +374,13 @@ The manager workflow is enforced with tooling, not only with prompts.
 
 **Plan format.** A plan is a markdown file under `.squad/plans/`; copy
 `templates/devkit/plan.md.example`. Headings match case-insensitively.
-Validation requires the sections `Triage`, `Goal`, `Perspectives`, `Tasks`,
-and `Acceptance`; the Triage lines `- Risk:` and `- Complexity:` (first word
+Validation requires the sections `Triage`, `Goal`, `Tasks`, and `Acceptance`;
+`Perspectives` is optional only when both Risk and Complexity are low. When
+present, it must contain all five perspective labels. Validation also requires
+the Triage lines `- Risk:` and `- Complexity:` (first word
 `low`, `moderate`, or `high`) and `- squad-route:` (any value, e.g. `not
-configured`); and the five perspective labels (Principal engineer, Engineering
-manager, Technical lead, QA/QC, End user). `Findings`, `Decisions`,
+configured`). The perspective labels are Principal engineer, Engineering
+manager, Technical lead, QA/QC, and End user. `Findings`, `Decisions`,
 `Approvals`, and `Manual ops` are part of the template but not validated. A
 small follow-up goes in a `## Follow-up: <name>` section of the existing plan.
 
@@ -387,6 +389,10 @@ records it in the status file and the report. `--no-plan "REASON"` skips it for
 a genuine emergency and records the reason in both. The plan is required in
 manager context: `--manager`, `SQUAD_MANAGER_ID`, or `SQUAD_WORKER_REQUIRE_PLAN=1`;
 `SQUAD_WORKER_REQUIRE_PLAN=0` turns the requirement off.
+
+**Plan tasks and automation.** `squad-worker ID --plan FILE --task [ID]` uses the exact, unique, nonempty task entry in `## Tasks` and the plan's Acceptance section as the brief; omit the task ID to use the worker ID. Entries start with `- ID` or `### ID`. Missing or duplicate IDs are rejected, and `--task` cannot be combined with `--brief` or `--brief-file`.
+
+`--retry-escalate` is opt-in: only a failed verification triggers one retry at the next mapped tier for the same engine, using the verification log tail for repair. It requires an explicitly selected current tier; strong or an unavailable next mapping leaves the result as-is. Engine failures and verification timeouts do not trigger a retry. `--merge-if-green` requires `--verify` and a low-risk plan; it merges only after verification passes and the scope and review gates pass, without an override.
 
 **New and empty repositories.** `--clone URL` clones into a missing `--project`
 directory; `--init` creates it and runs `git init`. A repository without
@@ -526,7 +532,9 @@ Each launch prunes finished worker runs older than `SQUAD_DEVKIT_RETENTION_DAYS`
 (default 7) and then removes the oldest finished runs while `.squad/workers`
 exceeds `SQUAD_DEVKIT_MAX_MB` (default 200). Running workers, plans, and reports
 outside `.squad/workers` are never removed. `squad-devkit --clean` prunes on
-demand, and `squad-devkit --clean-all` removes every finished run.
+demand, and `squad-devkit --clean-all` removes every finished run, including its live and verification log sidecars. Successful merge and discard actions are recorded in the run status. Worktree reports include the base, diff command and change counts, plus scope results when ownership was specified.
+
+`squad-devkit --stats [--days N]` summarizes runs by engine and tier (default 30 days), including first-pass rate, rounds, tokens and duration. It uses `SQUAD_DEVKIT_PROJECT_ROOT` if set; otherwise it searches upward for the nearest `.squad` workspace, falling back to the current directory. `squad-devkit --doctor --split-test` also opens and verifies a monitor split.
 
 ## Watching workers
 
@@ -542,9 +550,17 @@ The default `graph` layout is a lifecycle flow chart, top to bottom:
 4. **Outcomes**: `Outcomes  ✓ dev-1 dev-2   ✗ dev-3` for the plan on screen.
 5. **Conversation**: one line per worker, newest first, summarising its exchange with the manager (`12:03  dev-1  brief "Add CSV export" → asked "which delimiter?" → answered → done`; repeated fix rounds collapse to `fix×2`). Task ids and report paths are never printed. `SQUAD_ORCHESTRATION_FLOW_LINES` (default 6) caps the line count, which shrinks to fit the pane.
 6. **History**: one line for all older plans, `History  13 earlier plans · ✓70 ✗20  (h to expand)`.
-7. **Footer** with the live keys: `l layout  a all managers  h history  f focus  q quit`.
+7. **Footer** with the live keys: `l layout  c cards  a all  h history  f focus  q quit`.
 
-Keys: `l` (or Tab) cycles layouts and `g` / `t` pick graph or tree directly; `p` pins the pane (cancels auto-close); `a` toggles all managers (`--all-managers`); `h` expands or collapses the older-plans list; `f` toggles focus (present) mode, which shows only the header, the main lane and the waiting group at full height (`--focus` starts in it, including with `--once`). The `pipeline` and `tree` layouts keep their previous look with the same manager scoping. `--once` prints one frame without escape codes.
+Keys: `l` (or Tab) cycles layouts and `g` / `c` / `t` pick graph, cards or tree directly; `p` pins the pane (cancels auto-close); `a` toggles all managers (`--all-managers`); `h` expands or collapses the older-plans list; `f` toggles focus (present) mode, which shows only the header, the main lane and the waiting group at full height (`--focus` starts in it, including with `--once`). The `pipeline` and `tree` layouts keep their previous look with the same manager scoping. `--once` prints one frame without escape codes.
+
+The `cards` layout (`--layout cards`, key `c`) shows live activity and output age, stale workers, waiting age, model tier, verification failures, merge state, scope violations and the reason for another round. Live token counts and activity are updated while a worker runs when log output changes; missing live data is simply unavailable. Cards grow with the pane width. Cards, tree and pipeline show plan task progress and token totals; unlaunched tasks appear as pending with `after <id>` dependencies. Missing or older plan/status fields are accepted.
+
+In cards, tree and pipeline, Flow wraps message text and pins unanswered questions ahead of recent messages. `v` cycles all, questions and failures (`--flow-filter`, or `SQUAD_ORCHESTRATION_FLOW_FILTER`); `e` expands earlier worker rows (`SQUAD_ORCHESTRATION_EXPAND=1` starts expanded). `SQUAD_ORCHESTRATION_STALE_SECS` defaults to 120. These controls preserve `f` for focus and `p` for pinning.
+
+Use `j`/`k` or the arrow keys to select a worker and `i` to toggle details; `Esc` closes details or exits zoom. `d` pages its diff, `r` its report, `s` requests a stop (confirm with `y`), and `m` opens a monitor split. These actions are disabled in `--once`. Worker completion notifications use macOS or Linux desktop notifications when available; set `SQUAD_DEVKIT_NOTIFY=0` to disable them.
+
+`PAGER` must be a single executable name or path; embedded arguments such as `PAGER='less -R'` are unsupported.
 
 When all workers in scope finish (or when no workers are running in scope), the orchestration pane automatically counts down and closes itself after `SQUAD_ORCHESTRATION_HOLD` seconds (falls back to `SQUAD_WORKER_PANE_HOLD`, default 60s; `0` disables auto-close). During countdown, the footer shows the remaining time (`closing in 42s · p keep · ⏎ close` or `Nothing running · closing in ...` when empty). Press `p` to pin the pane and stop auto-close (`pinned · q quit`), or press Enter to close immediately. If a worker starts running again, the countdown resets automatically.
 

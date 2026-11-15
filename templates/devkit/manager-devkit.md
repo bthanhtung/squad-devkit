@@ -27,7 +27,7 @@ Write `.squad/plans/<short-name>.md`. Review the approach as each of these befor
 - **Technical lead**: concrete tasks, file ownership, interfaces between tasks, code conventions, and the build and test commands.
 - **QA/QC**: acceptance criteria, edge cases, negative paths, regression risk, and the exact verification for each task and for the whole change.
 - **End user**: the actual workflow, clarity of behaviour and messages, accessibility, and UI that follows Apple Human Interface Guidelines and Material Design where there is UI.
-The plan contains: **Triage**, **Goal** (outcome and how you will know it is done), **Findings** (`path:line`), **Decisions** (and why), **Tasks** (one per worker, disjoint file ownership, dependencies), and **Acceptance**, plus **Approvals** and **Manual ops** (below). Copy `templates/devkit/plan.md.example`; `squad-worker` validates the plan and requires the Triage lines `Risk`, `Complexity` (low|moderate|high) and `squad-route`, the sections Triage, Goal, Perspectives, Tasks, Acceptance, and all five perspective labels. Show the human a short summary of tasks, owners, and order before starting any worker, then continue unless something needs their decision.
+The plan contains: **Triage**, **Goal** (outcome and how you will know it is done), **Findings** (`path:line`), **Decisions** (and why), **Tasks** (one per worker, disjoint file ownership, dependencies), and **Acceptance**, plus **Approvals** and **Manual ops** (below). Copy `templates/devkit/plan.md.example`; `squad-worker` validates the plan and requires the Triage lines `Risk`, `Complexity` (low|moderate|high) and `squad-route`, the sections Triage, Goal, Tasks and Acceptance. Perspectives may be omitted only when both Risk and Complexity are low; if supplied, it needs all five labels. Show the human a short summary of tasks, owners, and order before starting any worker, then continue unless something needs their decision.
 - **Follow-ups**: for a small follow-up, add a `## Follow-up: <name>` section (request, files, acceptance) to the existing plan instead of writing a new plan.
 - **Manual ops**: browser, dashboard, and DNS actions that no worker can do go under `## Manual ops`, with why; you do them by hand.
 - **Approvals**: only the human grants them. After the human approves, record `- commit: <repo>` or `- push: <repo>` (with their words and the date) under `## Approvals`, preferably with the absolute path (`- push: /abs/path/to/repo`), since a bare basename matches every repo with that name; after a reviewer passes a high-risk change, record `- review: <repo>`. Remove these lines when the work is done; approvals do not expire. The Claude manager guard hook blocks commit and push without the line, and blocks Edit/Write outside `.squad/`, `$CLAUDE_CONFIG_DIR/projects/` (memory), temp dirs, and paths in `SQUAD_DEVKIT_GUARD_ALLOW`; never other project paths. A wrapped commit or push that cannot be verified is denied: run plain `git -C <repo> …`. `SQUAD_DEVKIT_GUARD=0` disables the guard: only on a logged human decision. The guard does not catch shell file writes (`sed -i`, redirects); never use them on project files. Read the reviewer's verdict before merging: `completed` means it ran, not that it approved.
@@ -70,6 +70,10 @@ BRIEF
 
 The command runs in the worktree after the worker finishes; the result is in the report (`Verify: pass` / `Verify: FAIL`) and the status file, and a failed verify blocks `--merge`.
 
+For an exact, unique task entry in the plan, use `--task [ID]` (defaults to the worker ID) instead of a brief; it also includes Acceptance. `--retry-escalate` retries a verification failure once at the next mapped tier when the current tier is explicit. `--merge-if-green` requires a low-risk plan and `--verify`, and still enforces scope and review gates. Review the resulting report and diff.
+
+In the orchestration view, use `c` for cards, `j`/`k` to select, `i` for details, `d`/`r` for diff/report, `s` then `y` to stop, and `m` for a monitor. `v` filters Flow; `e` expands earlier worker rows. `squad-devkit --stats [--days N]` summarizes recent runs; `--doctor --split-test` checks a split. Set `SQUAD_DEVKIT_NOTIFY=0` to disable desktop notifications.
+
 Every manager worker must open a live split monitor before its engine starts. Never disable panes or use a headless override. If the split fails, report the failure and fix the terminal or use tmux; do not retry hidden.
 
 Replace `MANAGER_ID` with the literal manager ID shown in startup guidance on every worker launch; do not rely on inherited environment variables, which child shells may filter.
@@ -79,12 +83,7 @@ In Claude Code, use one Bash call per worker with `run_in_background: true`; you
 
 Workers may question you, and each other, when the brief is ambiguous or they see a better technical approach. While workers run, keep exactly one inbox listener in the background: `squad receive <your ID> --wait --timeout 3600` (in Claude Code with `run_in_background: true`). When it returns, answer each `QUESTION from <id>` with `squad send <your ID> <id> "ANSWER: ..."`, and treat a good challenge as a reason to improve the plan. Then start the listener again if workers are still running. Never poll or sleep in a loop.
 
-### Sub-managers (hierarchy mode)
-- Use sub-managers only when complexity is high AND the task splits into ≥ 2 independent areas; otherwise brief workers directly (sub-managers add 2-3 AI turns each, so they cost more on small tasks).
-- One sub-manager per area: `squad-worker sm-<area> --role sub-manager --engine agy --model gemini-4-argon-high --own <area paths> --budget-tokens <n> --max-children <1-3> --plan ... --brief-file -`. The brief states the area goal, owned paths and acceptance; the sub-manager plans children, the system runs them in its worktree, and it reports once.
-- Depth is limited to 2: sub-managers cannot start sub-managers. Children run with `--parent`.
-- You alone merge (`squad-worker --merge sm-<area>`), commit and push; review the sub-manager's diff like any worker's.
-- `squad-worker --tree` shows the hierarchy and branch token totals.
+Sub-managers are only for high complexity with two or more independent areas; read `.squad/roles/manager-hierarchy.md` before using them.
 
 ## 7. Verify every result
 In a git repository each editing worker works in its own worktree (branch `squad/<id>`), so parallel workers cannot overwrite each other and the project stays untouched until you merge. Reviewers and researchers read the project directly; use `--no-worktree` when a task must edit in place.

@@ -260,6 +260,12 @@ fi
 [[ "$(grep -c '^History  ' <<< "$graph_output")" == 1 ]] || { echo "FAIL: expected exactly one History line" >&2; exit 1; }
 grep -q "^History  1 earlier plan · ✓0 ✗2" <<< "$graph_output" || { echo "FAIL: History line summary wrong" >&2; exit 1; }
 assert_utf8 "$graph_output" "graph COLUMNS=80"
+legacy_cards="$(COLUMNS=80 "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$since" "$workers_dir")"
+grep -q "▲ QUESTION" <<< "$legacy_cards" || { echo "FAIL: graph missing edge label '▲ QUESTION'" >&2; exit 1; }
+grep -q "│ ? waiting " <<< "$legacy_cards" || { echo "FAIL: graph missing '? waiting ' in box" >&2; exit 1; }
+grep -q "│ 4-argon-high   │" <<< "$legacy_cards" || { echo "FAIL: graph missing short_model '4-argon-high'" >&2; exit 1; }
+grep -q "│ deepseek-v4-p… │" <<< "$legacy_cards" || { echo "FAIL: graph missing short_model 'deepseek-v4-p…'" >&2; exit 1; }
+grep -q "│ sonnet-5-5     │" <<< "$legacy_cards" || { echo "FAIL: graph missing short_model 'sonnet-5-5'" >&2; exit 1; }
 if grep -q "\\[g\\]raph" <<< "$graph_output"; then
   echo "FAIL: --once header should drop interactive key hints" >&2
   exit 1
@@ -1049,6 +1055,429 @@ wait "$live_pid" 2>/dev/null || true
 live_pid=""
 
 # ==============================================================================
+# M. Richer worker cards: activity, stale, waiting+age, live tokens, verify FAIL,
+#    merged/unmerged/discarded, scope!, model_tier, round reason, wide cards,
+#    and old-format status file compatibility
+# ==============================================================================
+cards_dir="$tmp/cards/.squad/workers"
+mkdir -p "$cards_dir"
+cards_now=1763200000
+cards_since=$(( cards_now - 3600 ))
+
+# Helper to set deterministic file mtime via python3 or touch -t
+set_mtime() {
+  local path="$1" epoch="$2"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import os; os.utime('$path', ($epoch, $epoch))"
+  else
+    local stamp
+    stamp="$(date -r "$epoch" '+%Y%m%d%H%M.%S' 2>/dev/null || date -d "@$epoch" '+%Y%m%d%H%M.%S')"
+    touch -t "$stamp" "$path"
+  fi
+}
+
+# Logs for running workers
+log_act="$tmp/cards/act.log"
+log_stale="$tmp/cards/stale.log"
+: > "$log_act"
+: > "$log_stale"
+set_mtime "$log_act" $(( cards_now - 18 ))
+set_mtime "$log_stale" $(( cards_now - 185 ))
+
+# Worktrees for completed workers
+wt_unmerged="$tmp/cards/wt-unmerged"
+wt_merged="$tmp/cards/wt-merged"
+mkdir -p "$wt_unmerged" "$wt_merged"
+
+# Worker 1: running, .live sidecar with live tokens + activity, fresh log, round 2 (prev verify=fail)
+cat > "$cards_dir/c-act-1.status" <<EOF
+worker=c-act
+engine=agy
+model=google/gemini-3.8-flash
+model_tier=fast
+role=dev
+state=completed
+verify=fail
+pid=$$
+started=$(( cards_now - 400 ))
+finished=$(( cards_now - 300 ))
+tokens_in=1000
+tokens_out=500
+plan=/path/to/cards-plan.md
+EOF
+cat > "$cards_dir/c-act-2.status" <<EOF
+worker=c-act
+engine=agy
+model=google/gemini-3.8-flash
+model_tier=fast
+role=dev
+state=running
+pid=$$
+started=$(( cards_now - 100 ))
+log=$log_act
+plan=/path/to/cards-plan.md
+EOF
+cat > "$cards_dir/c-act-2.live" <<EOF
+tokens_in=32000
+tokens_cached=5000
+tokens_out=11000
+activity=Edit src/auth.rs
+updated=$(( cards_now - 18 ))
+EOF
+
+# Worker 2: running, stale log (> 120s), round 2 (prev scope_violation)
+cat > "$cards_dir/c-stale-1.status" <<EOF
+worker=c-stale
+engine=codex
+model=gpt-5
+model_tier=balanced
+role=dev
+state=completed
+scope_violation=README.md
+pid=$$
+started=$(( cards_now - 500 ))
+finished=$(( cards_now - 420 ))
+plan=/path/to/cards-plan.md
+EOF
+cat > "$cards_dir/c-stale-2.status" <<EOF
+worker=c-stale
+engine=codex
+model=gpt-5
+model_tier=balanced
+role=dev
+state=running
+pid=$$
+started=$(( cards_now - 240 ))
+log=$log_stale
+plan=/path/to/cards-plan.md
+EOF
+
+# Worker 3: running, unanswered QUESTION -> waiting with age (195s = 3m15s)
+cat > "$cards_dir/c-wait.status" <<EOF
+worker=c-wait
+engine=claude
+model=claude-sonnet-5-5
+model_tier=strong
+role=dev
+state=running
+pid=$$
+started=$(( cards_now - 250 ))
+tokens_in=1000
+tokens_out=1000
+plan=/path/to/cards-plan.md
+EOF
+
+# Worker 4: completed with verify=fail, scope_violation, unmerged worktree
+cat > "$cards_dir/c-vfail.status" <<EOF
+worker=c-vfail
+engine=opencode
+model=deepseek/deepseek-v4
+model_tier=balanced
+role=dev
+state=completed
+verify=fail
+scope_violation=src/extra.rs
+worktree=$wt_unmerged
+pid=$$
+started=$(( cards_now - 180 ))
+finished=$(( cards_now - 60 ))
+tokens_in=8000
+tokens_out=4000
+plan=/path/to/cards-plan.md
+EOF
+
+# Plan 2 workers: merged, discarded, old-format, plus round reasons failed/stopped
+cat > "$cards_dir/c-merged-1.status" <<EOF
+worker=c-merged
+engine=agy
+model=gemini-4-argon-high
+model_tier=strong
+role=dev
+state=failed
+pid=$$
+started=$(( cards_now - 600 ))
+finished=$(( cards_now - 550 ))
+plan=/path/to/cards-two.md
+EOF
+cat > "$cards_dir/c-merged-2.status" <<EOF
+worker=c-merged
+engine=agy
+model=gemini-4-argon-high
+model_tier=strong
+role=dev
+state=completed
+verify=pass
+merged=$(( cards_now - 50 ))
+worktree=$wt_merged
+pid=$$
+started=$(( cards_now - 500 ))
+finished=$(( cards_now - 400 ))
+tokens_in=15000
+tokens_out=5000
+plan=/path/to/cards-two.md
+EOF
+
+cat > "$cards_dir/c-disc-1.status" <<EOF
+worker=c-disc
+engine=codex
+model=gpt-5
+model_tier=fast
+role=dev
+state=stopped
+pid=$$
+started=$(( cards_now - 480 ))
+finished=$(( cards_now - 460 ))
+plan=/path/to/cards-two.md
+EOF
+cat > "$cards_dir/c-disc-2.status" <<EOF
+worker=c-disc
+engine=codex
+model=gpt-5
+model_tier=fast
+role=dev
+state=completed
+verify=timeout
+discarded=$(( cards_now - 30 ))
+pid=$$
+started=$(( cards_now - 450 ))
+finished=$(( cards_now - 380 ))
+tokens_in=4000
+tokens_out=2000
+plan=/path/to/cards-two.md
+EOF
+
+# Old-format status file with NONE of the new keys
+cat > "$cards_dir/c-legacy.status" <<EOF
+worker=c-legacy
+engine=opencode
+model=deepseek/deepseek-v4
+role=dev
+state=completed
+pid=$$
+started=$(( cards_now - 350 ))
+finished=$(( cards_now - 310 ))
+tokens_in=2000
+tokens_out=1000
+plan=/path/to/cards-two.md
+EOF
+
+# Question timestamp: cards_now - 195 = 1763199805 -> 2025-11-15T09:43:25Z
+q_iso="$(date -r $(( cards_now - 195 )) -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -d "@$(( cards_now - 195 ))" -u +%Y-%m-%dT%H:%M:%SZ)"
+cards_hist="cat <<EOF
+* [${q_iso}] c-wait -> manager-4: QUESTION from c-wait: Need approval
+EOF"
+
+# Wide graph output (COLUMNS=136 -> inner_w=28, content_w=26)
+cards_wide="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_STALE_SECS=120 \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=136 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$cards_since" "$cards_dir"
+)"
+echo "=== Richer cards graph (COLUMNS=136) ==="
+printf '%s\n' "$cards_wide"
+echo "========================================"
+
+if grep -q $'\033' <<< "$cards_wide"; then
+  echo "FAIL: ESC sequence found in cards_wide --once output" >&2
+  exit 1
+fi
+assert_max_width "$cards_wide" 136 "richer cards graph COLUMNS=136"
+
+# Verify wide card grew up to inner_w=28 (box border = 28 dashes)
+grep -q "┌────────────────────────────┐" <<< "$cards_wide" || {
+  echo "FAIL: wide graph at COLUMNS=136 did not grow card inner width to 28" >&2
+  exit 1
+}
+
+# Verify all 5 items in wide graph output
+grep -q "⚠ 2 verify" <<< "$(head -n 1 <<< "$cards_wide")" || { echo "FAIL: header missing '⚠ 2 verify'" >&2; exit 1; }
+grep -q "Edit src/auth.rs" <<< "$cards_wide" || { echo "FAIL: missing live activity 'Edit src/auth.rs'" >&2; exit 1; }
+grep -q "18s · Edit src/auth.rs" <<< "$cards_wide" || { echo "FAIL: missing output age + activity '18s · Edit src/auth.rs'" >&2; exit 1; }
+grep -q "43k" <<< "$cards_wide" || { echo "FAIL: missing live token total '43k' for c-act" >&2; exit 1; }
+grep -q "r2 verify fail" <<< "$cards_wide" || { echo "FAIL: missing round reason 'r2 verify fail'" >&2; exit 1; }
+grep -q "stale 3m05s" <<< "$cards_wide" || { echo "FAIL: missing 'stale 3m05s' for c-stale" >&2; exit 1; }
+grep -q "r2 scope" <<< "$cards_wide" || { echo "FAIL: missing round reason 'r2 scope'" >&2; exit 1; }
+grep -q "? waiting 3m15s" <<< "$cards_wide" || { echo "FAIL: missing '? waiting 3m15s' for c-wait" >&2; exit 1; }
+grep -q "✗ verify FAIL" <<< "$cards_wide" || { echo "FAIL: missing '✗ verify FAIL' for c-vfail/c-disc" >&2; exit 1; }
+grep -q "scope! · unmerged" <<< "$cards_wide" || { echo "FAIL: missing 'scope! · unmerged' for c-vfail" >&2; exit 1; }
+grep -q "merged" <<< "$cards_wide" || { echo "FAIL: missing 'merged' for c-merged" >&2; exit 1; }
+grep -q "r2 failed" <<< "$cards_wide" || { echo "FAIL: missing round reason 'r2 failed'" >&2; exit 1; }
+grep -q "discarded" <<< "$cards_wide" || { echo "FAIL: missing 'discarded' for c-disc" >&2; exit 1; }
+grep -q "r2 stopped" <<< "$cards_wide" || { echo "FAIL: missing round reason 'r2 stopped'" >&2; exit 1; }
+grep -q "gemini-3.8-flash · fast" <<< "$cards_wide" || { echo "FAIL: missing tier 'fast' on c-act" >&2; exit 1; }
+grep -q "gpt-5 · balanced" <<< "$cards_wide" || { echo "FAIL: missing tier 'balanced' on c-stale" >&2; exit 1; }
+grep -q "sonnet-5-5 · strong" <<< "$cards_wide" || { echo "FAIL: missing tier 'strong' on c-wait" >&2; exit 1; }
+grep -q "c-legacy" <<< "$cards_wide" || { echo "FAIL: missing old-format c-legacy card" >&2; exit 1; }
+
+# Verify header keeps '⚠ 2 verify' even when narrower (COLUMNS=80 drops optional parts before count segment)
+cards_hdr80="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=80 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$cards_since" "$cards_dir"
+)"
+assert_max_width "$cards_hdr80" 80 "richer cards graph COLUMNS=80"
+grep -q "⚠ 2 verify" <<< "$(head -n 1 <<< "$cards_hdr80")" || {
+  echo "FAIL: COLUMNS=80 header dropped '⚠ 2 verify': $(head -n 1 <<< "$cards_hdr80")" >&2
+  exit 1
+}
+
+# Verify COLUMNS=60 and COLUMNS=18 width invariants with richer cards
+for c_cols in 60 18; do
+  c_narrow="$(
+    SQUAD_ORCHESTRATION_NOW="$cards_now" \
+    SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+    COLUMNS="$c_cols" LINES=50 \
+      "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$cards_since" "$cards_dir"
+  )"
+  assert_max_width "$c_narrow" "$c_cols" "richer cards graph COLUMNS=$c_cols"
+done
+
+# Verify colour output: stale uses warning colour (208/1;31), verify FAIL uses failed colour (not completed green)
+cards_color="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_FORCE_COLOR=1 \
+  SQUAD_ORCHESTRATION_FRAME=1 \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=136 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$cards_since" "$cards_dir"
+)"
+if grep -qE $'\033\\[(38;5;78|32)m[^\033]*verify FAIL' <<< "$cards_color"; then
+  echo "FAIL: verify FAIL rendered with completed green colour" >&2
+  exit 1
+fi
+grep -E $'\033\\[(38;5;203|31)m[^\033]*verify FAIL' <<< "$cards_color" >/dev/null || {
+  echo "FAIL: verify FAIL missing failed colour" >&2
+  exit 1
+}
+grep -E $'\033\\[(38;5;208|1;31)m[^\033]*stale 3m05s' <<< "$cards_color" >/dev/null || {
+  echo "FAIL: stale missing warning colour" >&2
+  exit 1
+}
+
+# Verify tree and pipeline views show the new state words and facts
+cards_tree="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=140 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout tree --once --since "$cards_since" "$cards_dir"
+)"
+assert_max_width "$cards_tree" 140 "richer cards tree COLUMNS=140"
+for word in "stale 3m05s" "waiting 3m15s" "verify FAIL" "merged" "discarded" "unmerged" "scope!" "Edit src/auth.rs" "43k tok" "round 2 (verify fail)" "fast" "balanced" "strong"; do
+  grep -q "$word" <<< "$cards_tree" || {
+    echo "FAIL: tree missing '$word'" >&2
+    echo "$cards_tree" >&2
+    exit 1
+  }
+done
+
+cards_pipe="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=260 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout pipeline --once --since "$cards_since" "$cards_dir"
+)"
+assert_max_width "$cards_pipe" 260 "richer cards pipeline COLUMNS=260"
+for word in "stale 3m05s" "waiting 3m15s" "verify FAIL" "merged" "discarded" "unmerged" "scope!" "Edit src/auth.rs" "43k" "r2:verify fail" "fast" "balanced" "strong"; do
+  grep -q "$word" <<< "$cards_pipe" || {
+    echo "FAIL: pipeline missing '$word'" >&2
+    echo "$cards_pipe" >&2
+    exit 1
+  }
+done
+
+# Flow filters, multiline boundaries, pins, plan progress and expansion.
+flow_dir="$tmp/flow/.squad/workers"
+mkdir -p "$flow_dir"
+cat > "$tmp/flow/plan.md" <<'EOF'
+## Tasks
+### Wave 1
+- prose is not a task
+- flow-1 (codex, strong): First. Files: a. Depends on: none.
+- flow-2 (codex, strong): Second. Files: b. Depends on: flow-1.
+- pending-3 (agy, balanced): Third. Files: c. Depends on: flow-2.
+## Acceptance
+- unrelated (text): outside Tasks
+EOF
+for idx in 1 2; do
+  cat > "$flow_dir/flow-$idx.status" <<EOF
+worker=flow-$idx
+engine=codex
+model=gpt-5
+state=running
+pid=$$
+started=$(( now - 30 + idx ))
+plan=plan.md
+tokens=$(( idx * 1000 ))
+EOF
+done
+cat > "$tmp/flow/history" <<'EOF'
+[2026-11-14T07:00:00Z] flow-1 -> manager-4: QUESTION: PINNED choose a layout with enough room to show this complete long question
+  continuation-tail
+[2026-11-14T07:01:00Z] flow-2 -> manager-4: QUESTION: CLEARED old question
+[2026-11-14T07:02:00Z] manager-4 -> flow-2: ANSWER: accepted
+[2026-11-14T07:03:00Z] flow-2 -> manager-4: completed task recent-one
+[2026-11-14T07:04:00Z] flow-2 -> manager-4: worker failed FAILURE-marker
+[2026-11-14T07:05:00Z] flow-2 -> manager-4: completed task recent-two
+[2026-11-14T07:06:00Z] flow-2 -> manager-4: completed task recent-three
+EOF
+flow_render() {
+  SQUAD_ORCHESTRATION_HISTORY_CMD='cat history' COLUMNS="${flow_cols:-80}" LINES=60 \
+    "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$since" "$@" "$flow_dir"
+}
+if flow_render --flow-filter invalid >/dev/null 2>&1; then
+  echo "FAIL: invalid Flow filter accepted" >&2
+  exit 1
+else
+  [[ "$?" == 2 ]]
+fi
+flow_all="$(flow_render)"
+flow_only="$(flow_render --flow-filter questions)"
+flow_fail="$(flow_render --flow-filter failures)"
+grep -q 'PINNED' <<< "$flow_all"
+grep -q 'continuation-tail' <<< "$flow_only"
+grep -q 'ANSWER' <<< "$flow_only"
+! grep -q 'FAILURE-marker' <<< "$flow_only"
+grep -q 'FAILURE-marker' <<< "$flow_fail"
+! grep -q 'PINNED' <<< "$flow_fail"
+! grep -q 'CLEARED' <<< "$flow_all"
+grep -q '0/3 tasks · 3k tok' <<< "$flow_all"
+grep -q 'pending-3 · pending · after flow-2' <<< "$flow_all"
+grep -q 'flow-2 after flow-1' <<< "$flow_all"
+! grep -q 'unrelated' <<< "$flow_all"
+for flow_layout in tree pipeline; do
+  flow_other="$(flow_render --layout "$flow_layout")"
+  grep -q '0/3 tasks · 3k tok' <<< "$flow_other"
+  grep -q 'pending-3' <<< "$flow_other"
+  grep -q 'after flow-' <<< "$flow_other"
+done
+mv "$tmp/flow/plan.md" "$tmp/flow/saved-plan.md"
+flow_missing="$(flow_render)"
+grep -q 'Plan plan' <<< "$flow_missing"
+! grep -q 'pending-3' <<< "$flow_missing"
+printf '## Tasks\n- old prose without metadata\n' > "$tmp/flow/plan.md"
+! grep -q '/1 tasks' <<< "$(flow_render)"
+mv "$tmp/flow/saved-plan.md" "$tmp/flow/plan.md"
+for flow_cols in 80 60 18; do
+  flow_narrow="$(flow_render --flow-filter questions)"
+  assert_max_width "$flow_narrow" "$flow_cols" "Flow wrapping COLUMNS=$flow_cols"
+  [[ "$flow_narrow" != *$'\033'* ]]
+done
+flow_cols=80
+printf 'state=completed\nfinished=%s\n' "$now" >> "$flow_dir/flow-2.status"
+grep -q '1/3 tasks' <<< "$(flow_render)"
+printf '[2026-11-14T07:07:00Z] manager-4 -> flow-1: ANSWER: resolved\n' >> "$tmp/flow/history"
+! grep -q 'PINNED' <<< "$(flow_render)"
+# Both controls use the existing once-mode key simulation.
+flow_switched="$(SQUAD_ORCHESTRATION_SWITCH_LAYOUT=v,v flow_render)"
+grep -q 'failures' <<< "$flow_switched"
+six_expanded="$(SQUAD_ORCHESTRATION_SWITCH_LAYOUT=e COLUMNS=80 LINES=60 \
+  "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$since" "$six_dir")"
+! grep -q '+2 earlier' <<< "$six_expanded"
+for idx in 1 2 3 4 5 6; do grep -q "w-$idx" <<< "$six_expanded"; done
+# ==============================================================================
 # M. Manager scope (strict), --all-managers and the lifecycle flow chart
 # ==============================================================================
 scope_dir="$tmp/scope/.squad/workers"
@@ -1162,6 +1591,31 @@ for cols in 80 120; do
   # Older plans collapse to exactly one line
   [[ "$(grep -c '^History  ' <<< "$ma_out")" == 1 ]] || { echo "FAIL: expected exactly one History line" >&2; exit 1; }
   grep -q "^History  1 earlier plan · ✓1 ✗0" <<< "$ma_out" || { echo "FAIL: History summary wrong" >&2; exit 1; }
+done
+
+# Sidecar metadata survives filtering raw workers down to a different manager.
+printf 'model_tier=strong\n' >> "$scope_dir/b-1.status"
+cat > "$scope_dir/b-1.live" <<'EOF'
+tokens_in=40000
+tokens_out=3000
+activity=SCOPED-live-activity
+EOF
+scoped_live="$(SQUAD_MANAGER_ID=m-b run_scope 136 --layout cards)"
+grep -q 'SCOPED-live-activity' <<< "$scoped_live"
+grep -q '43k' <<< "$scoped_live"
+grep -q 'strong' <<< "$scoped_live"
+
+# Alternate layouts retain manager grouping and strict scope with richer fields.
+for alt_layout in cards tree; do
+  grouped="$(SQUAD_MANAGER_ID=m-a LINES=100 run_scope 120 --all-managers --layout "$alt_layout")"
+  grep -q '^Manager m-a$' <<< "$grouped"
+  grep -q '^Manager m-b$' <<< "$grouped"
+  assert_max_width "$grouped" 120 "grouped $alt_layout"
+  scoped="$(SQUAD_MANAGER_ID=m-a run_scope 120 --layout "$alt_layout")"
+  if grep -qE 'b-1|legacy|m-b|B private brief|secret' <<< "$scoped"; then
+    echo "FAIL: $alt_layout leaked another manager" >&2
+    exit 1
+  fi
 done
 
 # Focus (present) mode: diagram + waiting group only
@@ -1427,5 +1881,153 @@ if ! grep -q "Nothing running · closing in" "$ac_out_empty"; then
   cat "$ac_out_empty" >&2
   exit 1
 fi
+
+# Source the panel's definitions without entering either event loop.
+panel_harness="$tmp/panel-harness.sh"
+sed '/^# One-shot execution mode/,$d' "$root/scripts/squad-orchestration.sh" >"$panel_harness"
+# Resolve libraries from the real script while keeping all test files temporary.
+sed "s|^source_file=.*|source_file='$root/scripts/squad-orchestration.sh'|" "$panel_harness" >"$panel_harness.tmp"
+mv "$panel_harness.tmp" "$panel_harness"
+cat >>"$panel_harness" <<'PANEL_TEST'
+load_data
+selection_sync
+first="$selected_id"
+[[ -n "$first" ]]
+panel_key k
+[[ "$selected_id" == "$first" ]]
+panel_key j
+selection_sync
+second="$selected_id"
+[[ "$second" != "$first" ]]
+load_data
+selection_sync
+[[ "$selected_id" == "$second" ]]
+panel_key j
+[[ "$selected_id" == "$second" ]]
+cycle_flow_filter
+selection_sync
+[[ "$selected_id" == "$second" ]]
+selected_id=removed
+selection_sync
+[[ "$selected_id" == "$first" ]]
+zoom_target=missing
+selection_sync
+[[ -z "$selected_id" && "$selected_index" == -1 ]]
+zoom_target=""
+selection_sync
+panel_key i
+for height in 8 14 24; do
+  for stop_pending in '' "$selected_id"; do
+    LINES="$height" COLUMNS=80
+    build_frame_templates
+    render_cached_frame 0
+    [[ "$(printf '%s' "$REPLY" | wc -l | tr -d ' ')" -le "$height" ]]
+    [[ "$REPLY" == *"worker: $selected_id"* && "$REPLY" == *'Esc back'* ]]
+    [[ -z "$stop_pending" || "$REPLY" == *"Stop $selected_id? y/n"* ]]
+    [[ "$REPLY" != *$'\033'* ]]
+    while IFS= read -r line; do (( ${#line} <= 80 )); done <<<"$REPLY"
+  done
+done
+stop_pending=""
+unset LINES
+for width in 80 60 18; do
+  COLUMNS="$width"
+  build_frame_templates
+  render_cached_frame 0
+  [[ "$REPLY" != *$'\033'* ]]
+  while IFS= read -r line; do (( ${#line} <= width )); done <<<"$REPLY"
+done
+zoom_target="$selected_id"
+panel_key esc
+[[ "$details_open" == 0 && -n "$zoom_target" ]]
+panel_key esc
+[[ -z "$zoom_target" ]]
+panel_key d
+[[ "$action_message" == 'Actions disabled in --once' ]]
+# Stub only external effects; production dispatch still passes canonical argv.
+once=0
+script_dir="$TEST_ACTION_DIR"
+export TEST_ACTION_LOG TEST_ACTION_DIR
+panel_key s
+panel_key n
+[[ ! -e "$TEST_ACTION_LOG" ]]
+panel_key s
+panel_key y
+[[ "$(cat "$TEST_ACTION_LOG")" == "--stop $selected_id" ]]
+selected_id=all
+stop_pending=all
+panel_key y
+[[ "$action_message" == 'Invalid worker ID' ]]
+selection_sync
+squad_open_monitor() {
+  [[ "$6" == required && "$2" == "$selected_id monitor" ]]
+  grep -F -- "${W_STATUS_FILE[$selected_index]}" "$1" >/dev/null
+  return 1
+}
+panel_key m
+[[ "$action_message" == 'Monitor split failed' ]]
+panel_key r
+[[ "$action_message" == 'Report unavailable' ]]
+report_path="$TEST_ACTION_DIR/report with spaces"
+printf 'hostile $(touch %s)\033[31m\n' "$TEST_ACTION_DIR/executed" >"$report_path"
+printf '\nreport=%s\n' "$report_path" >>"${W_STATUS_FILE[$selected_index]}"
+export TEST_PAGER_LOG="$TEST_ACTION_DIR/paged"
+PAGER="$TEST_ACTION_DIR/pager with spaces"
+cat >"$PAGER" <<'PAGER_STUB'
+#!/bin/bash
+cat >"$TEST_PAGER_LOG"
+PAGER_STUB
+chmod +x "$PAGER"
+page_selected r
+[[ -s "$TEST_PAGER_LOG" && ! -e "$TEST_ACTION_DIR/executed" ]]
+[[ "$(cat "$TEST_PAGER_LOG")" != *$'\033'* ]]
+mkdir -p "$TEST_ACTION_DIR/worktree with spaces"
+W_WORKTREE[$selected_index]="$TEST_ACTION_DIR/worktree with spaces"
+cat >"$TEST_ACTION_DIR/git" <<'GIT_STUB'
+#!/bin/bash
+printf '%s\n' "$@" >"$TEST_ACTION_DIR/git-args"
+printf 'selected diff\n'
+GIT_STUB
+chmod +x "$TEST_ACTION_DIR/git"
+PATH="$TEST_ACTION_DIR:$PATH" page_selected d
+[[ "$(cat "$TEST_PAGER_LOG")" == 'selected diff' ]]
+grep -Fx -- "$TEST_ACTION_DIR/worktree with spaces" "$TEST_ACTION_DIR/git-args" >/dev/null
+# New questions notify once, initial history and subsequent replay do not.
+question_seen=(); questions_initialized=0
+H_TS=(old); H_FROM=(worker); H_TO=(manager); H_TYPE=(QUESTION); H_BODY=('QUESTION old')
+notifications=0
+squad_notify() { notifications=$(( notifications + 1 )); }
+notify_questions
+[[ "$notifications" == 0 ]]
+H_TS[1]="$notification_start"; H_FROM[1]=worker; H_TO[1]=manager; H_TYPE[1]=QUESTION; H_BODY[1]='QUESTION new'
+notify_questions
+notify_questions
+[[ "$notifications" == 1 ]]
+PANEL_TEST
+mkdir -p "$tmp/actions" "$tmp/interaction"
+cat >"$tmp/actions/squad-worker.sh" <<'ACTION_STUB'
+#!/bin/bash
+printf '%s %s' "$1" "$2" >"$TEST_ACTION_LOG"
+ACTION_STUB
+chmod +x "$tmp/actions/squad-worker.sh"
+for id in alpha beta; do
+  cat >"$tmp/interaction/$id.status" <<EOF_STATUS
+worker=$id
+started=$now
+state=completed
+model=\$(touch $tmp/hostile)
+report=$tmp/missing report
+plan=$tmp/missing plan
+EOF_STATUS
+done
+TEST_ACTION_DIR="$tmp/actions" TEST_ACTION_LOG="$tmp/action.log" \
+  bash "$panel_harness" --once "$tmp/interaction"
+[[ ! -e "$tmp/hostile" ]]
+for width in 80 60 18; do
+  detail_out="$(COLUMNS="$width" SQUAD_ORCHESTRATION_SWITCH_LAYOUT=j,i \
+    "$root/scripts/squad-orchestration.sh" --once "$tmp/interaction")"
+  assert_max_width "$detail_out" "$width" "details COLUMNS=$width"
+  [[ "$detail_out" != *$'\033'* ]]
+done
 
 echo "PASS: squad_orchestration_smoke"

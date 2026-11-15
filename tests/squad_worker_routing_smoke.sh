@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-unset HC_TERMINAL_ID SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_MANAGER_ID SQUAD_DEVKIT_YOLO SQUAD_WORKER_REQUIRE_PLAN
+unset HC_TERMINAL_ID SQUAD_WORKER_VIEW SQUAD_DEVKIT_ORCA_TERMINAL SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE \
+  SQUAD_MANAGER_ID SQUAD_AGENT_ID SQUAD_DEVKIT_YOLO SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_DEVKIT_SESSION_START \
+  SQUAD_WORKER_REQUIRE_PLAN
 unset TMUX TMUX_PANE SQUAD_DEVKIT_GHOSTTY_TERMINAL HERDR_PANE_ID HERDR_ENV HERDR_SOCKET_PATH WEZTERM_PANE KITTY_WINDOW_ID ITERM_SESSION_ID ZELLIJ ZELLIJ_SESSION_NAME DISPLAY WAYLAND_DISPLAY
 export TERM_PROGRAM=test-terminal
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -36,7 +38,13 @@ PLAN
 cat >"$tmp/bin/agy" <<'ENGINE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"$PROMPT_LOG"
-if [[ -n "${EDIT:-}" ]]; then printf '%s\n' "$EDIT" >file.txt; fi
+if [[ -n "${EDIT:-}" ]]; then printf '%s\n' "$EDIT" >"${EDIT_FILE:-file.txt}"; fi
+if [[ "${SLOW:-0}" == 1 ]]; then
+  printf '%s\n' '{"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE","tool_name":"run_command","tool_info":{"parameters":{"CommandLine":"test command"}}}}'
+  sleep 5
+  printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"First report"}}'
+  exit 0
+fi
 printf '%s\n' "${REPORT:-First report}"
 ENGINE
 chmod +x "$tmp/bin/agy"
@@ -81,6 +89,20 @@ chmod +x "$tmp/bin/claude"
 "$worker" strong --engine claude --model-tier strong --no-worktree --plan .squad/plans/high.md --brief x >"$tmp/out"
 run low --plan .squad/plans/low.md --brief x
 run none --no-plan test --brief x
+SLOW=1 SQUAD_WORKER_LIVE_INTERVAL=1 run live --no-worktree --plan .squad/plans/low.md --brief x &
+live_worker=$!
+live_file=""
+for _ in 1 2 3 4; do
+  sleep 1
+  live_file="$(find .squad/workers -name 'live-*.live' -print | head -n 1)"
+  [[ -n "$live_file" ]] && break
+done
+[[ -n "$live_file" ]] && kill -0 "$live_worker"
+for key in tokens_in tokens_cached tokens_out activity updated; do
+  [[ "$(grep -c "^$key=" "$live_file")" == 1 ]]
+done
+[[ "$(wc -l <"$live_file" | tr -d ' ')" == 5 ]]
+wait "$live_worker"
 echo 'PASS: tier floor and overrides'
 EDIT=changed run retry --plan .squad/plans/low.md --brief x
 grep -qx 'attempt=1' "$(last_status retry)"
@@ -89,11 +111,19 @@ grep -qx 'attempt=2' "$(last_status retry)"
 grep -q 'First report' "$PROMPT_LOG"
 grep -q 'file.txt' "$PROMPT_LOG"
 echo 'PASS: attempts and previous context'
-EDIT=pass run vp --plan .squad/plans/low.md --verify true --brief x
+EDIT=pass run vp --plan .squad/plans/low.md --verify true --own file.txt --brief x
 grep -qx 'verify=pass' "$(last_status vp)"
 grep -q 'Verify: pass' "$tmp/out"
 if grep -q '^Log: .*\.verify\.log' "$tmp/out"; then exit 1; fi
+vp_status="$(last_status vp)"
+vp_report="$(sed -n 's/^report=//p' "$vp_status")"
+grep -q '^Base: ' "$vp_report"
+grep -q '^Diff: git -C ' "$vp_report"
+grep -q '^Changed: 1 file(s), +1 -1$' "$vp_report"
+grep -qx 'Scope: ok' "$vp_report"
+[[ "$(grep -m1 -E '^(Verify|Base):' "$tmp/out")" == Verify:* ]]
 "$worker" --merge vp >/dev/null
+[[ "$(grep -c '^merged=[0-9]*$' "$vp_status")" == 1 ]]
 git -C "$tmp/project" checkout -q -- file.txt
 EDIT=fail run vf --plan .squad/plans/low.md --verify 'echo boom; exit 3' --brief x
 grep -qx 'verify=fail' "$(last_status vf)"
@@ -150,7 +180,9 @@ if grep -q 'other worker report' "$PROMPT_LOG"; then exit 1; fi
 run dev-1 --plan .squad/plans/low.md --brief x 2>"$tmp/err"
 grep -qx 'attempt=3' "$(last_status dev-1)"
 grep -q 'higher tier or splitting' "$tmp/err"
+dev_status="$(last_status dev-1)"
 "$worker" --discard dev-1 >/dev/null
+[[ "$(grep -c '^discarded=[0-9]*$' "$dev_status")" == 1 ]]
 run dev-1 --plan .squad/plans/low.md --brief x
 grep -qx 'attempt=1' "$(last_status dev-1)"
 if grep -q 'Previous round' "$PROMPT_LOG"; then exit 1; fi
@@ -291,3 +323,88 @@ echo 'PASS: report cap and scope warning'
 REPORT="$(awk 'BEGIN {for(i=0;i<1000;i++) printf "ế"}')" run unicode-cap --no-worktree --brief x
 iconv -f UTF-8 -t UTF-8 <"$tmp/out" >/dev/null || exit 1
 echo 'PASS: unicode cap'
+
+# Automatic repair drops explicit models and is bounded even if verification fails twice.
+export SQUAD_DEVKIT_NOTIFY=0 SQUAD_WORKER_AGY_MODEL_BALANCED=repair-balanced SQUAD_WORKER_AGY_MODEL_STRONG=repair-strong
+run auto-repair --worktree --model lower-explicit --model-tier fast --retry-escalate --plan .squad/plans/low.md --own file.txt --verify 'echo repair-failure; exit 3' --brief original-context
+auto_status="$(last_status auto-repair)"
+grep -qx 'attempt=2' "$auto_status"
+grep -qx 'model=repair-balanced' "$auto_status"
+grep -qx 'verify=fail' "$auto_status"
+grep -qx 'owned=file.txt' "$auto_status"
+grep -q 'original-context' "$PROMPT_LOG"
+grep -q 'repair-failure' "$PROMPT_LOG"
+[[ $(find .squad/workers -name 'auto-repair-*.status' | wc -l | tr -d ' ') == 2 ]]
+for tier in strong fast; do
+  unset SQUAD_WORKER_AGY_MODEL_BALANCED
+  run "no-next-$tier" --no-worktree --model explicit --model-tier "$tier" --retry-escalate --verify false --brief x
+  grep -qx 'attempt=1' "$(last_status "no-next-$tier")"
+done
+for risk in high moderate; do
+  write_plan ".squad/plans/$risk-auto.md" "$risk"
+  status=0
+  run "reject-auto-$risk" --merge-if-green --verify true --plan ".squad/plans/$risk-auto.md" --brief x 2>"$tmp/err" || status=$?
+  [[ "$status" == 2 ]]
+  [[ ! -e ".squad/workers/reject-auto-$risk" ]]
+done
+status=0
+run reject-auto-verify --merge-if-green --plan .squad/plans/low.md --brief x 2>"$tmp/err" || status=$?
+[[ "$status" == 2 ]]
+EDIT=auto-green run auto-green --merge-if-green --verify true --own file.txt --plan .squad/plans/low.md --brief x
+grep -q '^merged=' "$(last_status auto-green)"
+grep -qx auto-green "$tmp/project/file.txt"
+git -C "$tmp/project" reset -q --hard HEAD
+for mode in verify scope; do
+  status=0
+  if [[ "$mode" == verify ]]; then
+    EDIT=blocked run "auto-block-$mode" --merge-if-green --verify false --plan .squad/plans/low.md --brief x 2>"$tmp/err" || status=$?
+  else
+    EDIT=blocked run "auto-block-$mode" --merge-if-green --verify true --own other.txt --plan .squad/plans/low.md --brief x 2>"$tmp/err" || status=$?
+  fi
+  [[ "$status" == 3 ]]
+  ! grep -q '^merged=' "$(last_status "auto-block-$mode")"
+done
+echo 'PASS: bounded escalation and automatic merge guardrails'
+
+export SQUAD_WORKER_AGY_MODEL_BALANCED=repair-balanced
+run auto-fixed --worktree --model explicit --model-tier fast --retry-escalate --verify "if [[ -e '$tmp/verify-once' ]]; then exit 0; else touch '$tmp/verify-once'; exit 1; fi" --brief x
+grep -qx 'attempt=2' "$(last_status auto-fixed)"
+grep -qx 'verify=pass' "$(last_status auto-fixed)"
+run no-verify-retry --no-worktree --model-tier fast --model explicit --retry-escalate --brief x
+grep -qx 'attempt=1' "$(last_status no-verify-retry)"
+cp "$tmp/bin/agy" "$tmp/agy-good"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/bin/agy"
+status=0
+run engine-no-retry --no-worktree --model-tier fast --model explicit --retry-escalate --verify false --brief x 2>"$tmp/err" || status=$?
+[[ "$status" == 1 ]]
+grep -qx 'attempt=1' "$(last_status engine-no-retry)"
+cp "$tmp/agy-good" "$tmp/bin/agy"
+# Advance only verification's wall clock to exercise timeout without a minute wait.
+export REAL_DATE="$(command -v date)" VERIFY_CLOCK="$tmp/verify-clock"
+cat >"$tmp/bin/date" <<'CLOCK'
+#!/usr/bin/env bash
+if [[ "$*" == +%s && -e "$VERIFY_CLOCK" ]]; then
+  printf '%s\n' "$(( $("$REAL_DATE" +%s) + 120 ))"
+else
+  exec "$REAL_DATE" "$@"
+fi
+CLOCK
+chmod +x "$tmp/bin/date"
+SQUAD_WORKER_VERIFY_TIMEOUT=1 run timeout-no-retry --no-worktree --model-tier fast --model explicit --retry-escalate --verify 'sleep 2; touch "$VERIFY_CLOCK"; sleep 10' --brief x
+grep -qx 'attempt=1' "$(last_status timeout-no-retry)"
+grep -qx 'verify=timeout' "$(last_status timeout-no-retry)"
+rm "$tmp/bin/date" "$VERIFY_CLOCK"
+# Backend failure must never change the launcher exit status.
+printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/bin/osascript"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/bin/notify-send"
+chmod +x "$tmp/bin/osascript" "$tmp/bin/notify-send"
+SQUAD_DEVKIT_NOTIFY=1 run notify-failure --no-worktree --brief x
+grep -qx 'state=completed' "$(last_status notify-failure)"
+echo 'PASS: repair success, engine failure, timeout, and notification failure'
+
+status=0
+EDIT=guarded EDIT_FILE=auth.js run auto-sensitive --merge-if-green --verify true --plan .squad/plans/low.md --brief x 2>"$tmp/err" || status=$?
+[[ "$status" == 3 ]]
+! grep -q '^merged=' "$(last_status auto-sensitive)"
+grep -q 'needs a review' "$tmp/err"
+echo 'PASS: automatic merge preserves sensitive patch review gate'

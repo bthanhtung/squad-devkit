@@ -24,10 +24,17 @@ source "$script_dir/lib/squad-panes.sh"
 source "$script_dir/lib/squad-plan.sh"
 # shellcheck source=lib/squad-engine.sh
 source "$script_dir/lib/squad-engine.sh"
+# shellcheck source=lib/squad-log-summary.sh
+source "$script_dir/lib/squad-log-summary.sh"
+# shellcheck source=lib/squad-notify.sh
+source "$script_dir/lib/squad-notify.sh"
+
+launch_directory="$PWD"
+original_arguments=("$@")
 
 usage() {
   cat <<'EOF'
-Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FILE)
+Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FILE | --task [ID])
                     [--role ROLE] [--title TITLE] [--project DIR]
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
                     [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
@@ -60,12 +67,15 @@ Engines, most trusted first:
 Options:
   --role ROLE        Role prompt from .squad/roles/ROLE.md (default: dev)
   --title TITLE      Task title (default: first line of the brief)
+  --task [ID]       Use exact plan task ID (default: worker ID) plus Acceptance; requires --plan
   --brief-file -     Read the brief from stdin
   --project DIR      Directory the worker works in (default: the squad workspace)
   --profile NAME     codex profile (default: CLI configuration)
   --models           Print local model candidates as JSON; optional --engine/--project filters
   --model-tier TIER  fast|balanced|strong; requires a mapping (Claude aliases available)
   --tier-reason REASON  Allow a high-risk plan below strong tier; record why
+  --retry-escalate   Retry a failed verification once at the next mapped tier
+  --merge-if-green   Merge verified, in-scope changes on a low-risk plan
   --verify COMMAND   Run acceptance command after a completed worker
   --model NAME       Model override (except CCR; router selects its model)
   --mcp NAME         codex only: keep this MCP server enabled (repeatable);
@@ -128,11 +138,16 @@ role="dev"
 title=""
 brief=""
 brief_file=""
+brief_source_set=0
+task_mode=0
+task_id=""
 profile="${SQUAD_WORKER_CODEX_PROFILE:-}"
 model=""
 model_source=""
 model_tier=""
 tier_reason=""
+retry_escalate=0
+merge_if_green=0
 verify_command=""
 verify=""
 verify_exit=""
@@ -203,6 +218,7 @@ while (( $# > 0 )); do
         echo "Missing value for $1" >&2
         exit 2
       fi
+      case "$1" in --brief|--brief-file) brief_source_set=1 ;; esac
       case "$1" in
         --engine) engine="$2" ;;
         --role) role="$2" ;;
@@ -233,6 +249,16 @@ while (( $# > 0 )); do
       esac
       shift
       ;;
+    --task)
+      task_mode=1
+      if (( $# > 1 )) && [[ "$2" != -* ]]; then
+        [[ -n "$2" ]] || { echo "--task needs a nonempty ID" >&2; exit 2; }
+        task_id="$2"
+        shift
+      fi
+      ;;
+    --retry-escalate) retry_escalate=1 ;;
+    --merge-if-green) merge_if_green=1 ;;
     --all-mcp)
       # shellcheck disable=SC2034 # read by lib/engines/*.sh
       all_mcp=1 ;;
@@ -259,6 +285,21 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+if (( merge_if_green == 1 )) && [[ "$action" != run ]]; then
+  echo '--merge-if-green only applies to worker runs' >&2
+  exit 2
+fi
+if (( task_mode == 1 )); then
+  if (( brief_source_set == 1 )); then
+    echo "--task and --brief/--brief-file are mutually exclusive" >&2
+    exit 2
+  fi
+  if [[ -z "$plan_argument" ]]; then
+    echo "--task requires --plan" >&2
+    exit 2
+  fi
+fi
 
 if [[ -z "$view" ]]; then
   if [[ -n "$manager_flag_set" || -n "${SQUAD_MANAGER_ID:-}" || -n "$parent_flag_set" ]]; then
@@ -414,6 +455,17 @@ latest_status_with_worktree() {
     [[ -n "$(status_get "$file" worktree)" ]] && { printf '%s\n' "$file"; return 0; }
   done < <(worker_status_files "$1")
   return 0
+}
+
+record_worktree_action() {
+  local file
+  while IFS= read -r file; do
+    if [[ "$(status_get "$file" worktree)" == "$home/$target" ]]; then
+      printf '%s=%s\n' "$1" "$(date +%s)" >>"$file"
+      squad_record_status "$file"
+      break
+    fi
+  done < <(worker_status_files "$target")
 }
 
 # "  <id>  <worktree path>" for each worker worktree that still exists.
@@ -875,6 +927,7 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
     fi
     if [[ "$action" == discard ]]; then
       worktree_remove "$root" "$target"
+      record_worktree_action discarded
       echo "Discarded $target's worktree and branch squad/$target."
       continue
     fi
@@ -883,11 +936,13 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
     worktree_patch "$root" "$target" >"$patch_file"
     if [[ ! -s "$patch_file" ]]; then
       worktree_remove "$root" "$target"
+      record_worktree_action merged
       echo "$target made no changes; removed its worktree."
     elif ! review_gate "$target" "$patch_file"; then
       exit_status=3
     elif apply_output="$(worktree_apply "$root" "$patch_file")"; then
       worktree_remove "$root" "$target"
+      record_worktree_action merged
       echo "Merged $target into $root ($(git apply --numstat "$patch_file" | wc -l | tr -d ' ') files, uncommitted). Worktree removed."
     else
       conflicted="$(printf '%s\n' "$apply_output" | sed -n "s/^Applied patch to '\(.*\)' with conflicts\.$/\1/p")"
@@ -1007,6 +1062,21 @@ if [[ -n "$plan_argument" ]]; then
     exit 2
   fi
   plan_line="Plan: $plan_path"
+fi
+if (( merge_if_green == 1 )) && { [[ "$action" != run || "$plan_path" == none || -z "$verify_command" ]] || [[ "$(plan_field "$plan_path" risk)" != low ]]; }; then
+  echo '--merge-if-green requires a low-risk --plan and --verify on a worker run' >&2
+  exit 2
+fi
+if (( task_mode == 1 )); then
+  task_id="${task_id:-$worker_id}"
+  if [[ ! "$task_id" =~ $id_pattern ]] || ! brief="$(plan_task "$plan_path" "$task_id")"; then
+    echo "Plan task ID must match exactly one nonempty entry: $task_id" >&2
+    exit 2
+  fi
+  brief="$brief
+
+## Acceptance
+$(plan_section "$plan_path" Acceptance)"
 fi
 plan_context=""
 if [[ "$plan_path" != none ]] && (( no_plan_context == 0 )); then
@@ -1131,7 +1201,7 @@ engine_pid=""
 verify_pid=""
 stop_reason=""
 finish_run() {
-  local exit_status=$?
+  local exit_status="$1"
   if [[ -n "$engine_pid" ]] && kill -0 "$engine_pid" 2>/dev/null; then
     pkill -TERM -P "$engine_pid" 2>/dev/null || true
     kill -TERM "$engine_pid" 2>/dev/null || true
@@ -1142,8 +1212,11 @@ finish_run() {
   fi
   [[ -z "$prompt_file" ]] || rm -f "$prompt_file"
   squad leave "$worker_id" >/dev/null 2>&1 || true
+  if [[ -n "$status_file" ]]; then
+    squad_notify "Worker $worker_id" "${verify:+Verify: $verify. }Run finished (exit $exit_status)." || true
+  fi
 }
-trap finish_run EXIT
+trap 'finish_run "$?"' EXIT
 # --stop sends TERM: stop the engine, record it, and tell the manager.
 on_stop() {
   stop_reason="stopped by request"
@@ -1580,6 +1653,20 @@ output_age() {
   printf '%d' "$newest"
 }
 
+write_live() {
+  local summary metrics activity input cached output tmp
+  case "$engine" in codex|claude|ccr|agy|opencode) ;; *) return 0 ;; esac
+  command -v jq >/dev/null 2>&1 || return 0
+  summary="$(summarise_log "$log_file" "$engine" 1)" || return 0
+  # Preserve empty tab-separated token fields as zero.
+  metrics="$(printf '%s\n' "$summary" | head -n 1 | awk -F '\t' '{print ($4 == "" ? 0 : $4), ($5 == "" ? 0 : $5), ($6 == "" ? 0 : $6)}')"
+  read -r input cached output <<<"$metrics"
+  [[ "$input" =~ ^[0-9]+$ && "$cached" =~ ^[0-9]+$ && "$output" =~ ^[0-9]+$ ]] || return 0
+  activity="$(printf '%s\n' "$summary" | tail -n +2 | tail -n 1 | LC_ALL=C tr -d '\000-\037\177' | LC_ALL=C cut -b 1-200)"
+  tmp="$(mktemp "$status_file.live.XXXXXX")" || return 0
+  { printf 'tokens_in=%s\ntokens_cached=%s\ntokens_out=%s\nactivity=%s\nupdated=%s\n' "$input" "$cached" "$output" "$activity" "$(date +%s)" >"$tmp" && mv "$tmp" "${status_file%.status}.live"; } || rm -f "$tmp"
+}
+
 timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 stall_seconds="${SQUAD_WORKER_STALL_SECONDS:-$(( stall_minutes * 60 ))}"
 if (( status == 0 )); then
@@ -1588,6 +1675,11 @@ if (( status == 0 )); then
   # Watchdog: stop runs that exceed the time limit or stop producing output,
   # so a stuck worker reports back instead of leaving its pane pending.
   model_log_size=-1
+  live_log_size=0
+  live_updated=0
+  live_pid=""
+  live_interval="${SQUAD_WORKER_LIVE_INTERVAL:-15}"
+  [[ "$live_interval" =~ ^[1-9][0-9]*$ ]] || live_interval=15
   while kill -0 "$engine_pid" 2>/dev/null; do
     sleep 1
     current_log_size="$(wc -c <"$log_file")"
@@ -1609,6 +1701,14 @@ if (( status == 0 )); then
       fi
       [[ "$model_changed" == 0 ]] || write_status running
     fi
+    live_now="$(date +%s)"
+    if [[ "$current_log_size" != "$live_log_size" ]] && (( live_now - live_updated >= live_interval )) &&
+       { [[ -z "$live_pid" ]] || ! kill -0 "$live_pid" 2>/dev/null; }; then
+      live_log_size="$current_log_size"
+      live_updated="$live_now"
+      (write_live) >/dev/null 2>&1 &
+      live_pid=$!
+    fi
     if (( $(date +%s) - started_at > timeout_seconds )); then
       stop_reason="timed out after $(( timeout_seconds / 60 ))m"
     elif (( stall_seconds > 0 )) && (( $(output_age) > stall_seconds )); then
@@ -1621,6 +1721,10 @@ if (( status == 0 )); then
     fi
   done
   wait "$engine_pid" 2>/dev/null || status=$?
+  if [[ -n "$live_pid" ]] && kill -0 "$live_pid" 2>/dev/null; then
+    pkill -TERM -P "$live_pid" 2>/dev/null || true
+    kill -TERM "$live_pid" 2>/dev/null || true
+  fi
   engine_pid=""
   if [[ -n "$stop_reason" ]]; then
     status=124
@@ -1675,6 +1779,7 @@ if [[ -n "$worktree_path" ]]; then
   if [[ -s "$patch_file" ]]; then
     changed_files="$(git apply --numstat "$patch_file" 2>/dev/null | wc -l | tr -d ' ')"
   fi
+  read -r added deleted <<<"$(git apply --numstat "$patch_file" 2>/dev/null | awk '{a += $1; d += $2} END {print a+0, d+0}')"
   worktree_note="Worktree: $changed_files changed file(s) in $worktree_path (branch squad/$worker_id). Review: git -C $worktree_path diff $worktree_base_commit. Merge: squad-worker --merge $worker_id. Discard: squad-worker --discard $worker_id."
   if [[ -n "$owned_paths" ]]; then
     scope_violation="$(git -C "$worktree_path" diff --no-renames --name-only "$worktree_base_commit" HEAD -- . ':(exclude).claude' ':(exclude,glob)**/.claude/**' 2>/dev/null |
@@ -1758,6 +1863,25 @@ Log: $workspace_root/$verify_log
 $report"
   fi
 fi
+if [[ -n "$worktree_path" ]]; then
+  evidence="Base: $worktree_base_commit
+Diff: git -C $worktree_path diff $worktree_base_commit
+Changed: $changed_files file(s), +$added -$deleted"
+  if [[ -n "$owned_paths" ]]; then
+    if [[ -n "$scope_violation" ]]; then evidence="$evidence
+Scope: VIOLATION — $scope_violation"
+    else evidence="$evidence
+Scope: ok"; fi
+  fi
+  if [[ -n "$verify_command" ]]; then
+    report="${report%%$'\n'*}
+$evidence
+${report#*$'\n'}"
+  else
+    report="$evidence
+$report"
+  fi
+fi
 write_status completed 0
 report="$plan_line
 
@@ -1770,3 +1894,43 @@ squad send --task-id "$task_id" "$worker_id" "$manager_id" \
 printf '[%s · %s · task %s] report: %s\n%s\n%s\n' \
   "$worker_id" "$engine" "$task_id" "$workspace_root/$report_file" "${worktree_note:+$worktree_note
 }" "$report" | cap_report_lines "$report_lines" "$workspace_root/$report_file"
+
+# Complete and release this run before another launcher joins with the same ID.
+if (( retry_escalate == 1 )) && [[ "$verify" == fail ]]; then
+  if next_tier="$(squad_worker_next_tier)"; then
+    repair_brief="$brief
+
+Repair the failed acceptance command: $verify_command
+$(tail -n 20 "$verify_log" | bounded_lines 200)"
+    retry_arguments=()
+    skip_value=0
+    skip_task_id=0
+    for argument in "${original_arguments[@]}"; do
+      if (( skip_value == 1 )); then skip_value=0; continue; fi
+      if (( skip_task_id == 1 )); then
+        skip_task_id=0
+        [[ "$argument" == -* ]] || continue
+      fi
+      case "$argument" in
+        --retry-escalate) continue ;;
+        --model|--model-tier|--brief|--brief-file) skip_value=1; continue ;;
+        --task) skip_task_id=1; continue ;;
+      esac
+      retry_arguments+=("$argument")
+    done
+    echo "squad-worker: verification failed; retrying once at $next_tier tier." >&2
+    finish_run 0
+    trap - EXIT
+    cd "$launch_directory"
+    exec "$script_dir/squad-worker.sh" "${retry_arguments[@]}" --model-tier "$next_tier" --brief "$repair_brief"
+  else
+    echo 'squad-worker: verification failed; no higher configured tier available, retaining evidence.' >&2
+  fi
+fi
+if (( merge_if_green == 1 )); then
+  if [[ "$verify" != pass || -n "$scope_violation" || -z "$worktree_path" ]]; then
+    echo 'squad-worker: automatic merge blocked by verification or ownership; retaining evidence.' >&2
+    exit 3
+  fi
+  "$script_dir/squad-worker.sh" --merge "$worker_id" --project "$project_directory"
+fi

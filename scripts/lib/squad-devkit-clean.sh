@@ -42,7 +42,7 @@ is_running() {
 
 remove_run() {
   local base="${1%.status}"
-  rm -f "$base.status" "$base.log" "$base.md" "$base.monitor.sh" "$base.out" "$base.patch"
+  rm -f "$base.status" "$base.log" "$base.md" "$base.monitor.sh" "$base.out" "$base.patch" "$base.verify.log" "$base.live"
   removed=$(( removed + 1 ))
 }
 

@@ -258,3 +258,13 @@ if (model=''; squad_worker_select_model) 2>"$tmp/error"; then exit 1; fi
 grep -q 'Invalid worker models' "$tmp/error"
 (cd "$tmp/outside"; "$root/scripts/squad-worker.sh" --models --engine codex) >"$tmp/catalog"
 jq -e '.[] | select(.tier == "balanced") | .candidate == null and (.error | contains("Invalid worker models"))' "$tmp/catalog" >/dev/null
+
+# A higher mapping must resolve independently from an explicit lower model.
+project_directory="$tmp/empty"; engine=codex; model_tier=fast; model=explicit
+rm -f "$HOME/.squad/worker-models.json"
+[[ "$(SQUAD_WORKER_CODEX_MODEL_BALANCED=balanced-next squad_worker_next_tier)" == balanced ]]
+[[ "$model" == explicit && "$model_tier" == fast ]]
+if squad_worker_next_tier 2>/dev/null; then exit 1; fi
+model_tier=strong
+if squad_worker_next_tier; then exit 1; fi
+echo 'PASS: next tier mapping and terminal tier'
