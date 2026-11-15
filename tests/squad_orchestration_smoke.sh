@@ -206,7 +206,7 @@ for wid in dev-1 dev-2 test-1 done-1 r-1 lost-1; do
   grep -q "│ ${wid} " <<< "$graph_output" || { echo "FAIL: graph missing worker box for '$wid'" >&2; exit 1; }
 done
 grep -q "▲ QUESTION" <<< "$graph_output" || { echo "FAIL: graph missing edge label '▲ QUESTION'" >&2; exit 1; }
-grep -q "│ ? asking" <<< "$graph_output" || { echo "FAIL: graph missing '? asking' in box" >&2; exit 1; }
+grep -q "│ ? waiting " <<< "$graph_output" || { echo "FAIL: graph missing '? waiting ' in box" >&2; exit 1; }
 grep -q "│ 4-argon-high   │" <<< "$graph_output" || { echo "FAIL: graph missing short_model '4-argon-high'" >&2; exit 1; }
 grep -q "│ deepseek-v4-p… │" <<< "$graph_output" || { echo "FAIL: graph missing short_model 'deepseek-v4-p…'" >&2; exit 1; }
 grep -q "│ sonnet-5-5     │" <<< "$graph_output" || { echo "FAIL: graph missing short_model 'sonnet-5-5'" >&2; exit 1; }
@@ -1087,5 +1087,339 @@ kill -0 "$live_pid" 2>/dev/null || {
 kill "$live_pid" 2>/dev/null || true
 wait "$live_pid" 2>/dev/null || true
 live_pid=""
+
+# ==============================================================================
+# M. Richer worker cards: activity, stale, waiting+age, live tokens, verify FAIL,
+#    merged/unmerged/discarded, scope!, model_tier, round reason, wide cards,
+#    and old-format status file compatibility
+# ==============================================================================
+cards_dir="$tmp/cards/.squad/workers"
+mkdir -p "$cards_dir"
+cards_now=1763200000
+cards_since=$(( cards_now - 3600 ))
+
+# Helper to set deterministic file mtime via python3 or touch -t
+set_mtime() {
+  local path="$1" epoch="$2"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import os; os.utime('$path', ($epoch, $epoch))"
+  else
+    local stamp
+    stamp="$(date -r "$epoch" '+%Y%m%d%H%M.%S' 2>/dev/null || date -d "@$epoch" '+%Y%m%d%H%M.%S')"
+    touch -t "$stamp" "$path"
+  fi
+}
+
+# Logs for running workers
+log_act="$tmp/cards/act.log"
+log_stale="$tmp/cards/stale.log"
+: > "$log_act"
+: > "$log_stale"
+set_mtime "$log_act" $(( cards_now - 18 ))
+set_mtime "$log_stale" $(( cards_now - 185 ))
+
+# Worktrees for completed workers
+wt_unmerged="$tmp/cards/wt-unmerged"
+wt_merged="$tmp/cards/wt-merged"
+mkdir -p "$wt_unmerged" "$wt_merged"
+
+# Worker 1: running, .live sidecar with live tokens + activity, fresh log, round 2 (prev verify=fail)
+cat > "$cards_dir/c-act-1.status" <<EOF
+worker=c-act
+engine=agy
+model=google/gemini-3.8-flash
+model_tier=fast
+role=dev
+state=completed
+verify=fail
+pid=$$
+started=$(( cards_now - 400 ))
+finished=$(( cards_now - 300 ))
+tokens_in=1000
+tokens_out=500
+plan=/path/to/cards-plan.md
+EOF
+cat > "$cards_dir/c-act-2.status" <<EOF
+worker=c-act
+engine=agy
+model=google/gemini-3.8-flash
+model_tier=fast
+role=dev
+state=running
+pid=$$
+started=$(( cards_now - 100 ))
+log=$log_act
+plan=/path/to/cards-plan.md
+EOF
+cat > "$cards_dir/c-act-2.live" <<EOF
+tokens_in=32000
+tokens_cached=5000
+tokens_out=11000
+activity=Edit src/auth.rs
+updated=$(( cards_now - 18 ))
+EOF
+
+# Worker 2: running, stale log (> 120s), round 2 (prev scope_violation)
+cat > "$cards_dir/c-stale-1.status" <<EOF
+worker=c-stale
+engine=codex
+model=gpt-5
+model_tier=balanced
+role=dev
+state=completed
+scope_violation=README.md
+pid=$$
+started=$(( cards_now - 500 ))
+finished=$(( cards_now - 420 ))
+plan=/path/to/cards-plan.md
+EOF
+cat > "$cards_dir/c-stale-2.status" <<EOF
+worker=c-stale
+engine=codex
+model=gpt-5
+model_tier=balanced
+role=dev
+state=running
+pid=$$
+started=$(( cards_now - 240 ))
+log=$log_stale
+plan=/path/to/cards-plan.md
+EOF
+
+# Worker 3: running, unanswered QUESTION -> waiting with age (195s = 3m15s)
+cat > "$cards_dir/c-wait.status" <<EOF
+worker=c-wait
+engine=claude
+model=claude-sonnet-5-5
+model_tier=strong
+role=dev
+state=running
+pid=$$
+started=$(( cards_now - 250 ))
+tokens_in=1000
+tokens_out=1000
+plan=/path/to/cards-plan.md
+EOF
+
+# Worker 4: completed with verify=fail, scope_violation, unmerged worktree
+cat > "$cards_dir/c-vfail.status" <<EOF
+worker=c-vfail
+engine=opencode
+model=deepseek/deepseek-v4
+model_tier=balanced
+role=dev
+state=completed
+verify=fail
+scope_violation=src/extra.rs
+worktree=$wt_unmerged
+pid=$$
+started=$(( cards_now - 180 ))
+finished=$(( cards_now - 60 ))
+tokens_in=8000
+tokens_out=4000
+plan=/path/to/cards-plan.md
+EOF
+
+# Plan 2 workers: merged, discarded, old-format, plus round reasons failed/stopped
+cat > "$cards_dir/c-merged-1.status" <<EOF
+worker=c-merged
+engine=agy
+model=gemini-4-argon-high
+model_tier=strong
+role=dev
+state=failed
+pid=$$
+started=$(( cards_now - 600 ))
+finished=$(( cards_now - 550 ))
+plan=/path/to/cards-two.md
+EOF
+cat > "$cards_dir/c-merged-2.status" <<EOF
+worker=c-merged
+engine=agy
+model=gemini-4-argon-high
+model_tier=strong
+role=dev
+state=completed
+verify=pass
+merged=$(( cards_now - 50 ))
+worktree=$wt_merged
+pid=$$
+started=$(( cards_now - 500 ))
+finished=$(( cards_now - 400 ))
+tokens_in=15000
+tokens_out=5000
+plan=/path/to/cards-two.md
+EOF
+
+cat > "$cards_dir/c-disc-1.status" <<EOF
+worker=c-disc
+engine=codex
+model=gpt-5
+model_tier=fast
+role=dev
+state=stopped
+pid=$$
+started=$(( cards_now - 480 ))
+finished=$(( cards_now - 460 ))
+plan=/path/to/cards-two.md
+EOF
+cat > "$cards_dir/c-disc-2.status" <<EOF
+worker=c-disc
+engine=codex
+model=gpt-5
+model_tier=fast
+role=dev
+state=completed
+verify=timeout
+discarded=$(( cards_now - 30 ))
+pid=$$
+started=$(( cards_now - 450 ))
+finished=$(( cards_now - 380 ))
+tokens_in=4000
+tokens_out=2000
+plan=/path/to/cards-two.md
+EOF
+
+# Old-format status file with NONE of the new keys
+cat > "$cards_dir/c-legacy.status" <<EOF
+worker=c-legacy
+engine=opencode
+model=deepseek/deepseek-v4
+role=dev
+state=completed
+pid=$$
+started=$(( cards_now - 350 ))
+finished=$(( cards_now - 310 ))
+tokens_in=2000
+tokens_out=1000
+plan=/path/to/cards-two.md
+EOF
+
+# Question timestamp: cards_now - 195 = 1763199805 -> 2025-11-15T09:43:25Z
+q_iso="$(date -r $(( cards_now - 195 )) -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -d "@$(( cards_now - 195 ))" -u +%Y-%m-%dT%H:%M:%SZ)"
+cards_hist="cat <<EOF
+* [${q_iso}] c-wait -> manager-4: QUESTION from c-wait: Need approval
+EOF"
+
+# Wide graph output (COLUMNS=136 -> inner_w=28, content_w=26)
+cards_wide="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_STALE_SECS=120 \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=136 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$cards_since" "$cards_dir"
+)"
+echo "=== Richer cards graph (COLUMNS=136) ==="
+printf '%s\n' "$cards_wide"
+echo "========================================"
+
+if grep -q $'\033' <<< "$cards_wide"; then
+  echo "FAIL: ESC sequence found in cards_wide --once output" >&2
+  exit 1
+fi
+assert_max_width "$cards_wide" 136 "richer cards graph COLUMNS=136"
+
+# Verify wide card grew up to inner_w=28 (box border = 28 dashes)
+grep -q "┌────────────────────────────┐" <<< "$cards_wide" || {
+  echo "FAIL: wide graph at COLUMNS=136 did not grow card inner width to 28" >&2
+  exit 1
+}
+
+# Verify all 5 items in wide graph output
+grep -q "⚠ 2 verify" <<< "$(head -n 1 <<< "$cards_wide")" || { echo "FAIL: header missing '⚠ 2 verify'" >&2; exit 1; }
+grep -q "Edit src/auth.rs" <<< "$cards_wide" || { echo "FAIL: missing live activity 'Edit src/auth.rs'" >&2; exit 1; }
+grep -q "18s · Edit src/auth.rs" <<< "$cards_wide" || { echo "FAIL: missing output age + activity '18s · Edit src/auth.rs'" >&2; exit 1; }
+grep -q "43k" <<< "$cards_wide" || { echo "FAIL: missing live token total '43k' for c-act" >&2; exit 1; }
+grep -q "r2 verify fail" <<< "$cards_wide" || { echo "FAIL: missing round reason 'r2 verify fail'" >&2; exit 1; }
+grep -q "stale 3m05s" <<< "$cards_wide" || { echo "FAIL: missing 'stale 3m05s' for c-stale" >&2; exit 1; }
+grep -q "r2 scope" <<< "$cards_wide" || { echo "FAIL: missing round reason 'r2 scope'" >&2; exit 1; }
+grep -q "? waiting 3m15s" <<< "$cards_wide" || { echo "FAIL: missing '? waiting 3m15s' for c-wait" >&2; exit 1; }
+grep -q "✗ verify FAIL" <<< "$cards_wide" || { echo "FAIL: missing '✗ verify FAIL' for c-vfail/c-disc" >&2; exit 1; }
+grep -q "scope! · unmerged" <<< "$cards_wide" || { echo "FAIL: missing 'scope! · unmerged' for c-vfail" >&2; exit 1; }
+grep -q "merged" <<< "$cards_wide" || { echo "FAIL: missing 'merged' for c-merged" >&2; exit 1; }
+grep -q "r2 failed" <<< "$cards_wide" || { echo "FAIL: missing round reason 'r2 failed'" >&2; exit 1; }
+grep -q "discarded" <<< "$cards_wide" || { echo "FAIL: missing 'discarded' for c-disc" >&2; exit 1; }
+grep -q "r2 stopped" <<< "$cards_wide" || { echo "FAIL: missing round reason 'r2 stopped'" >&2; exit 1; }
+grep -q "gemini-3.8-flash · fast" <<< "$cards_wide" || { echo "FAIL: missing tier 'fast' on c-act" >&2; exit 1; }
+grep -q "gpt-5 · balanced" <<< "$cards_wide" || { echo "FAIL: missing tier 'balanced' on c-stale" >&2; exit 1; }
+grep -q "sonnet-5-5 · strong" <<< "$cards_wide" || { echo "FAIL: missing tier 'strong' on c-wait" >&2; exit 1; }
+grep -q "c-legacy" <<< "$cards_wide" || { echo "FAIL: missing old-format c-legacy card" >&2; exit 1; }
+
+# Verify header keeps '⚠ 2 verify' even when narrower (COLUMNS=80 drops optional parts before count segment)
+cards_hdr80="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=80 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$cards_since" "$cards_dir"
+)"
+assert_max_width "$cards_hdr80" 80 "richer cards graph COLUMNS=80"
+grep -q "⚠ 2 verify" <<< "$(head -n 1 <<< "$cards_hdr80")" || {
+  echo "FAIL: COLUMNS=80 header dropped '⚠ 2 verify': $(head -n 1 <<< "$cards_hdr80")" >&2
+  exit 1
+}
+
+# Verify COLUMNS=60 and COLUMNS=18 width invariants with richer cards
+for c_cols in 60 18; do
+  c_narrow="$(
+    SQUAD_ORCHESTRATION_NOW="$cards_now" \
+    SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+    COLUMNS="$c_cols" LINES=50 \
+      "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$cards_since" "$cards_dir"
+  )"
+  assert_max_width "$c_narrow" "$c_cols" "richer cards graph COLUMNS=$c_cols"
+done
+
+# Verify colour output: stale uses warning colour (208/1;31), verify FAIL uses failed colour (not completed green)
+cards_color="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_FORCE_COLOR=1 \
+  SQUAD_ORCHESTRATION_FRAME=1 \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=136 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$cards_since" "$cards_dir"
+)"
+if grep -qE $'\033\\[(38;5;78|32)m[^\033]*verify FAIL' <<< "$cards_color"; then
+  echo "FAIL: verify FAIL rendered with completed green colour" >&2
+  exit 1
+fi
+grep -E $'\033\\[(38;5;203|31)m[^\033]*verify FAIL' <<< "$cards_color" >/dev/null || {
+  echo "FAIL: verify FAIL missing failed colour" >&2
+  exit 1
+}
+grep -E $'\033\\[(38;5;208|1;31)m[^\033]*stale 3m05s' <<< "$cards_color" >/dev/null || {
+  echo "FAIL: stale missing warning colour" >&2
+  exit 1
+}
+
+# Verify tree and pipeline views show the new state words and facts
+cards_tree="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=140 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout tree --once --since "$cards_since" "$cards_dir"
+)"
+assert_max_width "$cards_tree" 140 "richer cards tree COLUMNS=140"
+for word in "stale 3m05s" "waiting 3m15s" "verify FAIL" "merged" "discarded" "unmerged" "scope!" "Edit src/auth.rs" "43k tok" "round 2 (verify fail)" "fast" "balanced" "strong"; do
+  grep -q "$word" <<< "$cards_tree" || {
+    echo "FAIL: tree missing '$word'" >&2
+    echo "$cards_tree" >&2
+    exit 1
+  }
+done
+
+cards_pipe="$(
+  SQUAD_ORCHESTRATION_NOW="$cards_now" \
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
+  COLUMNS=260 LINES=50 \
+    "$root/scripts/squad-orchestration.sh" --layout pipeline --once --since "$cards_since" "$cards_dir"
+)"
+assert_max_width "$cards_pipe" 260 "richer cards pipeline COLUMNS=260"
+for word in "stale 3m05s" "waiting 3m15s" "verify FAIL" "merged" "discarded" "unmerged" "scope!" "Edit src/auth.rs" "43k" "r2:verify fail" "fast" "balanced" "strong"; do
+  grep -q "$word" <<< "$cards_pipe" || {
+    echo "FAIL: pipeline missing '$word'" >&2
+    echo "$cards_pipe" >&2
+    exit 1
+  }
+done
 
 echo "PASS: squad_orchestration_smoke"

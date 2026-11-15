@@ -28,7 +28,7 @@ unset TMUX TMUX_PANE SQUAD_DEVKIT_GHOSTTY_TERMINAL SQUAD_MANAGER_ID SQUAD_DEVKIT
 export TERM_PROGRAM=test-terminal SQUAD_WORKER_PANES=0 SQUAD_WORKER_DASHBOARD=0
 
 # The eight roles the launcher copies, in the order the copy loop runs them.
-expected_roles="$(printf '%s\n' dev manager-devkit researcher reviewer security sub-manager tester ui-ux | LC_ALL=C sort)"
+expected_roles="$(printf '%s\n' dev manager-devkit manager-hierarchy researcher reviewer security sub-manager tester ui-ux | LC_ALL=C sort)"
 template_marker='<!-- squad-devkit template'
 
 # Fake engines only: claude starts the manager, codex runs workers. Neither calls a model.
@@ -139,11 +139,11 @@ bash_roles="$(
   _squad_worker
   printf '%s\n' "${COMPREPLY[@]}" | LC_ALL=C sort
 )"
-[[ "$bash_roles" == "$expected_roles" ]] || fail "bash --role completion: $bash_roles"
+[[ "$bash_roles" == "$(printf '%s\n' "$expected_roles" | grep -v '^manager-hierarchy$')" ]] || fail "bash --role completion: $bash_roles"
 pass 'bash completion offers exactly the eight roles for squad-worker --role'
 zsh_roles="$(sed -n "s/.*'--role\[Role prompt\]:role:(\([^)]*\))'.*/\1/p" "$repo_root/scripts/completions/_squad-devkit" |
   tr ' ' '\n' | LC_ALL=C sort)"
-[[ "$zsh_roles" == "$expected_roles" ]] || fail "zsh --role completion: $zsh_roles"
+[[ "$zsh_roles" == "$(printf '%s\n' "$expected_roles" | grep -v '^manager-hierarchy$')" ]] || fail "zsh --role completion: $zsh_roles"
 pass 'zsh completion offers exactly the eight roles for squad-worker --role'
 
 # Workers: security, reviewer, and researcher run in place; no worktree.
@@ -216,3 +216,7 @@ call="$(last_codex_call)"
 pass 'tester worker gets a worktree and the customized .squad/roles/tester.md'
 
 printf 'PASS: %d squad-devkit role checks (templates, prepare_project, completions, squad-worker roles)\n' "$passed"
+
+grep -qF 'read `.squad/roles/manager-hierarchy.md`' "$roles_directory/manager-devkit.md" || fail
+if grep -qF '### Sub-managers (hierarchy mode)' "$roles_directory/manager-devkit.md"; then fail; fi
+grep -qF '### Sub-managers (hierarchy mode)' "$roles_directory/manager-hierarchy.md" || fail

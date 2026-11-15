@@ -51,6 +51,8 @@ Without an objective the manager opens an interactive chat and asks for one firs
                           (or SQUAD_DEVKIT_DISABLE_WORKERS, or disabled_workers=)
   --view MODE   How worker progress is shown: orchestration (one live flow view, default) or panes (one split per worker); or SQUAD_WORKER_VIEW / view= in the config file
   --doctor      Diagnose environment: core tools, manager, worker engines, and multiplexer/panes
+  --split-test  With --doctor, open and verify a monitor split
+  --stats       Show run statistics for the last 30 days (--days N)
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
   --tmux        Run the manager in a tmux session; re-running attaches to it
                 (or set SQUAD_DEVKIT_BACKEND=here|ghostty|tmux)
@@ -92,6 +94,9 @@ dry_run=0
 no_attach=0
 setup=0
 doctor=0
+split_test=0
+stats=0
+stats_days=30
 devkit_action=""
 seen_positional=0
 reload_passthrough_args=()
@@ -116,6 +121,11 @@ while (( $# > 0 )); do
     --clean) clean_only=1; reload_passthrough_args+=("$1") ;;
     --clean-all) clean_only=2; reload_passthrough_args+=("$1") ;;
     --setup) setup=1; reload_passthrough_args+=("$1") ;;
+    --stats) stats=1 ;;
+    --split-test) split_test=1 ;;
+    --days)
+      if (( $# < 2 )) || [[ ! "$2" =~ ^[0-9]+$ ]] || (( ${#2} > 5 )); then echo "Invalid --days value" >&2; exit 2; fi
+      stats_days="$2"; shift ;;
     --doctor) doctor=1; reload_passthrough_args+=("$1") ;;
     --update) devkit_action=update ;;
     --reload) devkit_action=reload ;;
@@ -600,6 +610,21 @@ run_doctor() {
   fi
   printf '  Monitor pane mode: %s\n' "$pane_support"
   printf '  View: %s (%s)\n' "$view_opt" "$view_source"
+  if (( split_test )); then
+    local split_dir split_error
+    split_dir="$(mktemp -d)"
+    printf '#!/usr/bin/env bash\nprintf "squad split test OK\\n"\nsleep 2\nrm -rf -- "%s"\n' "$split_dir" >"$split_dir/test.sh"
+    chmod +x "$split_dir/test.sh"
+    if split_error="$(squad_open_monitor "$split_dir/test.sh" 'squad split test' "$PWD" "$split_dir" '' required 2>&1)"; then
+      printf '  [OK]      split test opened\n'
+    else
+      printf '  [FAIL]    split test: %s\n' "$split_error"
+      rm -rf "$split_dir"
+      status=1
+    fi
+  else
+    printf '  Hint: use --doctor --split-test to test a monitor split.\n'
+  fi
 
   printf '\nResult: '
   if (( status == 0 )); then
@@ -609,6 +634,44 @@ run_doctor() {
   fi
   return "$status"
 }
+
+if (( split_test && ! doctor )); then echo '--split-test requires --doctor' >&2; exit 2; fi
+if (( stats )); then
+  cutoff=$(( $(date +%s) - 10#$stats_days * 86400 ))
+  stats_workspace="${SQUAD_DEVKIT_PROJECT_ROOT:-}"
+  if [[ -z "$stats_workspace" ]]; then
+    stats_workspace="$PWD"
+    while [[ "$stats_workspace" != / && ! -d "$stats_workspace/.squad" ]]; do
+      stats_workspace="$(dirname "$stats_workspace")"
+    done
+    [[ -d "$stats_workspace/.squad" ]] || stats_workspace="$PWD"
+  fi
+  status_files=()
+  for status_file in "$stats_workspace"/.squad/workers/*.status; do
+    [[ -f "$status_file" ]] && status_files+=("$status_file")
+  done
+  if (( ${#status_files[@]} == 0 )); then echo "no runs"; exit 0; fi
+  awk -v cutoff="$cutoff" '
+    FNR == 1 { if (NR > 1) record(); split("", v) }
+    { pos=index($0,"="); if (pos) v[substr($0,1,pos-1)]=substr($0,pos+1) }
+    END { if (NR) record(); if (!total) { print "no runs"; exit }
+      print "ENGINE   TIER       RUNS FIRST_PASS AVG_ROUNDS TOKENS AVG_DURATION"
+      for (k in count) keys[++n]=k
+      for (i=2; i<=n; i++) { key=keys[i]; j=i-1; while (j>0 && keys[j]>key) { keys[j+1]=keys[j]; j-- } keys[j+1]=key }
+      for (i=1; i<=n; i++) { k=keys[i]; fp=first[k] ? sprintf("%.1f%%", pass[k]*100/first[k]) : "-"; printf "%-8s %-10s %4d %10s %10.2f %6.0f %11.1fs\n", engine[k], tier[k], count[k], fp, count[k]/workers[k], tokens[k], durations[k] ? seconds[k]/durations[k] : 0 }
+    }
+    function record(  k,w) {
+      if (v["started"] !~ /^[0-9]+$/ || v["started"]+0 < cutoff) return
+      engine[k=(v["engine"] == "" ? "-" : v["engine"]) SUBSEP (v["model_tier"] == "" ? "-" : v["model_tier"])] = (v["engine"] == "" ? "-" : v["engine"])
+      tier[k]=v["model_tier"] == "" ? "-" : v["model_tier"]
+      count[k]++; total++; w=k SUBSEP v["worker"]; if (!seen[w]++) workers[k]++
+      if (v["attempt"] == "1") { first[k]++; if (v["state"] == "completed" && v["verify"] != "fail" && v["verify"] != "timeout") pass[k]++ }
+      tokens[k]+=(v["tokens_in"]+0)-(v["tokens_cached"]+0)+(v["tokens_out"]+0)
+      if (v["finished"] ~ /^[0-9]+$/ && v["finished"]+0 >= v["started"]+0) { seconds[k]+=v["finished"]-v["started"]; durations[k]++ }
+    }
+  ' "${status_files[@]}"
+  exit 0
+fi
 
 if (( list_projects == 1 )); then
   printf 'Projects found in: %s\n' "$(search_roots_display)"
@@ -781,7 +844,7 @@ refresh_project_roles() {
   local source=""
   local destination=""
   mkdir -p "$target_project/.squad/roles"
-  for role in manager-devkit dev tester reviewer researcher ui-ux security sub-manager; do
+  for role in manager-devkit manager-hierarchy dev tester reviewer researcher ui-ux security sub-manager; do
     source="$script_dir/../templates/devkit/$role.md"
     destination="$target_project/.squad/roles/$role.md"
     if [[ ! -e "$destination" ]]; then

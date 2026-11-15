@@ -151,7 +151,7 @@ fi
 # Define colour tokens once (256-colour when tput colors >= 256, else 8-colour; empty when disabled).
 bold="" dim="" reverse="" reset=""
 c_manager="" c_running="" c_running_bright="" c_completed="" c_failed=""
-c_asking="" c_stopped="" c_brief="" c_answer="" c_question="" c_done=""
+c_asking="" c_stale="" c_stopped="" c_brief="" c_answer="" c_question="" c_done=""
 
 if (( use_color == 1 )); then
   num_colors=8
@@ -172,6 +172,7 @@ if (( use_color == 1 )); then
     c_completed=$'\033[38;5;78m'
     c_failed=$'\033[38;5;203m'
     c_asking=$'\033[38;5;81m'
+    c_stale=$'\033[38;5;208m'
     c_stopped=$'\033[38;5;245m'
     c_brief=$'\033[38;5;75m'
     c_answer=$'\033[38;5;171m'
@@ -184,6 +185,7 @@ if (( use_color == 1 )); then
     c_completed=$'\033[32m'
     c_failed=$'\033[31m'
     c_asking=$'\033[36m'
+    c_stale=$'\033[1;31m'
     c_stopped=$'\033[90m'
     c_brief=$'\033[34m'
     c_answer=$'\033[35m'
@@ -411,6 +413,131 @@ fmt_short_model() {
   trunc_str "$m" "$max_w"
 }
 
+# Format model + optional tier (fast/balanced/strong, abbreviated only if width forces it) into REPLY.
+fmt_model_tier() {
+  local raw_model="$1" tier="$2" max_w="$3"
+  if [[ -z "$tier" ]]; then
+    fmt_short_model "$raw_model" "$max_w"
+    return
+  fi
+  local m="${raw_model//[[:space:]]/}"
+  if [[ -z "$m" ]]; then
+    m="default"
+  else
+    m="${raw_model##*/}"
+    [[ -n "$m" ]] || m="default"
+  fi
+  local full="${m} · ${tier}"
+  if (( ${#full} <= max_w )); then
+    REPLY="$full"
+    return
+  fi
+  if (( max_w >= ${#tier} + 8 )); then
+    fmt_short_model "$raw_model" $(( max_w - 3 - ${#tier} ))
+    if (( ${#REPLY} + 3 + ${#tier} <= max_w )); then
+      REPLY="${REPLY} · ${tier}"
+      return
+    fi
+  fi
+  local abbr="$tier"
+  case "$tier" in
+    fast)     abbr="fst" ;;
+    balanced) abbr="bal" ;;
+    strong)   abbr="str" ;;
+  esac
+  if (( max_w >= ${#abbr} + 5 )); then
+    fmt_short_model "$raw_model" $(( max_w - 3 - ${#abbr} ))
+    if (( ${#REPLY} + 3 + ${#abbr} <= max_w )); then
+      REPLY="${REPLY} · ${abbr}"
+      return
+    fi
+  fi
+  fmt_short_model "$raw_model" $(( max_w - 1 - ${#abbr} ))
+  trunc_str "${REPLY} ${abbr}" "$max_w"
+}
+
+# Shared worker state-to-glyph/text/colour resolver for graph, tree, and pipeline views.
+# Sets ST_PLAIN, ST_DISP, ST_COLOR, ST_IS_SPIN.
+resolve_worker_state() {
+  local w="$1"
+  local eff_state="${2:-${W_STATE[$w]}}"
+  local max_w="${3:-999}"
+  local glyph="" label="" keep_glyph=0
+  ST_COLOR=""
+  ST_IS_SPIN=0
+
+  if [[ "$eff_state" == "running" ]]; then
+    if (( W_ASKING[w] == 1 )); then
+      glyph="?"
+      keep_glyph=1
+      if [[ -n "${W_ASK_AGE[$w]}" ]]; then
+        fmt_elapsed "${W_ASK_AGE[$w]}"
+        label="waiting ${REPLY}"
+      else
+        label="waiting"
+      fi
+      [[ -n "$c_asking" ]] && ST_COLOR="@@ASK_CLR@@"
+    elif (( W_IS_STALE[w] == 1 )); then
+      glyph="⚠"
+      fmt_elapsed "${W_OUT_AGE[$w]}"
+      label="stale ${REPLY}"
+      ST_COLOR="$c_stale"
+    else
+      glyph="⠋"
+      label="running"
+      ST_COLOR="$c_running"
+      ST_IS_SPIN=1
+    fi
+  else
+    case "$eff_state" in
+      completed)
+        if [[ "${W_VERIFY[$w]}" == "fail" || "${W_VERIFY[$w]}" == "timeout" ]]; then
+          glyph="✗"
+          label="verify FAIL"
+          ST_COLOR="$c_failed"
+        else
+          glyph="✓"
+          label="completed"
+          ST_COLOR="$c_completed"
+        fi
+        ;;
+      failed)
+        glyph="✗"
+        label="failed"
+        ST_COLOR="$c_failed"
+        ;;
+      stopped)
+        glyph="⏸"
+        label="stopped"
+        ST_COLOR="$c_stopped"
+        ;;
+      lost)
+        glyph="?"
+        label="lost"
+        ST_COLOR="$c_failed"
+        ;;
+      *)
+        label="$eff_state"
+        ;;
+    esac
+  fi
+
+  if [[ -n "$glyph" ]]; then
+    if (( keep_glyph == 0 && ${#glyph} + 1 + ${#label} > max_w && ${#label} <= max_w )); then
+      ST_PLAIN="$label"
+    else
+      ST_PLAIN="${glyph} ${label}"
+    fi
+  else
+    ST_PLAIN="$label"
+  fi
+  if (( ST_IS_SPIN == 1 )); then
+    ST_DISP="${ST_PLAIN/⠋/@@SPIN@@}"
+  else
+    ST_DISP="$ST_PLAIN"
+  fi
+}
+
 resolve_workspace_root() {
   local dir="${1%/}"
   if [[ "$dir" == /* ]]; then
@@ -540,6 +667,20 @@ W_EDGE_ARROW=()
 W_EDGE_TEXT=()
 W_EDGE_TYPE=()
 W_MSG_RECENT=()
+W_STATUS_FILE=()
+W_LOG=()
+W_MODEL_TIER=()
+W_VERIFY=()
+W_SCOPE_VIOLATION=()
+W_MERGED=()
+W_DISCARDED=()
+W_MERGE_STATE=()
+W_ACTIVITY=()
+W_OUT_AGE=()
+W_IS_STALE=()
+W_ASK_TS=()
+W_ASK_AGE=()
+W_ROUND_REASON=()
 SM_LIST=()
 
 P_NAME=()
@@ -563,6 +704,7 @@ COMPLETED_COUNT=0
 FAILED_COUNT=0
 STOPPED_COUNT=0
 LOST_COUNT=0
+VERIFY_FAIL_COUNT=0
 TOTAL_TOKENS=0
 
 FRAME_TPL=("" "" "" "")
@@ -594,6 +736,20 @@ load_data() {
   W_EDGE_TEXT=()
   W_EDGE_TYPE=()
   W_MSG_RECENT=()
+  W_STATUS_FILE=()
+  W_LOG=()
+  W_MODEL_TIER=()
+  W_VERIFY=()
+  W_SCOPE_VIOLATION=()
+  W_MERGED=()
+  W_DISCARDED=()
+  W_MERGE_STATE=()
+  W_ACTIVITY=()
+  W_OUT_AGE=()
+  W_IS_STALE=()
+  W_ASK_TS=()
+  W_ASK_AGE=()
+  W_ROUND_REASON=()
   SM_LIST=()
 
   P_NAME=()
@@ -616,33 +772,48 @@ load_data() {
   FAILED_COUNT=0
   STOPPED_COUNT=0
   LOST_COUNT=0
+  VERIFY_FAIL_COUNT=0
   TOTAL_TOKENS=0
 
+  local stale_secs="${SQUAD_ORCHESTRATION_STALE_SECS:-120}"
+  [[ "$stale_secs" =~ ^[0-9]+$ ]] || stale_secs=120
+
   local raw_pids=()
-  local status_file k v
+  local prev_started=() prev_state=() prev_verify=() prev_scope=()
+  local status_file line k v
   if [[ -d "$workers_dir" ]]; then
     for status_file in "$workers_dir"/*.status; do
       [[ -e "$status_file" ]] || continue
       local f_worker="" f_started="" f_finished="" f_plan="" f_state="" f_pid=""
       local f_engine="" f_model="" f_tok_in="" f_tok_out="" f_tokens="" f_worktree=""
       local f_role="" f_parent="" f_depth=""
-      while IFS='=' read -r k v || [[ -n "$k" ]]; do
+      local f_tier="" f_verify="" f_scope="" f_merged="" f_discarded="" f_log=""
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == *=* ]] || continue
+        k="${line%%=*}"
+        v="${line#*=}"
         case "$k" in
-          worker)     f_worker="$v" ;;
-          started)    f_started="$v" ;;
-          finished)   f_finished="$v" ;;
-          plan)       f_plan="$v" ;;
-          state)      f_state="$v" ;;
-          pid)        f_pid="$v" ;;
-          engine)     f_engine="$v" ;;
-          model)      f_model="$v" ;;
-          tokens_in)  f_tok_in="$v" ;;
-          tokens_out) f_tok_out="$v" ;;
-          tokens)     f_tokens="$v" ;;
-          worktree)   f_worktree="$v" ;;
-          role)       f_role="$v" ;;
-          parent)     f_parent="$v" ;;
-          depth)      f_depth="$v" ;;
+          worker)          f_worker="$v" ;;
+          started)         f_started="$v" ;;
+          finished)        f_finished="$v" ;;
+          plan)            f_plan="$v" ;;
+          state)           f_state="$v" ;;
+          pid)             f_pid="$v" ;;
+          engine)          f_engine="$v" ;;
+          model)           f_model="$v" ;;
+          model_tier)      f_tier="$v" ;;
+          verify)          f_verify="$v" ;;
+          scope_violation) f_scope="$v" ;;
+          merged)          f_merged="$v" ;;
+          discarded)       f_discarded="$v" ;;
+          log)             f_log="$v" ;;
+          tokens_in)       f_tok_in="$v" ;;
+          tokens_out)      f_tok_out="$v" ;;
+          tokens)          f_tokens="$v" ;;
+          worktree)        f_worktree="$v" ;;
+          role)            f_role="$v" ;;
+          parent)          f_parent="$v" ;;
+          depth)           f_depth="$v" ;;
         esac
       done < "$status_file"
 
@@ -686,12 +857,27 @@ load_data() {
         W_ROLE[$found_idx]="${f_role:-dev}"
         W_PARENT[$found_idx]="$f_parent"
         W_DEPTH[$found_idx]="$f_depth"
+        W_STATUS_FILE[$found_idx]="$status_file"
+        W_LOG[$found_idx]="$f_log"
+        W_MODEL_TIER[$found_idx]="$f_tier"
+        W_VERIFY[$found_idx]="$f_verify"
+        W_SCOPE_VIOLATION[$found_idx]="$f_scope"
+        W_MERGED[$found_idx]="$f_merged"
+        W_DISCARDED[$found_idx]="$f_discarded"
+        prev_started[$found_idx]=-1
+        prev_state[$found_idx]=""
+        prev_verify[$found_idx]=""
+        prev_scope[$found_idx]=""
       else
         W_ROUND[$found_idx]=$(( W_ROUND[$found_idx] + 1 ))
         if [[ -n "$f_parent" && -z "${W_PARENT[$found_idx]}" ]]; then
           W_PARENT[$found_idx]="$f_parent"
         fi
         if (( f_started >= W_STARTED[$found_idx] )); then
+          prev_started[$found_idx]="${W_STARTED[$found_idx]}"
+          prev_state[$found_idx]="${W_STATE[$found_idx]}"
+          prev_verify[$found_idx]="${W_VERIFY[$found_idx]}"
+          prev_scope[$found_idx]="${W_SCOPE_VIOLATION[$found_idx]}"
           W_STARTED[$found_idx]="$f_started"
           W_FINISHED[$found_idx]="$f_finished"
           W_PLAN_NAME[$found_idx]="$f_plan"
@@ -701,9 +887,21 @@ load_data() {
           W_MODEL[$found_idx]="$f_model"
           W_TOK[$found_idx]="$f_tok"
           W_WORKTREE[$found_idx]="$f_worktree"
+          W_STATUS_FILE[$found_idx]="$status_file"
+          W_LOG[$found_idx]="$f_log"
+          W_MODEL_TIER[$found_idx]="$f_tier"
+          W_VERIFY[$found_idx]="$f_verify"
+          W_SCOPE_VIOLATION[$found_idx]="$f_scope"
+          W_MERGED[$found_idx]="$f_merged"
+          W_DISCARDED[$found_idx]="$f_discarded"
           [[ -z "$f_role" ]] || W_ROLE[$found_idx]="$f_role"
           [[ -z "$f_parent" ]] || W_PARENT[$found_idx]="$f_parent"
           [[ -z "$f_depth" ]] || W_DEPTH[$found_idx]="$f_depth"
+        elif (( prev_started[found_idx] < 0 || f_started >= prev_started[found_idx] )); then
+          prev_started[$found_idx]="$f_started"
+          prev_state[$found_idx]="$f_state"
+          prev_verify[$found_idx]="$f_verify"
+          prev_scope[$found_idx]="$f_scope"
         fi
       fi
     done
@@ -722,6 +920,86 @@ load_data() {
       fi
     fi
     W_STATE[$wi]="$st"
+
+    W_MERGE_STATE[$wi]=""
+    W_ACTIVITY[$wi]=""
+    W_OUT_AGE[$wi]=""
+    W_IS_STALE[$wi]=0
+    W_ASK_TS[$wi]=""
+    W_ASK_AGE[$wi]=""
+    W_ROUND_REASON[$wi]=""
+
+    if [[ "$st" == "running" ]]; then
+      local live_file="${W_STATUS_FILE[$wi]%.status}.live"
+      if [[ -n "${W_STATUS_FILE[$wi]}" && -f "$live_file" ]]; then
+        local l_line lk lv l_tok_in="" l_tok_out="" l_act=""
+        while IFS= read -r l_line || [[ -n "$l_line" ]]; do
+          [[ "$l_line" == *=* ]] || continue
+          lk="${l_line%%=*}"
+          lv="${l_line#*=}"
+          case "$lk" in
+            tokens_in)  l_tok_in="$lv" ;;
+            tokens_out) l_tok_out="$lv" ;;
+            activity)   l_act="$lv" ;;
+          esac
+        done < "$live_file"
+        local clean_l_in="${l_tok_in//[^0-9]/}"
+        local clean_l_out="${l_tok_out//[^0-9]/}"
+        if [[ -n "$clean_l_in" || -n "$clean_l_out" ]]; then
+          W_TOK[$wi]=$(( ${clean_l_in:-0} + ${clean_l_out:-0} ))
+        fi
+        if [[ -n "$l_act" ]]; then
+          l_act="${l_act//$'\r'/}"
+          l_act="${l_act//$'\n'/}"
+          l_act="${l_act//$'\t'/ }"
+          if [[ "$l_act" =~ [[:cntrl:]] ]]; then
+            l_act="$(printf '%s' "$l_act" | tr -d '[:cntrl:]')"
+          fi
+          W_ACTIVITY[$wi]="$l_act"
+        fi
+      fi
+      local log_path="${W_LOG[$wi]}"
+      if [[ -n "$log_path" && "$log_path" != /* && ! -e "$log_path" && -e "$WS_ROOT/$log_path" ]]; then
+        log_path="$WS_ROOT/$log_path"
+      fi
+      if [[ -n "$log_path" && -e "$log_path" ]]; then
+        local log_mtime=""
+        log_mtime="$(stat -c %Y "$log_path" 2>/dev/null || stat -f %m "$log_path" 2>/dev/null || true)"
+        if [[ "$log_mtime" =~ ^[0-9]+$ ]]; then
+          local out_age=$(( DATA_NOW - log_mtime ))
+          (( out_age >= 0 )) || out_age=0
+          W_OUT_AGE[$wi]="$out_age"
+          if (( out_age > stale_secs )); then
+            W_IS_STALE[$wi]=1
+          fi
+        fi
+      fi
+    elif [[ "$st" == "completed" ]]; then
+      if [[ "${W_VERIFY[$wi]}" == "fail" || "${W_VERIFY[$wi]}" == "timeout" ]]; then
+        VERIFY_FAIL_COUNT=$(( VERIFY_FAIL_COUNT + 1 ))
+      fi
+      if [[ -n "${W_MERGED[$wi]}" ]]; then
+        W_MERGE_STATE[$wi]="merged"
+      elif [[ -n "${W_DISCARDED[$wi]}" ]]; then
+        W_MERGE_STATE[$wi]="discarded"
+      elif [[ -n "${W_WORKTREE[$wi]}" && -d "${W_WORKTREE[$wi]}" ]]; then
+        W_MERGE_STATE[$wi]="unmerged"
+      fi
+    fi
+
+    if (( W_ROUND[wi] >= 2 )); then
+      if [[ "${prev_verify[$wi]}" == "fail" || "${prev_verify[$wi]}" == "timeout" ]]; then
+        W_ROUND_REASON[$wi]="verify fail"
+      elif [[ -n "${prev_scope[$wi]}" ]]; then
+        W_ROUND_REASON[$wi]="scope"
+      elif [[ "${prev_state[$wi]}" == "failed" ]]; then
+        W_ROUND_REASON[$wi]="failed"
+      elif [[ "${prev_state[$wi]}" == "stopped" ]]; then
+        W_ROUND_REASON[$wi]="stopped"
+      else
+        W_ROUND_REASON[$wi]="fix"
+      fi
+    fi
 
     case "$st" in
       running)   RUNNING_COUNT=$(( RUNNING_COUNT + 1 )) ;;
@@ -878,11 +1156,14 @@ load_data() {
             if [[ "$h_from" == "$wn" ]]; then
               if [[ "$h_type" == "QUESTION" ]]; then
                 W_ASKING[$wi]=1
+                W_ASK_TS[$wi]="$h_ts"
               else
                 W_ASKING[$wi]=0
+                W_ASK_TS[$wi]=""
               fi
             elif [[ "$h_to" == "$wn" && "$h_type" == "ANSWER" ]]; then
               W_ASKING[$wi]=0
+              W_ASK_TS[$wi]=""
             fi
           fi
         fi
@@ -908,6 +1189,19 @@ load_data() {
   # Finalize worker edge info and aggregate plan stats
   wi=0
   while (( wi < TOTAL_WORKERS )); do
+    if [[ "${W_STATE[$wi]}" != "running" ]]; then
+      W_ASKING[$wi]=0
+      W_ASK_TS[$wi]=""
+    elif (( W_ASKING[wi] == 1 )) && [[ -n "${W_ASK_TS[$wi]}" ]]; then
+      rfc3339_to_epoch "${W_ASK_TS[$wi]}"
+      local ask_ep="$REPLY"
+      if (( ask_ep > 0 )); then
+        local ask_age=$(( DATA_NOW - ask_ep ))
+        (( ask_age >= 0 )) || ask_age=0
+        W_ASK_AGE[$wi]="$ask_age"
+      fi
+    fi
+
     local mtype="${W_LAST_TYPE[$wi]}"
     if [[ -z "$mtype" ]]; then
       case "${W_STATE[$wi]}" in
@@ -1094,7 +1388,10 @@ build_tree_diagram() {
     fi
     (( w_eff_len > max_w_len )) && max_w_len="$w_eff_len"
     fmt_eng_mod "${W_ENGINE[$wi]}" "${W_MODEL[$wi]}"
-    trunc_str "$REPLY" 34
+    if [[ -n "${W_MODEL_TIER[$wi]}" ]]; then
+      REPLY="${REPLY} · ${W_MODEL_TIER[$wi]}"
+    fi
+    trunc_str "$REPLY" 42
     (( ${#REPLY} > max_em_len )) && max_em_len="${#REPLY}"
     wi=$(( wi + 1 ))
   done
@@ -1301,7 +1598,10 @@ build_tree_diagram() {
       local worker_col="$REPLY"
 
       fmt_eng_mod "${W_ENGINE[$w]}" "${W_MODEL[$w]}"
-      trunc_str "$REPLY" 34
+      if [[ -n "${W_MODEL_TIER[$w]}" ]]; then
+        REPLY="${REPLY} · ${W_MODEL_TIER[$w]}"
+      fi
+      trunc_str "$REPLY" 42
       pad_str "$REPLY" $(( max_em_len + 2 ))
       local eng_mod_col="$REPLY"
 
@@ -1310,40 +1610,20 @@ build_tree_diagram() {
         eff_state="running"
       fi
 
-      local state_plain state_disp state_color=""
-      case "$eff_state" in
-        running)
-          state_plain="⠋ running  "
-          state_disp="@@SPIN@@ running  "
-          state_color="$c_running"
-          ;;
-        completed)
-          state_plain="✓ completed "
+      resolve_worker_state "$w" "$eff_state" 999
+      local state_plain="$ST_PLAIN" state_disp="$ST_DISP" state_color="$ST_COLOR"
+      if (( ${#state_plain} < 12 )); then
+        pad_str "$state_plain" 12
+        state_plain="$REPLY"
+        if (( ST_IS_SPIN == 1 )); then
+          state_disp="${state_plain/⠋/@@SPIN@@}"
+        else
           state_disp="$state_plain"
-          state_color="$c_completed"
-          ;;
-        failed)
-          state_plain="✗ failed   "
-          state_disp="$state_plain"
-          state_color="$c_failed"
-          ;;
-        stopped)
-          state_plain="⏸ stopped  "
-          state_disp="$state_plain"
-          state_color="$c_stopped"
-          ;;
-        lost)
-          state_plain="? lost     "
-          state_disp="$state_plain"
-          state_color="$c_failed"
-          ;;
-        *)
-          pad_str "$eff_state" 11
-          state_plain="$REPLY"
-          state_disp="$REPLY"
-          state_color=""
-          ;;
-      esac
+        fi
+      else
+        state_plain="${state_plain} "
+        state_disp="${state_disp} "
+      fi
 
       fmt_elapsed "${W_ELAPSED[$w]}"
       local elapsed_text="$REPLY"
@@ -1354,14 +1634,25 @@ build_tree_diagram() {
       fi
       if (( disp_tok > 0 )); then
         fmt_human_count "$disp_tok"
-        local tok_text="${REPLY} tok"
-        if (( W_ROUND[w] > 1 )); then
-          tail_part="${elapsed_text}  ${tok_text}  round ${W_ROUND[$w]}"
-        else
-          tail_part="${elapsed_text}  ${tok_text}"
+        tail_part="${tail_part}  ${REPLY} tok"
+      fi
+      if (( W_ROUND[w] > 1 )); then
+        tail_part="${tail_part}  round ${W_ROUND[$w]} (${W_ROUND_REASON[$w]})"
+      fi
+      if [[ -n "${W_SCOPE_VIOLATION[$w]}" ]]; then
+        tail_part="${tail_part}  scope!"
+      fi
+      if [[ -n "${W_MERGE_STATE[$w]}" ]]; then
+        tail_part="${tail_part}  ${W_MERGE_STATE[$w]}"
+      fi
+      if [[ "${W_STATE[$w]}" == "running" ]]; then
+        if [[ -n "${W_OUT_AGE[$w]}" ]]; then
+          fmt_elapsed "${W_OUT_AGE[$w]}"
+          tail_part="${tail_part}  ${REPLY} ago"
         fi
-      elif (( W_ROUND[w] > 1 )); then
-        tail_part="${elapsed_text}  round ${W_ROUND[$w]}"
+        if [[ -n "${W_ACTIVITY[$w]}" ]]; then
+          tail_part="${tail_part}  ${W_ACTIVITY[$w]}"
+        fi
       fi
 
       local prefix_plain="${branch}${worker_col}${eng_mod_col}"
@@ -1444,17 +1735,27 @@ build_graph_diagram() {
   DIAG_T3=""
   DIAG_LINE_COUNT=0
 
-  local inner_w=16 content_w=14
+  local min_inner_w=16 min_content_w=14
   if (( columns <= 60 )); then
-    inner_w=12
-    content_w=11
+    min_inner_w=12
+    min_content_w=11
+  fi
+  local min_box_w=$(( min_inner_w + 2 ))
+  local gap=2
+  local per_row=$(( (columns + gap) / (min_box_w + gap) ))
+  (( per_row >= 1 )) || per_row=1
+  (( per_row <= 4 )) || per_row=4
+
+  local avail_box_w=$(( (columns - (per_row - 1) * gap) / per_row ))
+  local inner_w=$(( avail_box_w - 2 ))
+  (( inner_w >= min_inner_w )) || inner_w="$min_inner_w"
+  (( inner_w <= 28 )) || inner_w=28
+  local content_w=$(( inner_w - 2 ))
+  if (( inner_w == min_inner_w )); then
+    content_w="$min_content_w"
   fi
   local box_w=$(( inner_w + 2 ))
   local half_box=$(( box_w / 2 ))
-  local gap=2
-  local per_row=$(( (columns + gap) / (box_w + gap) ))
-  (( per_row >= 1 )) || per_row=1
-  (( per_row <= 4 )) || per_row=4
 
   local full_bars="${DASHES_PAD:0:$inner_w}"
   local left_bars="${DASHES_PAD:0:$(( half_box - 1 ))}"
@@ -1510,9 +1811,9 @@ build_graph_diagram() {
       wi=$(( wi + 1 ))
     done
     if (( cnt > per_row )); then
-      exp_heights[$rank]=13
+      exp_heights[$rank]=14
     else
-      exp_heights[$rank]=12
+      exp_heights[$rank]=13
     fi
     rank=$(( rank + 1 ))
   done
@@ -1525,7 +1826,7 @@ build_graph_diagram() {
   fi
   if (( num_expanded == 1 && p_cnt >= 1 )); then
     local needed1=$(( exp_heights[0] + (p_cnt - 1) ))
-    if (( needed1 > diag_budget && diag_budget < 12 )); then
+    if (( needed1 > diag_budget && diag_budget < 13 )); then
       num_expanded=0
     fi
   fi
@@ -1682,7 +1983,7 @@ build_graph_diagram() {
       local L_b=$(( b_idx * (box_w + gap) ))
       local C_b=$(( L_b + half_box ))
       centers[$b_idx]="$C_b"
-      if ( [[ "${W_STATE[$w]}" == "running" ]] || (( W_KIDS_RUNNING[w] > 0 )) ) && (( W_ASKING[w] == 0 )); then
+      if ( [[ "${W_STATE[$w]}" == "running" ]] || (( W_KIDS_RUNNING[w] > 0 )) ) && (( W_ASKING[w] == 0 && W_IS_STALE[w] == 0 )); then
         box_running[$b_idx]=1
         any_running_edge=1
       else
@@ -1769,7 +2070,7 @@ build_graph_diagram() {
     # Build edge line (static and step-3 dot at C_b) and worker boxes
     local edge_static="" edge_dot=""
     local cur_col=0
-    local top_row="" l1_row="" l2_row="" l3_row="" l4_row="" bot_row=""
+    local top_row="" l1_row="" l2_row="" l3_row="" l4_row="" l5_row="" bot_row=""
 
     b_idx=0
     while (( b_idx < row_cnt )); do
@@ -1844,18 +2145,30 @@ build_graph_diagram() {
         fi
         if (( W_ASKING[w] == 1 )); then
           state_plain="? ${done_k}/${tot_k} kids"
-          state_disp="? ${done_k}/${tot_k} kids"
+          state_disp="$state_plain"
           [[ -n "$c_asking" ]] && box_color="@@ASK_CLR@@"
         elif (( sm_running == 1 )); then
-          state_plain="⠋ ${done_k}/${tot_k} kids"
-          state_disp="@@SPIN@@ ${done_k}/${tot_k} kids"
-          box_color="$c_running"
+          if (( W_KIDS_RUNNING[w] == 0 && W_IS_STALE[w] == 1 )); then
+            state_plain="⚠ ${done_k}/${tot_k} kids"
+            state_disp="$state_plain"
+            box_color="$c_stale"
+          else
+            state_plain="⠋ ${done_k}/${tot_k} kids"
+            state_disp="@@SPIN@@ ${done_k}/${tot_k} kids"
+            box_color="$c_running"
+          fi
         else
           case "${W_STATE[$w]}" in
             completed)
-              state_plain="✓ ${done_k}/${tot_k} kids"
-              state_disp="$state_plain"
-              box_color="$c_completed"
+              if [[ "${W_VERIFY[$w]}" == "fail" || "${W_VERIFY[$w]}" == "timeout" ]]; then
+                state_plain="✗ ${done_k}/${tot_k} kids"
+                state_disp="$state_plain"
+                box_color="$c_failed"
+              else
+                state_plain="✓ ${done_k}/${tot_k} kids"
+                state_disp="$state_plain"
+                box_color="$c_completed"
+              fi
               ;;
             failed)
               state_plain="✗ ${done_k}/${tot_k} kids"
@@ -1879,62 +2192,83 @@ build_graph_diagram() {
               ;;
           esac
         fi
-      elif (( W_ASKING[w] == 1 )); then
-        state_plain="? asking"
-        state_disp="? asking"
-        [[ -n "$c_asking" ]] && box_color="@@ASK_CLR@@"
       else
-        case "${W_STATE[$w]}" in
-          running)
-            state_plain="⠋ running"
-            state_disp="@@SPIN@@ running"
-            box_color="$c_running"
-            ;;
-          completed)
-            state_plain="✓ completed"
-            state_disp="✓ completed"
-            box_color="$c_completed"
-            ;;
-          failed)
-            state_plain="✗ failed"
-            state_disp="✗ failed"
-            box_color="$c_failed"
-            ;;
-          stopped)
-            state_plain="⏸ stopped"
-            state_disp="⏸ stopped"
-            box_color="$c_stopped"
-            ;;
-          lost)
-            state_plain="? lost"
-            state_disp="? lost"
-            box_color="$c_failed"
-            ;;
-          *)
-            state_plain="${W_STATE[$w]}"
-            state_disp="${W_STATE[$w]}"
-            box_color=""
-            ;;
-        esac
+        resolve_worker_state "$w" "" "$content_w"
+        state_plain="$ST_PLAIN"
+        state_disp="$ST_DISP"
+        box_color="$ST_COLOR"
+      fi
+
+      local line5_str=""
+      if [[ "${W_STATE[$w]}" == "running" ]]; then
+        local out_part=""
+        if [[ -n "${W_OUT_AGE[$w]}" ]]; then
+          fmt_elapsed "${W_OUT_AGE[$w]}"
+          out_part="$REPLY"
+        fi
+        local act_part="${W_ACTIVITY[$w]}"
+        if [[ -n "$out_part" && -n "$act_part" ]]; then
+          if (( ${#out_part} + 3 + 4 <= content_w )); then
+            line5_str="${out_part} · ${act_part}"
+          else
+            line5_str="${out_part} ${act_part}"
+          fi
+        elif [[ -n "$act_part" ]]; then
+          line5_str="$act_part"
+        elif [[ -n "$out_part" ]]; then
+          line5_str="out ${out_part}"
+        fi
+      else
+        if [[ -n "${W_SCOPE_VIOLATION[$w]}" ]]; then
+          line5_str="scope!"
+        fi
+        if [[ -n "${W_MERGE_STATE[$w]}" ]]; then
+          if [[ -n "$line5_str" ]]; then
+            if (( ${#line5_str} + 3 + ${#W_MERGE_STATE[$w]} <= content_w )); then
+              line5_str="${line5_str} · ${W_MERGE_STATE[$w]}"
+            else
+              line5_str="${line5_str} ${W_MERGE_STATE[$w]}"
+            fi
+          else
+            line5_str="${W_MERGE_STATE[$w]}"
+          fi
+        fi
       fi
 
       fmt_elapsed "${W_ELAPSED[$w]}"
       local elapsed_text="$REPLY"
-      local line4_str="$elapsed_text"
       local box_tok="${W_TOK[$w]}"
       (( is_sm_node == 1 )) && box_tok="${W_BRANCH_TOK[$w]}"
-      if (( box_tok > 0 && W_ROUND[w] >= 2 )); then
+      local tok_s=""
+      if (( box_tok > 0 )); then
         fmt_human_count "$box_tok"
-        local tok_s="$REPLY"
-        line4_str="${elapsed_text}  ${tok_s}  r${W_ROUND[$w]}"
-        if (( ${#line4_str} > content_w )); then
-          line4_str="${elapsed_text} ${tok_s} r${W_ROUND[$w]}"
+        tok_s="$REPLY"
+      fi
+      local base4_wide="$elapsed_text" base4_tight="$elapsed_text"
+      if [[ -n "$tok_s" ]]; then
+        base4_wide="${elapsed_text}  ${tok_s}"
+        base4_tight="${elapsed_text} ${tok_s}"
+      fi
+
+      local line4_str="$base4_wide"
+      if (( ${#line4_str} > content_w )); then
+        line4_str="$base4_tight"
+      fi
+      if (( W_ROUND[w] >= 2 )); then
+        local r_full="r${W_ROUND[$w]} ${W_ROUND_REASON[$w]}"
+        if (( ${#base4_wide} + 2 + ${#r_full} <= content_w )); then
+          line4_str="${base4_wide}  ${r_full}"
+        elif (( ${#base4_tight} + 1 + ${#r_full} <= content_w )); then
+          line4_str="${base4_tight} ${r_full}"
+        elif [[ -z "$line5_str" ]]; then
+          line5_str="$r_full"
+        elif (( ${#line5_str} + 3 + ${#r_full} <= content_w )); then
+          line5_str="${line5_str} · ${r_full}"
+        elif (( ${#line5_str} + 1 + ${#r_full} <= content_w )); then
+          line5_str="${line5_str} ${r_full}"
+        else
+          line4_str="${base4_tight} ${r_full}"
         fi
-      elif (( box_tok > 0 )); then
-        fmt_human_count "$box_tok"
-        line4_str="${elapsed_text}  ${REPLY}"
-      elif (( W_ROUND[w] >= 2 )); then
-        line4_str="${elapsed_text}  r${W_ROUND[$w]}"
       fi
 
       local line1_str="-"
@@ -1957,7 +2291,7 @@ build_graph_diagram() {
         fi
       fi
 
-      fmt_short_model "${W_MODEL[$w]}" "$content_w"
+      fmt_model_tier "${W_MODEL[$w]}" "${W_MODEL_TIER[$w]}" "$content_w"
       local s_model="$REPLY"
 
       box_cell "$line1_str" "$inner_w" "$content_w"
@@ -1971,6 +2305,8 @@ build_graph_diagram() {
       fi
       box_cell "$line4_str" "$inner_w" "$content_w"
       local c4="$REPLY"
+      box_cell "$line5_str" "$inner_w" "$content_w"
+      local c5="$REPLY"
 
       if (( is_sm_node == 1 )); then
         if [[ -n "$box_color" ]]; then
@@ -1980,6 +2316,7 @@ build_graph_diagram() {
           l3_row+="${sep}${box_color}║${c3}│${reset}"
           l3_row="${l3_row%│${reset}}║${reset}"
           l4_row+="${sep}${box_color}║${reset}${c4}${box_color}║${reset}"
+          l5_row+="${sep}${box_color}║${reset}${c5}${box_color}║${reset}"
           bot_row+="${sep}${box_color}╚${d_full_bars}╝${reset}"
         else
           top_row+="${sep}╔${d_left_bars}┴${d_right_bars}╗"
@@ -1987,6 +2324,7 @@ build_graph_diagram() {
           l2_row+="${sep}║${c2}║"
           l3_row+="${sep}║${c3}║"
           l4_row+="${sep}║${c4}║"
+          l5_row+="${sep}║${c5}║"
           bot_row+="${sep}╚${d_full_bars}╝"
         fi
       elif [[ -n "$box_color" ]]; then
@@ -1995,6 +2333,7 @@ build_graph_diagram() {
         l2_row+="${sep}${box_color}│${reset}${c2}${box_color}│${reset}"
         l3_row+="${sep}${box_color}│${c3}│${reset}"
         l4_row+="${sep}${box_color}│${reset}${c4}${box_color}│${reset}"
+        l5_row+="${sep}${box_color}│${reset}${c5}${box_color}│${reset}"
         bot_row+="${sep}${box_color}└${full_bars}┘${reset}"
       else
         top_row+="${sep}┌${left_bars}┴${right_bars}┐"
@@ -2002,13 +2341,14 @@ build_graph_diagram() {
         l2_row+="${sep}│${c2}│"
         l3_row+="${sep}│${c3}│"
         l4_row+="${sep}│${c4}│"
+        l5_row+="${sep}│${c5}│"
         bot_row+="${sep}└${full_bars}┘"
       fi
 
       b_idx=$(( b_idx + 1 ))
     done
 
-    local box_block="${top_row}"$'\n'"${l1_row}"$'\n'"${l2_row}"$'\n'"${l3_row}"$'\n'"${l4_row}"$'\n'"${bot_row}"$'\n'
+    local box_block="${top_row}"$'\n'"${l1_row}"$'\n'"${l2_row}"$'\n'"${l3_row}"$'\n'"${l4_row}"$'\n'"${l5_row}"$'\n'"${bot_row}"$'\n'
     local mgr_top_mid="${mgr_top}"$'\n'"${mgr_mid}"$'\n'
 
     if (( use_anim == 1 && any_running_edge == 1 )); then
@@ -2023,7 +2363,7 @@ build_graph_diagram() {
       DIAG_T2+="$static_plan"
       DIAG_T3+="$static_plan"
     fi
-    DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 11 ))
+    DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 12 ))
 
     if (( rest_cnt > 0 )); then
       local r_done=0 r_fail=0 r_idx="$row_cnt"
@@ -2162,7 +2502,7 @@ build_pipeline_diagram() {
         b_col=0
       fi
     elif [[ "${W_STATE[$w]}" == "completed" ]]; then
-      if [[ -n "${W_WORKTREE[$w]}" && -d "${W_WORKTREE[$w]}" ]]; then
+      if [[ "${W_MERGE_STATE[$w]}" == "unmerged" ]]; then
         b_col=2
       else
         b_col=3
@@ -2196,19 +2536,39 @@ build_pipeline_diagram() {
         raw_l1="$w_disp_id"
       fi
     fi
+    if [[ -n "${W_MODEL_TIER[$w]}" ]] && (( ${#raw_l1} + 3 + ${#W_MODEL_TIER[$w]} <= col_w )); then
+      raw_l1="${raw_l1} · ${W_MODEL_TIER[$w]}"
+    fi
 
-    local state_plain state_color="" is_spin=0
-    case "${W_STATE[$w]}" in
-      running)   state_plain="⠋ running";   state_color="$c_running";   is_spin=1 ;;
-      completed) state_plain="✓ completed"; state_color="$c_completed" ;;
-      failed)    state_plain="✗ failed";    state_color="$c_failed" ;;
-      stopped)   state_plain="⏸ stopped";   state_color="$c_stopped" ;;
-      lost)      state_plain="? lost";      state_color="$c_failed" ;;
-      *)         state_plain="${W_STATE[$w]}"; state_color="" ;;
-    esac
+    resolve_worker_state "$w" "" "$col_w"
+    local state_plain="$ST_PLAIN" state_color="$ST_COLOR" is_spin="$ST_IS_SPIN"
 
     fmt_elapsed "${W_ELAPSED[$w]}"
-    local raw_l2="${state_plain}  ${REPLY}"
+    local elapsed_s="$REPLY"
+    local raw_l2="$state_plain"
+    if [[ -n "${W_SCOPE_VIOLATION[$w]}" ]]; then
+      raw_l2="${raw_l2} scope!"
+    fi
+    if [[ -n "${W_MERGE_STATE[$w]}" ]]; then
+      raw_l2="${raw_l2} ${W_MERGE_STATE[$w]}"
+    fi
+    if (( W_ROUND[w] >= 2 )); then
+      raw_l2="${raw_l2} r${W_ROUND[$w]}:${W_ROUND_REASON[$w]}"
+    fi
+    if (( W_TOK[w] > 0 )); then
+      fmt_human_count "${W_TOK[$w]}"
+      raw_l2="${raw_l2} ${REPLY}"
+    fi
+    if [[ "${W_STATE[$w]}" == "running" ]]; then
+      if [[ -n "${W_OUT_AGE[$w]}" ]]; then
+        fmt_elapsed "${W_OUT_AGE[$w]}"
+        raw_l2="${raw_l2} ${REPLY}"
+      fi
+      if [[ -n "${W_ACTIVITY[$w]}" ]]; then
+        raw_l2="${raw_l2} ${W_ACTIVITY[$w]}"
+      fi
+    fi
+    raw_l2="${raw_l2}  ${elapsed_s}"
 
     trunc_str "$raw_l1" "$col_w"
     pad_str "$REPLY" "$col_w"
@@ -2374,10 +2734,22 @@ build_frame_templates() {
   local run_seg="● ${RUNNING_COUNT} running"
   local done_seg="✓ ${COMPLETED_COUNT} done"
   local fail_seg="✗ ${failed_total} failed"
+  local verify_seg=""
+  if (( VERIFY_FAIL_COUNT > 0 )); then
+    verify_seg="⚠ ${VERIFY_FAIL_COUNT} verify"
+  fi
   local counts_plain="${run_seg}  ${done_seg}  ${fail_seg}"
   local counts_disp="$counts_plain"
   if (( use_color == 1 )); then
     counts_disp="${c_running}${run_seg}${reset}  ${c_completed}${done_seg}${reset}  ${c_failed}${fail_seg}${reset}"
+  fi
+  if [[ -n "$verify_seg" ]]; then
+    counts_plain="${counts_plain}  ${verify_seg}"
+    if (( use_color == 1 )); then
+      counts_disp="${counts_disp}  ${c_failed}${verify_seg}${reset}"
+    else
+      counts_disp="$counts_plain"
+    fi
   fi
 
   local tok_part=""
@@ -2434,7 +2806,15 @@ build_frame_templates() {
   local header_disp=""
   if (( ${#header_plain} > columns )); then
     # Extreme narrow fallback (e.g. COLUMNS=18): drop trailing count segments before truncating
-    if (( ${#run_seg} + 2 + ${#done_seg} <= columns )); then
+    local base3_plain="${run_seg}  ${done_seg}  ${fail_seg}"
+    if (( ${#base3_plain} <= columns )); then
+      header_plain="$base3_plain"
+      if (( use_color == 1 )); then
+        header_disp="${c_running}${run_seg}${reset}  ${c_completed}${done_seg}${reset}  ${c_failed}${fail_seg}${reset}"
+      else
+        header_disp="$header_plain"
+      fi
+    elif (( ${#run_seg} + 2 + ${#done_seg} <= columns )); then
       header_plain="${run_seg}  ${done_seg}"
       if (( use_color == 1 )); then
         header_disp="${c_running}${run_seg}${reset}  ${c_completed}${done_seg}${reset}"
