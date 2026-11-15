@@ -181,15 +181,9 @@ if [[ -z "$view" ]]; then
   elif [[ -f "${SQUAD_DEVKIT_CONFIG:-$HOME/.config/squad-devkit/config}" ]]; then
     view="$(grep '^view=' "${SQUAD_DEVKIT_CONFIG:-$HOME/.config/squad-devkit/config}" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
   fi
-  if [[ -z "$view" ]]; then
-    if [[ -n "${SQUAD_MANAGER_ID:-}" ]]; then
-      view="orchestration"
-    else
-      view="panes"
-    fi
-  fi
 fi
 parent_id=""
+parent_flag_set=""
 depth=1
 budget_tokens=""
 max_children=""
@@ -234,7 +228,7 @@ while (( $# > 0 )); do
         --clone) clone_url="$2" ;;
         --own) owned_paths="${owned_paths:+$owned_paths,}$2" ;;
         --override-review) override_review="$(one_line_reason --override-review "$2")" || exit 2 ;;
-        --parent) parent_id="$2" ;;
+        --parent) parent_id="$2"; parent_flag_set=1 ;;
         --budget-tokens) budget_tokens="$2" ;;
         --max-children) max_children="$2" ;;
         --project) project_directory="$2" ;;
@@ -289,6 +283,14 @@ if (( task_mode == 1 )); then
   if [[ -z "$plan_argument" ]]; then
     echo "--task requires --plan" >&2
     exit 2
+  fi
+fi
+
+if [[ -z "$view" ]]; then
+  if [[ -n "$manager_flag_set" || -n "${SQUAD_MANAGER_ID:-}" || -n "$parent_flag_set" ]]; then
+    view="orchestration"
+  else
+    view="panes"
   fi
 fi
 
@@ -1378,6 +1380,7 @@ write_status() {
     fi
     printf 'parent=%s\ndepth=%s\nbudget_tokens=%s\nmax_children=%s\n' \
       "$parent_id" "$depth" "$budget_tokens" "$max_children"
+    printf 'manager=%s\n' "$manager_id"
   } >"$status_file.tmp"
   mv "$status_file.tmp" "$status_file"
   squad_record_status "$status_file"
@@ -1390,50 +1393,87 @@ printf 'squad-worker: %s (%s) %s\n' "$worker_id" "$engine" "$(squad_worker_model
 # Live monitor for this run beside the manager (see lib/squad-panes.sh).
 open_monitor_pane() {
   if [[ "$view" == orchestration || "$view" == orchestration-branches ]]; then
-    local root_mgr="${SQUAD_MANAGER_ID:-${SQUAD_SM_MANAGER:-}}"
-    if [[ -z "$root_mgr" ]]; then
-      if [[ -n "$parent_id" && "$manager_id" == "$parent_id" ]]; then
-        root_mgr=manager
-      else
-        root_mgr="$manager_id"
-      fi
+    local root_mgr=""
+    local root_mgr_from_parent=0
+    if [[ -n "$parent_id" ]]; then
+      local curr="$parent_id"
+      local visited=()
+      local d='[0-9]'
+      while [[ -n "$curr" ]]; do
+        local seen=0
+        for v in ${visited[@]+"${visited[@]}"}; do
+          if [[ "$v" == "$curr" ]]; then
+            seen=1
+            break
+          fi
+        done
+        (( seen == 1 )) && break
+        visited+=("$curr")
+        local p_status=""
+        p_status="$(ls -t "$workspace_root/$output_directory/$curr"-$d$d$d$d$d$d$d$d-$d$d$d$d$d$d.status 2>/dev/null | head -n 1)"
+        if [[ -n "$p_status" && -f "$p_status" ]]; then
+          local next_id=""
+          next_id="$(status_get "$p_status" manager)"
+          [[ -n "$next_id" ]] || next_id="$(status_get "$p_status" parent)"
+          if [[ -z "$next_id" ]]; then
+            break
+          fi
+          local next_status=""
+          next_status="$(ls -t "$workspace_root/$output_directory/$next_id"-$d$d$d$d$d$d$d$d-$d$d$d$d$d$d.status 2>/dev/null | head -n 1)"
+          if [[ -z "$next_status" ]]; then
+            root_mgr="$next_id"
+            root_mgr_from_parent=1
+            break
+          fi
+          curr="$next_id"
+        else
+          break
+        fi
+      done
     fi
+    if [[ -z "$root_mgr" ]]; then
+      root_mgr="${SQUAD_MANAGER_ID:-${SQUAD_SM_MANAGER:-$manager_id}}"
+    fi
+    [[ -n "$root_mgr" ]] || root_mgr="manager"
+
+    local marker
+    if [[ -n "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}" ]]; then
+      marker="$workspace_root/$output_directory/.orchestration-${SQUAD_DEVKIT_MANAGER_WRAPPER_PID}.pid"
+    else
+      local clean_mgr="${root_mgr//[^A-Za-z0-9_-]/_}"
+      marker="$workspace_root/$output_directory/.orchestration-m-${clean_mgr}.pid"
+    fi
+    local marker_file="${marker##*/}"
+    local launcher_file="${marker_file#.}"
+    launcher_file="${launcher_file%.pid}.sh"
+    local launcher="$output_directory/$launcher_file"
+
+    local export_mgr
+    if (( root_mgr_from_parent == 1 )); then
+      export_mgr="$root_mgr"
+    else
+      export_mgr="${SQUAD_MANAGER_ID:-$root_mgr}"
+    fi
+
     _open_orchestration_split() {
-      local marker="$1" orchestration_script="$2" pane_title="$3" branch_root="${4:-}"
-      local monitor_pid="" existing_marker=""
-      if [[ -f "$marker" ]]; then
-        IFS= read -r monitor_pid <"$marker" || true
+      local marker_path="$1" orchestration_script="$2" pane_title="$3" mgr_id="$4"
+      local monitor_pid=""
+      if [[ -f "$marker_path" ]]; then
+        IFS= read -r monitor_pid <"$marker_path" || true
         if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
           return 0
         fi
-      elif [[ -z "$branch_root" && -n "$parent_id" ]]; then
-        for existing_marker in "$workspace_root/$output_directory"/.orchestration-*.pid; do
-          [[ -f "$existing_marker" && "$existing_marker" != */.orchestration-branch-*.pid ]] || continue
-          IFS= read -r monitor_pid <"$existing_marker" || true
-          if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
-            return 0
-          fi
-        done
       fi
       if ! squad_panes_lock "$workspace_root/$output_directory" .orchestration.lock; then
         echo "squad-worker: timed out waiting for pane lock; check $workspace_root/$output_directory/.orchestration.lock" >&2
         return 1
       fi
-      if [[ -f "$marker" ]]; then
-        IFS= read -r monitor_pid <"$marker" || true
+      if [[ -f "$marker_path" ]]; then
+        IFS= read -r monitor_pid <"$marker_path" || true
         if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
           squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
           return 0
         fi
-      elif [[ -z "$branch_root" && -n "$parent_id" ]]; then
-        for existing_marker in "$workspace_root/$output_directory"/.orchestration-*.pid; do
-          [[ -f "$existing_marker" && "$existing_marker" != */.orchestration-branch-*.pid ]] || continue
-          IFS= read -r monitor_pid <"$existing_marker" || true
-          if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
-            squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
-            return 0
-          fi
-        done
       fi
       local ready_file
       ready_file="$(mktemp "$workspace_root/$output_directory/.monitor-ready.XXXXXXXX")" || {
@@ -1446,12 +1486,8 @@ open_monitor_pane() {
         printf 'export SQUAD_WORKER_MONITOR_READY=%q\n' "$ready_file"
         printf 'export SQUAD_DEVKIT_MANAGER_WRAPPER_PID=%q\n' "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}"
         printf 'export SQUAD_DEVKIT_SESSION_START=%q\n' "${SQUAD_DEVKIT_SESSION_START:-}"
-        printf 'export SQUAD_MANAGER_ID=%q\n' "${SQUAD_MANAGER_ID:-$root_mgr}"
-        if [[ -n "$branch_root" ]]; then
-          printf 'exec %q --root %q %q\n' "$script_dir/squad-orchestration.sh" "$branch_root" "$workspace_root/$output_directory"
-        else
-          printf 'exec %q %q\n' "$script_dir/squad-orchestration.sh" "$workspace_root/$output_directory"
-        fi
+        printf 'export SQUAD_MANAGER_ID=%q\n' "$mgr_id"
+        printf 'exec %q %q\n' "$script_dir/squad-orchestration.sh" "$workspace_root/$output_directory"
       } >"$orchestration_script"
       chmod +x "$orchestration_script"
       if ! squad_open_monitor "$workspace_root/$orchestration_script" "$pane_title" "$workspace_root" \
@@ -1466,7 +1502,7 @@ open_monitor_pane() {
         if [[ -f "$ready_file" ]]; then
           IFS= read -r monitor_pid <"$ready_file" || true
           if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
-            printf '%s\n' "$monitor_pid" >"$marker"
+            printf '%s\n' "$monitor_pid" >"$marker_path"
             rm -f "$ready_file"
             squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
             return 0
@@ -1481,17 +1517,10 @@ open_monitor_pane() {
       return 1
     }
     _open_orchestration_split \
-      "$workspace_root/$output_directory/.orchestration-${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-$root_mgr}.pid" \
-      "$output_directory/orchestration.sh" \
-      "squad orchestration" \
-      "" || return 1
-    if [[ "$view" == orchestration-branches && -n "$parent_id" ]]; then
-      _open_orchestration_split \
-        "$workspace_root/$output_directory/.orchestration-branch-$parent_id.pid" \
-        "$output_directory/orchestration-branch-$parent_id.sh" \
-        "squad orchestration · $parent_id" \
-        "$parent_id" || return 1
-    fi
+      "$marker" \
+      "$launcher" \
+      "squad · $root_mgr" \
+      "$export_mgr" || return 1
     return 0
   fi
   local pane_script="$output_directory/$run_name.monitor.sh"

@@ -63,6 +63,7 @@ build_instructions() {
 # squad-worker reads these, so workers report to this manager and record
 # their tasks here even when they work in another project (--project).
 export SQUAD_MANAGER_ID="$manager_id"
+export SQUAD_DEVKIT_MANAGER_CLIENT="$client"
 export SQUAD_DEVKIT_WORKSPACE="$PWD"
 export SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$"
 SQUAD_WORKER_VIEW="${SQUAD_WORKER_VIEW:-$(devkit_config_get view)}"

@@ -530,7 +530,27 @@ demand, and `squad-devkit --clean-all` removes every finished run.
 
 ## Watching workers
 
-In a manager session, `orchestration` is the default view: the first worker opens one live `squad-orchestration` pane to the manager's right (or one orchestration window in terminals without a split API) showing the manager → workers flow grouped by plan, each worker's state, engine/model, elapsed time, tokens, fix rounds, and a message timeline (brief, QUESTION, ANSWER, completed/failed). Later workers reuse that pane without opening more splits.
+In a manager session, `orchestration` is the default view: the first worker opens one live `squad-orchestration` pane to the manager's right (or one orchestration window in terminals without a split API). Each manager session (each terminal tab) gets exactly one such pane and no other monitor panes: no per-worker pane and no per-sub-manager pane. Later workers reuse that pane without opening more splits. `orchestration-branches` is still accepted as a value but behaves like `orchestration` (a single pane).
+
+The pane shows only that manager's workers and messages. Status files carry a `manager=<id>` key; when `SQUAD_MANAGER_ID` is known, a worker is shown only if its `manager=` matches, or its `parent=` chain reaches such a worker. Legacy status files without `manager=` are hidden (they appear only with `--all-managers` / key `a`, grouped under the manager inferred from the history). Messages are kept only when their sender or recipient is the manager or a shown worker.
+
+The default `graph` layout is a lifecycle flow chart, top to bottom:
+
+1. **Header**: `● manager-2 · claude  ·  plan <active plan>  ·  ●2 running ✓5 ✗1  ·  12m  1.2M tok` (the engine comes from `SQUAD_DEVKIT_MANAGER_CLIENT`).
+2. **Main lane** for the most recent plan: the manager node, then numbered worker nodes (`01`, `02`, ...) in start order, joined by edges labelled with the last verb (`brief`, `fix`, `ask`, `answer`, `done`, `failed`). Each node shows `NN name`, `role · model` and a status chip (`● running 3m`, `✓ done`, `✗ failed`, `? waiting`). Nodes wrap to further rows when the pane is narrow (it works from 48 columns up and uses up to about 160). A sub-manager's children appear as an indented mini-row under it (`└ 01 child · ✓`).
+3. **Waiting on you**: workers whose last message is an unanswered QUESTION, one line each with the question and its age. Hidden when empty.
+4. **Outcomes**: `Outcomes  ✓ dev-1 dev-2   ✗ dev-3` for the plan on screen.
+5. **Conversation**: one line per worker, newest first, summarising its exchange with the manager (`12:03  dev-1  brief "Add CSV export" → asked "which delimiter?" → answered → done`; repeated fix rounds collapse to `fix×2`). Task ids and report paths are never printed. `SQUAD_ORCHESTRATION_FLOW_LINES` (default 6) caps the line count, which shrinks to fit the pane.
+6. **History**: one line for all older plans, `History  13 earlier plans · ✓70 ✗20  (h to expand)`.
+7. **Footer** with the live keys: `l layout  c cards  a all  h history  f focus  q quit`.
+
+Keys: `l` (or Tab) cycles layouts and `g` / `c` / `t` pick graph, cards or tree directly; `p` pins the pane (cancels auto-close); `a` toggles all managers (`--all-managers`); `h` expands or collapses the older-plans list; `f` toggles focus (present) mode, which shows only the header, the main lane and the waiting group at full height (`--focus` starts in it, including with `--once`). The `pipeline` and `tree` layouts keep their previous look with the same manager scoping. `--once` prints one frame without escape codes.
+
+The `cards` layout (`--layout cards`, key `c`) shows live activity and output age, stale workers, waiting age, model tier, verification failures, merge state, scope violations and the reason for another round. Cards grow with the pane width. Cards, tree and pipeline show plan task progress and token totals; unlaunched tasks appear as pending with `after <id>` dependencies. Missing or older plan/status fields are accepted.
+
+In cards, tree and pipeline, Flow wraps message text and pins unanswered questions ahead of recent messages. `v` cycles all, questions and failures (`--flow-filter`, or `SQUAD_ORCHESTRATION_FLOW_FILTER`); `e` expands earlier worker rows (`SQUAD_ORCHESTRATION_EXPAND=1` starts expanded). `SQUAD_ORCHESTRATION_STALE_SECS` defaults to 120. These controls preserve `f` for focus and `p` for pinning.
+
+When all workers in scope finish (or when no workers are running in scope), the orchestration pane automatically counts down and closes itself after `SQUAD_ORCHESTRATION_HOLD` seconds (falls back to `SQUAD_WORKER_PANE_HOLD`, default 60s; `0` disables auto-close). During countdown, the footer shows the remaining time (`closing in 42s · p keep · ⏎ close` or `Nothing running · closing in ...` when empty). Press `p` to pin the pane and stop auto-close (`pinned · q quit`), or press Enter to close immediately. If a worker starts running again, the countdown resets automatically.
 
 To open one live monitor pane per worker instead (the first worker to the manager's right, later workers stacked below the previous one), pass `squad-devkit --view panes`, set `SQUAD_WORKER_VIEW=panes`, or add `view=panes` to `~/.config/squad-devkit/config`. Standalone `squad-worker` runs default to `panes`. `squad-devkit --doctor` reports the active view and its source (`flag`, `env`, `config`, or `default`).
 

@@ -7,10 +7,13 @@ if [[ -z "${TEST_SIGHUP_RESET:-}" ]] && command -v perl >/dev/null 2>&1; then
 fi
 
 export LC_ALL="${LC_ALL:-en_US.UTF-8}"
-unset SQUAD_MANAGER_ID SQUAD_AGENT_ID SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_DEVKIT_YOLO SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_DEVKIT_SESSION_START
+# The suite must not depend on the manager session that runs it.
+unset SQUAD_MANAGER_ID SQUAD_AGENT_ID SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_DEVKIT_YOLO \
+  SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_DEVKIT_SESSION_START SQUAD_DEVKIT_MANAGER_CLIENT SQUAD_ORCHESTRATION_LAYOUT
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/squad-orch.XXXXXX")"
+tmp="$(cd "$tmp" && pwd -P)"
 live_pid=""
 non_tty_pid=""
 cleanup() {
@@ -188,6 +191,15 @@ assert_max_width() {
   done <<< "$text"
 }
 
+assert_utf8() {
+  local text="$1" label="$2"
+  printf '%s\n' "$text" > "$tmp/utf8.in"
+  if ! iconv -f UTF-8 -t UTF-8 "$tmp/utf8.in" > "$tmp/utf8.out" 2> "$tmp/utf8.err"; then
+    echo "FAIL ($label): output is not valid UTF-8: $(cat "$tmp/utf8.err")" >&2
+    exit 1
+  fi
+}
+
 # ==============================================================================
 # A. Default layout (--once) is graph
 # ==============================================================================
@@ -197,19 +209,63 @@ echo "=== Default (graph) output under COLUMNS=80 ==="
 printf '%s\n' "$graph_output"
 echo "==============================================="
 
-grep -q "Plan setup-wizard" <<< "$graph_output" || { echo "FAIL: graph missing 'Plan setup-wizard'" >&2; exit 1; }
-grep -q "Plan (no plan)" <<< "$graph_output" || { echo "FAIL: graph missing 'Plan (no plan)'" >&2; exit 1; }
-grep -q "│   manager-4    │" <<< "$graph_output" || { echo "FAIL: graph missing centred manager box '│   manager-4    │'" >&2; exit 1; }
-grep -q "┌─" <<< "$graph_output" || { echo "FAIL: graph missing top box border '┌─'" >&2; exit 1; }
-grep -q "└─" <<< "$graph_output" || { echo "FAIL: graph missing bottom box border '└─'" >&2; exit 1; }
-for wid in dev-1 dev-2 test-1 done-1 r-1 lost-1; do
-  grep -q "│ ${wid} " <<< "$graph_output" || { echo "FAIL: graph missing worker box for '$wid'" >&2; exit 1; }
+grep -q "● manager-4  ·  plan setup-wizard  ·  ●2 running ✓2 ✗2" <<< "$graph_output" || { echo "FAIL: graph header missing plan/counts" >&2; exit 1; }
+grep -q "│ manager-4 " <<< "$graph_output" || { echo "FAIL: graph missing manager node" >&2; exit 1; }
+grep -q "╭─" <<< "$graph_output" || { echo "FAIL: graph missing rounded top border" >&2; exit 1; }
+grep -q "╰─" <<< "$graph_output" || { echo "FAIL: graph missing rounded bottom border" >&2; exit 1; }
+# Numbered stage nodes in start order: dev-1 (oldest) .. done-1 (newest) of the active plan
+n=0
+for wid in dev-1 test-1 dev-2 done-1; do
+  n=$(( n + 1 ))
+  grep -q "│ 0${n} ${wid} " <<< "$graph_output" || { echo "FAIL: graph missing numbered node '0${n} ${wid}'" >&2; exit 1; }
 done
-grep -q "▲ QUESTION" <<< "$graph_output" || { echo "FAIL: graph missing edge label '▲ QUESTION'" >&2; exit 1; }
-grep -q "│ ? waiting " <<< "$graph_output" || { echo "FAIL: graph missing '? waiting ' in box" >&2; exit 1; }
-grep -q "│ 4-argon-high   │" <<< "$graph_output" || { echo "FAIL: graph missing short_model '4-argon-high'" >&2; exit 1; }
-grep -q "│ deepseek-v4-p… │" <<< "$graph_output" || { echo "FAIL: graph missing short_model 'deepseek-v4-p…'" >&2; exit 1; }
-grep -q "│ sonnet-5-5     │" <<< "$graph_output" || { echo "FAIL: graph missing short_model 'sonnet-5-5'" >&2; exit 1; }
+grep -q "─ask─*▶" <<< "$graph_output" || { echo "FAIL: graph missing edge label 'ask'" >&2; exit 1; }
+grep -q "─done─*▶" <<< "$graph_output" || { echo "FAIL: graph missing edge label 'done'" >&2; exit 1; }
+grep -q "│ ? waiting " <<< "$graph_output" || { echo "FAIL: graph missing '? waiting' chip" >&2; exit 1; }
+grep -q "│ ✓ done " <<< "$graph_output" || { echo "FAIL: graph missing '✓ done' chip" >&2; exit 1; }
+grep -q "│ ● running " <<< "$graph_output" || { echo "FAIL: graph missing '● running' chip" >&2; exit 1; }
+grep -q "│ tester · " <<< "$graph_output" || { echo "FAIL: graph missing 'role · model' line" >&2; exit 1; }
+grep -q "^Waiting on you" <<< "$graph_output" || { echo "FAIL: graph missing 'Waiting on you' group" >&2; exit 1; }
+grep -q "^? dev-2  Need layout confirmation" <<< "$graph_output" || { echo "FAIL: waiting group missing dev-2 question" >&2; exit 1; }
+grep -q "^Outcomes  ✓ " <<< "$graph_output" || { echo "FAIL: graph missing Outcomes line" >&2; exit 1; }
+grep -q "^Outcomes  ✓ done-1 test-1$" <<< "$graph_output" || { echo "FAIL: Outcomes must list only the displayed plan's workers" >&2; exit 1; }
+grep -q "^Conversation" <<< "$graph_output" || { echo "FAIL: graph missing Conversation panel" >&2; exit 1; }
+if grep -q "Flow (latest" <<< "$graph_output"; then
+  echo "FAIL: Conversation must replace 'Flow (latest N)' in graph layout" >&2
+  exit 1
+fi
+grep -q 'dev-1  brief "This is a multi-line continuation line."' <<< "$graph_output" || { echo "FAIL: Conversation missing dev-1 brief title (first line after ## Goal)" >&2; exit 1; }
+graph_wide="$(COLUMNS=120 "$root/scripts/squad-orchestration.sh" --once --since "$since" "$workers_dir")"
+grep -q 'dev-1  brief "This is a multi-line continuation line." · last done 07:09' <<< "$graph_wide" || {
+  echo "FAIL: Conversation missing dev-1 summary line at COLUMNS=120" >&2
+  printf '%s\n' "$graph_wide" >&2
+  exit 1
+}
+assert_max_width "$graph_wide" 120 "graph COLUMNS=120"
+# Fan-out layout: branches from a trunk, never an edge out of a worker node
+grep -q "├" <<< "$graph_output" || { echo "FAIL: graph missing fan-out branch '├'" >&2; exit 1; }
+grep -q "└─done─*▶" <<< "$graph_output" || { echo "FAIL: graph missing last branch '└─done───▶'" >&2; exit 1; }
+if grep -qE '│ [a-z-]+ · [^│]*│─' <<< "$graph_output$graph_wide"; then
+  echo "FAIL: an edge leaves a worker node (workers must not be chained)" >&2
+  exit 1
+fi
+if grep -qE '(brief|fix|done|ask|answer) "(Goal|Selection)' <<< "$graph_output"; then
+  echo "FAIL: Conversation shows a heading-only title" >&2
+  exit 1
+fi
+if grep -qE '## Goal|7bfb|completed task' <<< "$graph_output"; then
+  echo "FAIL: Conversation leaked '## Goal', a task id or a report line" >&2
+  exit 1
+fi
+[[ "$(grep -c '^History  ' <<< "$graph_output")" == 1 ]] || { echo "FAIL: expected exactly one History line" >&2; exit 1; }
+grep -q "^History  1 earlier plan · ✓0 ✗2" <<< "$graph_output" || { echo "FAIL: History line summary wrong" >&2; exit 1; }
+assert_utf8 "$graph_output" "graph COLUMNS=80"
+legacy_cards="$(COLUMNS=80 "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$since" "$workers_dir")"
+grep -q "▲ QUESTION" <<< "$legacy_cards" || { echo "FAIL: graph missing edge label '▲ QUESTION'" >&2; exit 1; }
+grep -q "│ ? waiting " <<< "$legacy_cards" || { echo "FAIL: graph missing '? waiting ' in box" >&2; exit 1; }
+grep -q "│ 4-argon-high   │" <<< "$legacy_cards" || { echo "FAIL: graph missing short_model '4-argon-high'" >&2; exit 1; }
+grep -q "│ deepseek-v4-p… │" <<< "$legacy_cards" || { echo "FAIL: graph missing short_model 'deepseek-v4-p…'" >&2; exit 1; }
+grep -q "│ sonnet-5-5     │" <<< "$legacy_cards" || { echo "FAIL: graph missing short_model 'sonnet-5-5'" >&2; exit 1; }
 if grep -q "\\[g\\]raph" <<< "$graph_output"; then
   echo "FAIL: --once header should drop interactive key hints" >&2
   exit 1
@@ -382,20 +438,22 @@ done
 
 six_out="$(COLUMNS=80 "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$since" "$six_dir")"
 assert_max_width "$six_out" 80 "six workers graph COLUMNS=80"
-box_row_count="$(grep -c '^┌' <<< "$six_out" || true)"
-if [[ "$box_row_count" -ne 1 ]]; then
-  echo "FAIL: expected 6 workers in one plan at COLUMNS=80 to compact to 1 row of boxes, got $box_row_count rows:" >&2
-  echo "$six_out" >&2
-  exit 1
-fi
-for idx in 1 2 3 4; do
-  grep -q "│ w-${idx} " <<< "$six_out" || { echo "FAIL: missing worker box w-${idx} in 6-worker graph" >&2; exit 1; }
+for idx in 1 2 3 4 5 6; do
+  grep -q "│ 0${idx} w-${idx} " <<< "$six_out" || { echo "FAIL: missing numbered node 0${idx} w-${idx} in 6-worker graph" >&2; exit 1; }
 done
-grep -q "+2 earlier" <<< "$six_out" || { echo "FAIL: missing '+2 earlier' summary line in 6-worker graph" >&2; exit 1; }
+# Fan-out: one vertical trunk, each worker on its own branch
+grep -q "┬─brief" <<< "$six_out" || { echo "FAIL: 6 workers should fan out from the manager trunk" >&2; exit 1; }
+[[ "$(grep -c '├─brief' <<< "$six_out")" == 4 ]] || { echo "FAIL: expected 4 middle branches '├─brief'" >&2; exit 1; }
+grep -q "└─brief" <<< "$six_out" || { echo "FAIL: last branch should be '└─'" >&2; exit 1; }
+# Short pane: earliest rows are folded into "… N earlier"
+six_short="$(LINES=14 COLUMNS=80 "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$since" "$six_dir")"
+assert_max_width "$six_short" 80 "six workers graph LINES=14"
+grep -q "… [0-9]* earlier" <<< "$six_short" || { echo "FAIL: LINES=14 should fold earlier rows into '… N earlier'" >&2; exit 1; }
+[[ "$(wc -l <<< "$six_short" | tr -d ' ')" -le 14 ]] || { echo "FAIL: LINES=14 render taller than 14 lines" >&2; exit 1; }
 
 # 10. Failing history command still renders
 failing_out="$(SQUAD_ORCHESTRATION_HISTORY_CMD="exit 1" "$root/scripts/squad-orchestration.sh" --once --since "$since" "$workers_dir")"
-grep -q "Plan setup-wizard" <<< "$failing_out" || { echo "FAIL: rendering failed with failing history command" >&2; exit 1; }
+grep -q "plan setup-wizard" <<< "$failing_out" || { echo "FAIL: rendering failed with failing history command" >&2; exit 1; }
 
 # 11. Workspace directory starting with .squad- (e.g. $tmp/.squad-ws/.squad/workers)
 # and relative WORKERS_DIR from the workspace root.
@@ -422,7 +480,7 @@ special_output="$(
 )"
 
 # Assert header contains .squad-ws
-grep -q "squad orchestration · .squad-ws ·" <<< "$special_output" || {
+grep -q "· .squad-ws ·" <<< "$special_output" || {
   echo "FAIL: expected header to contain '.squad-ws', got:" >&2
   echo "$special_output" >&2
   exit 1
@@ -454,112 +512,6 @@ grep -q "tok" <<< "$special_output" && {
   echo "$special_output" >&2
   exit 1
 }
-
-# ==============================================================================
-# G. Exact Alignment (3 workers in graph --once)
-# ==============================================================================
-align_dir="$tmp/align/.squad/workers"
-mkdir -p "$align_dir"
-for idx in 1 2 3; do
-  cat > "$align_dir/a-${idx}.status" <<EOF
-worker=a-${idx}
-engine=agy
-model=google/gemini-3.8-flash
-role=dev
-state=$( (( idx == 1 )) && echo running || echo completed )
-pid=$$
-started=$(( now - 90 + idx ))
-$( (( idx > 1 )) && echo "finished=$(( now - 10 + idx ))" || true )
-plan=/path/to/align-plan.md
-EOF
-done
-
-align_out="$(
-  SQUAD_ORCHESTRATION_HISTORY_CMD="cat <<'HEOF'
-* [2026-11-14T07:01:00Z] manager-4 -> a-1: brief msg
-* [2026-11-14T07:02:00Z] a-2 -> manager-4: QUESTION from a-2: clarify
-* [2026-11-14T07:03:00Z] a-3 -> manager-4: a-3 completed task 123
-HEOF" \
-  COLUMNS=80 "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$since" "$align_dir"
-)"
-
-mgr_bot_line=""
-bus_line=""
-edge_line=""
-box_top_line=""
-prev_type=""
-while IFS= read -r aline; do
-  if [[ "$aline" =~ ^[[:space:]]*└.*┬.*┘$ ]]; then
-    mgr_bot_line="$aline"
-    prev_type="mgr_bot"
-  elif [[ "$prev_type" == "mgr_bot" ]]; then
-    bus_line="$aline"
-    prev_type="bus"
-  elif [[ "$prev_type" == "bus" ]]; then
-    edge_line="$aline"
-    prev_type="edge"
-  elif [[ "$prev_type" == "edge" ]]; then
-    box_top_line="$aline"
-    break
-  fi
-done <<< "$align_out"
-
-if [[ -z "$mgr_bot_line" || -z "$bus_line" || -z "$edge_line" || -z "$box_top_line" ]]; then
-  echo "FAIL: could not extract alignment lines from 3-worker graph:" >&2
-  echo "$align_out" >&2
-  exit 1
-fi
-
-# Find manager stem column (0-based character index)
-mgr_stem_col=-1
-for (( ci = 0; ci < ${#mgr_bot_line}; ci++ )); do
-  if [[ "${mgr_bot_line:$ci:1}" == "┬" ]]; then
-    mgr_stem_col="$ci"
-    break
-  fi
-done
-if (( mgr_stem_col < 0 )); then
-  echo "FAIL: manager stem '┬' not found on '$mgr_bot_line'" >&2
-  exit 1
-fi
-bus_at_stem="${bus_line:$mgr_stem_col:1}"
-if [[ "$bus_at_stem" != "┴" && "$bus_at_stem" != "┼" ]]; then
-  echo "FAIL: bus char at manager stem col $mgr_stem_col is '$bus_at_stem' (expected '┴' or '┼')" >&2
-  echo "mgr_bot: $mgr_bot_line" >&2
-  echo "bus    : $bus_line" >&2
-  exit 1
-fi
-
-# Find each worker box top '┴' column and verify bus junction and edge arrow match
-worker_junctions=0
-for (( ci = 0; ci < ${#box_top_line}; ci++ )); do
-  if [[ "${box_top_line:$ci:1}" == "┴" ]]; then
-    worker_junctions=$(( worker_junctions + 1 ))
-    bus_ch="${bus_line:$ci:1}"
-    edge_ch="${edge_line:$ci:1}"
-    case "$bus_ch" in
-      ┌|┬|┐|┼) ;;
-      *)
-        echo "FAIL: worker $worker_junctions at col $ci has bus char '$bus_ch' instead of junction (┌/┬/┐/┼)" >&2
-        exit 1
-        ;;
-    esac
-    case "$edge_ch" in
-      ▲|▼) ;;
-      *)
-        echo "FAIL: worker $worker_junctions at col $ci has edge char '$edge_ch' instead of arrow (▲/▼)" >&2
-        echo "bus    : $bus_line" >&2
-        echo "edge   : $edge_line" >&2
-        echo "box_top: $box_top_line" >&2
-        exit 1
-        ;;
-    esac
-  fi
-done
-if (( worker_junctions != 3 )); then
-  echo "FAIL: expected 3 worker '┴' box top junctions, found $worker_junctions" >&2
-  exit 1
-fi
 
 # ==============================================================================
 # H. Height & Compaction (20 workers across 4 plans, LINES=30 COLUMNS=100)
@@ -599,6 +551,14 @@ for lay in graph pipeline tree; do
     echo "FAIL ($lay): expected at most 30 lines under LINES=30, got $h_lines:" >&2
     echo "$h_out" >&2
     exit 1
+  fi
+  if [[ "$lay" == "graph" ]]; then
+    grep -q "^History  3 earlier plans · ✓15 ✗0" <<< "$h_out" || {
+      echo "FAIL (graph): expected one History line for 3 earlier plans:" >&2
+      echo "$h_out" >&2
+      exit 1
+    }
+    continue
   fi
   grep -q "▸ Plan" <<< "$h_out" || {
     echo "FAIL ($lay): expected collapsed '▸ Plan' line in 20-worker 4-plan output:" >&2
@@ -702,7 +662,7 @@ if [[ "$hdr80_line" == *'"'* ]]; then
   echo "FAIL: header contains literal quote: $hdr80_line" >&2
   exit 1
 fi
-grep -q "● 1 running  ✓ 42 done  ✗ 11 failed" <<< "$hdr80_line" || {
+grep -q "●1 running ✓42 ✗11" <<< "$hdr80_line" || {
   echo "FAIL: header cut counts at COLUMNS=80: '$hdr80_line'" >&2
   exit 1
 }
@@ -804,17 +764,19 @@ echo "=== Hierarchy root graph ==="
 printf '%s\n' "$hier_graph"
 echo "============================"
 assert_max_width "$hier_graph" 80 "hierarchy root graph COLUMNS=80"
-grep -q "╔" <<< "$hier_graph" || { echo "FAIL: root graph missing double border '╔'" >&2; exit 1; }
-grep -q "╚" <<< "$hier_graph" || { echo "FAIL: root graph missing double border '╚'" >&2; exit 1; }
-grep -q "\\[1\\] sm-a" <<< "$hier_graph" || { echo "FAIL: root graph missing '[1] sm-a'" >&2; exit 1; }
-grep -q "1/2 kids" <<< "$hier_graph" || { echo "FAIL: root graph missing '1/2 kids'" >&2; exit 1; }
-grep -q "45k" <<< "$hier_graph" || { echo "FAIL: root graph missing branch token total '45k'" >&2; exit 1; }
-grep -q "dev-12" <<< "$hier_graph" || { echo "FAIL: root graph missing plain worker 'dev-12'" >&2; exit 1; }
-# Children must NOT appear in boxes at root level (exclude Flow section)
-hier_graph_diag="$(awk '/^─/ && ++r == 2 { exit } r == 1 { print }' <<< "$hier_graph")"
-if grep -qE "api-1|api-2" <<< "$hier_graph_diag"; then
-  echo "FAIL: root graph diagram should not draw child ids api-1 or api-2:" >&2
-  echo "$hier_graph_diag" >&2
+grep -q "│ 01 sm-a " <<< "$hier_graph" || { echo "FAIL: root graph missing sub-manager node '01 sm-a'" >&2; exit 1; }
+grep -q "│ sub-mgr · " <<< "$hier_graph" || { echo "FAIL: root graph missing 'sub-mgr · model' line" >&2; exit 1; }
+grep -q "│ 02 dev-12 " <<< "$hier_graph" || { echo "FAIL: root graph missing plain worker '02 dev-12'" >&2; exit 1; }
+# Children are an indented mini-row under their sub-manager, not boxes
+grep -q "^[ │]*└ 01 api-1 · ✓" <<< "$hier_graph" || { echo "FAIL: root graph missing child mini-row '└ 01 api-1 · ✓'" >&2; exit 1; }
+grep -q "^[ │]*└ 02 api-2 · ?" <<< "$hier_graph" || { echo "FAIL: root graph missing child mini-row '└ 02 api-2 · ?'" >&2; exit 1; }
+if grep -q "│ 0[0-9] api-" <<< "$hier_graph"; then
+  echo "FAIL: children must not be drawn as boxes at root level" >&2
+  exit 1
+fi
+# A sub-manager's chat with its children stays out of its own Conversation line
+if grep -q "sm-a .*fix → done" <<< "$hier_graph"; then
+  echo "FAIL: sm-a Conversation line mixes in its children's messages" >&2
   exit 1
 fi
 
@@ -980,12 +942,16 @@ p.wait()
 os.close(master)
 sys.stdout.write(out.decode("utf-8", errors="replace").replace("\r\n", "\n"))
 PYEOF
-  )"
-  grep -q "round 2" <<< "$pty_tree_120" || {
-    echo "FAIL: PTY 120x34 with unset COLUMNS cut 'round 2':" >&2
-    echo "$pty_tree_120" >&2
-    exit 1
-  }
+  )" || pty_tree_120="SKIP"
+  if [[ "$pty_tree_120" == "SKIP" ]]; then
+    echo "SKIP: no PTY available (sandboxed run); skipping real-terminal-size check" >&2
+  else
+    grep -q "round 2" <<< "$pty_tree_120" || {
+      echo "FAIL: PTY 120x34 with unset COLUMNS cut 'round 2':" >&2
+      echo "$pty_tree_120" >&2
+      exit 1
+    }
+  fi
 fi
 
 # Verify non-TTY output without SQUAD_ORCHESTRATION_LIVE exits by itself within 5 s (no --once)
@@ -1015,7 +981,7 @@ fi
 wait "$non_tty_pid" 2>/dev/null || true
 non_tty_pid=""
 
-grep -q "squad orchestration" "$non_tty_out" || {
+grep -q "● manager-4" "$non_tty_out" || {
   echo "FAIL: non-TTY one-shot output missing header" >&2
   exit 1
 }
@@ -1039,19 +1005,19 @@ live_pid="$(cat "$tmp/live_renderer.pid")"
 # Wait until output appears
 deadline=$(( $(date +%s) + 4 ))
 while (( $(date +%s) < deadline )); do
-  if [[ -s "$live_out" ]] && grep -q "squad orchestration" "$live_out"; then
+  if [[ -s "$live_out" ]] && grep -q "● manager-4" "$live_out"; then
     break
   fi
   sleep 0.05
 done
 
-grep -q "squad orchestration" "$live_out" || {
+grep -q "● manager-4" "$live_out" || {
   echo "FAIL: live renderer did not produce header within timeout" >&2
   kill -9 "$live_pid" 2>/dev/null || true
   exit 1
 }
 
-initial_headers="$(grep -c "squad orchestration" "$live_out" || true)"
+initial_headers="$(grep -c "● manager-4" "$live_out" || true)"
 initial_size="$(wc -c <"$live_out" | tr -d " ")"
 
 kill -HUP "$live_pid"
@@ -1063,7 +1029,7 @@ while (( $(date +%s) < hup_deadline )); do
     echo "FAIL: live renderer PID $live_pid died after SIGHUP" >&2
     exit 1
   fi
-  headers_now="$(grep -c "squad orchestration" "$live_out" || true)"
+  headers_now="$(grep -c "● manager-4" "$live_out" || true)"
   size_now="$(wc -c <"$live_out" | tr -d " ")"
   if (( headers_now > initial_headers || size_now > initial_size )); then
     reloaded=1
@@ -1307,7 +1273,7 @@ cards_wide="$(
   SQUAD_ORCHESTRATION_STALE_SECS=120 \
   SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
   COLUMNS=136 LINES=50 \
-    "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$cards_since" "$cards_dir"
+    "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$cards_since" "$cards_dir"
 )"
 echo "=== Richer cards graph (COLUMNS=136) ==="
 printf '%s\n' "$cards_wide"
@@ -1350,7 +1316,7 @@ cards_hdr80="$(
   SQUAD_ORCHESTRATION_NOW="$cards_now" \
   SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
   COLUMNS=80 LINES=50 \
-    "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$cards_since" "$cards_dir"
+    "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$cards_since" "$cards_dir"
 )"
 assert_max_width "$cards_hdr80" 80 "richer cards graph COLUMNS=80"
 grep -q "⚠ 2 verify" <<< "$(head -n 1 <<< "$cards_hdr80")" || {
@@ -1364,7 +1330,7 @@ for c_cols in 60 18; do
     SQUAD_ORCHESTRATION_NOW="$cards_now" \
     SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
     COLUMNS="$c_cols" LINES=50 \
-      "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$cards_since" "$cards_dir"
+      "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$cards_since" "$cards_dir"
   )"
   assert_max_width "$c_narrow" "$c_cols" "richer cards graph COLUMNS=$c_cols"
 done
@@ -1376,7 +1342,7 @@ cards_color="$(
   SQUAD_ORCHESTRATION_FRAME=1 \
   SQUAD_ORCHESTRATION_HISTORY_CMD="$cards_hist" \
   COLUMNS=136 LINES=50 \
-    "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$cards_since" "$cards_dir"
+    "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$cards_since" "$cards_dir"
 )"
 if grep -qE $'\033\\[(38;5;78|32)m[^\033]*verify FAIL' <<< "$cards_color"; then
   echo "FAIL: verify FAIL rendered with completed green colour" >&2
@@ -1459,7 +1425,7 @@ cat > "$tmp/flow/history" <<'EOF'
 EOF
 flow_render() {
   SQUAD_ORCHESTRATION_HISTORY_CMD='cat history' COLUMNS="${flow_cols:-80}" LINES=60 \
-    "$root/scripts/squad-orchestration.sh" --once --since "$since" "$@" "$flow_dir"
+    "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$since" "$@" "$flow_dir"
 }
 if flow_render --flow-filter invalid >/dev/null 2>&1; then
   echo "FAIL: invalid Flow filter accepted" >&2
@@ -1505,11 +1471,415 @@ grep -q '1/3 tasks' <<< "$(flow_render)"
 printf '[2026-11-14T07:07:00Z] manager-4 -> flow-1: ANSWER: resolved\n' >> "$tmp/flow/history"
 ! grep -q 'PINNED' <<< "$(flow_render)"
 # Both controls use the existing once-mode key simulation.
-flow_switched="$(SQUAD_ORCHESTRATION_SWITCH_LAYOUT=f,f flow_render)"
+flow_switched="$(SQUAD_ORCHESTRATION_SWITCH_LAYOUT=v,v flow_render)"
 grep -q 'failures' <<< "$flow_switched"
 six_expanded="$(SQUAD_ORCHESTRATION_SWITCH_LAYOUT=e COLUMNS=80 LINES=60 \
-  "$root/scripts/squad-orchestration.sh" --once --since "$since" "$six_dir")"
+  "$root/scripts/squad-orchestration.sh" --layout cards --once --since "$since" "$six_dir")"
 ! grep -q '+2 earlier' <<< "$six_expanded"
 for idx in 1 2 3 4 5 6; do grep -q "w-$idx" <<< "$six_expanded"; done
+# ==============================================================================
+# M. Manager scope (strict), --all-managers and the lifecycle flow chart
+# ==============================================================================
+scope_dir="$tmp/scope/.squad/workers"
+mkdir -p "$scope_dir"
+
+write_scope_worker() {
+  # name role manager state started-offset finished-offset plan [parent]
+  local name="$1" role="$2" mgr="$3" st="$4" s_off="$5" f_off="$6" plan="$7" parent="${8:-}"
+  {
+    echo "worker=$name"
+    echo "engine=opencode"
+    echo "model=opencode-go/deepseek-v4-pro"
+    echo "role=$role"
+    [[ -z "$mgr" ]] || echo "manager=$mgr"
+    [[ -z "$parent" ]] || echo "parent=$parent"
+    echo "state=$st"
+    echo "pid=$$"
+    echo "started=$(( now - s_off ))"
+    [[ -z "$f_off" ]] || echo "finished=$(( now - f_off ))"
+    echo "tokens_in=10000"
+    echo "tokens_out=20000"
+    echo "plan=$plan"
+  } > "$scope_dir/$name.status"
+}
+
+# m-a: a-2 failed, a-3 done, sm (sub-manager with child), a-1 running and asking; older plan p0
+write_scope_worker a-2 dev m-a failed 200 150 /path/to/p1.md
+write_scope_worker a-3 dev m-a completed 120 80 /path/to/p1.md
+write_scope_worker sm sub-manager m-a running 110 "" /path/to/p1.md
+write_scope_worker a-1 dev m-a running 100 "" /path/to/p1.md
+write_scope_worker sm-child dev sm completed 90 50 /path/to/p1.md sm
+write_scope_worker a-old dev m-a completed 500 450 /path/to/p0.md
+# m-b: another session sharing the directory
+write_scope_worker b-1 dev m-b running 95 "" /path/to/p1.md
+# legacy status file without a manager= key
+write_scope_worker legacy-1 dev "" completed 70 30 /path/to/p1.md
+
+scope_hist='cat <<HEOF
+* [2026-11-14T07:01:00Z] m-a -> a-1: ## Goal
+Add CSV export
+Second line of the brief.
+* [2026-11-14T07:02:00Z] m-a -> a-2: brief a-2
+* [2026-11-14T07:03:00Z] m-a -> a-3: # Fix the importer 7c1f2f0e-5b6a-4d3c-9e8f-0a1b2c3d4e5f
+* [2026-11-14T07:04:00Z] m-b -> b-1: ## Goal
+B private brief
+* [2026-11-14T07:05:00Z] m-a -> sm: brief sm
+* [2026-11-14T07:06:00Z] sm -> sm-child: brief sm-child
+* [2026-11-14T07:07:00Z] sm-child -> sm: sm-child done
+* [2026-11-14T07:08:00Z] a-3 -> m-a: a-3 (opencode) completed task 7c1f2f0e-5b6a-4d3c-9e8f-0a1b2c3d4e5f
+* [2026-11-14T07:09:00Z] a-2 -> m-a: a-2 (opencode) failed: lint
+* [2026-11-14T07:10:00Z] a-1 -> m-a: QUESTION from a-1: which delimiter? Comma or tab
+* [2026-11-14T07:11:00Z] m-x -> legacy-1: legacy secret brief
+* [2026-11-14T07:12:00Z] b-1 -> m-b: QUESTION from b-1: other manager question
+HEOF'
+
+run_scope() {
+  # cols [env VAR=val ...] -- args
+  local cols="$1"
+  shift
+  SQUAD_ORCHESTRATION_HISTORY_CMD="$scope_hist" COLUMNS="$cols" \
+    "$root/scripts/squad-orchestration.sh" "$@" --once --since "$since" "$scope_dir"
+}
+
+# 1. SQUAD_MANAGER_ID=m-a: strict scope
+for cols in 80 120; do
+  ma_out="$(SQUAD_MANAGER_ID=m-a run_scope "$cols")"
+  echo "=== Scope m-a lifecycle (COLUMNS=$cols) ==="
+  printf '%s\n' "$ma_out"
+  echo "==========================================="
+
+  assert_max_width "$ma_out" "$cols" "m-a COLUMNS=$cols"
+  assert_utf8 "$ma_out" "m-a COLUMNS=$cols"
+  if grep -q $'\033' <<< "$ma_out"; then
+    echo "FAIL: escape codes in --once output (m-a COLUMNS=$cols)" >&2
+    exit 1
+  fi
+
+  grep -q "^● m-a  ·  plan p1  ·  " <<< "$ma_out" || { echo "FAIL: m-a header missing manager/plan" >&2; exit 1; }
+  n=0
+  for wid in a-2 a-3 sm a-1; do
+    n=$(( n + 1 ))
+    grep -q "│ 0${n} ${wid} " <<< "$ma_out" || { echo "FAIL: m-a view missing node '0${n} ${wid}' (COLUMNS=$cols)" >&2; exit 1; }
+  done
+  [[ "$(grep -c '│ m-a ' <<< "$ma_out")" == 1 ]] || { echo "FAIL: expected exactly one m-a manager node" >&2; exit 1; }
+
+  # m-b, legacy rows and their messages are excluded
+  if grep -qE 'b-1|legacy|m-b|B private brief|other manager question|secret' <<< "$ma_out"; then
+    echo "FAIL: m-a view leaked m-b / legacy rows or messages (COLUMNS=$cols)" >&2
+    exit 1
+  fi
+
+  # Edge verbs, waiting group, sub-manager mini-row, outcomes
+  grep -q "─failed─*▶" <<< "$ma_out" || { echo "FAIL: missing failed edge for a-2" >&2; exit 1; }
+  grep -q "─done─*▶" <<< "$ma_out" || { echo "FAIL: missing done edge for a-3" >&2; exit 1; }
+  grep -q "─ask─*▶" <<< "$ma_out" || { echo "FAIL: missing ask edge for a-1" >&2; exit 1; }
+  grep -q "^Waiting on you (1)" <<< "$ma_out" || { echo "FAIL: missing 'Waiting on you' group" >&2; exit 1; }
+  grep -qE "^\? a-1  which delimiter\? Comma or tab  · " <<< "$ma_out" || { echo "FAIL: waiting line missing a-1 question" >&2; exit 1; }
+  grep -q "^[ │]*└ 01 sm-child · ✓" <<< "$ma_out" || { echo "FAIL: missing sub-manager child mini-row" >&2; exit 1; }
+  grep -q "^Outcomes  ✓ a-3 sm-child   ✗ a-2" <<< "$ma_out" || { echo "FAIL: Outcomes line wrong" >&2; exit 1; }
+
+  # Conversation: brief title not "## Goal", no UUID, no report text
+  grep -q "^Conversation" <<< "$ma_out" || { echo "FAIL: missing Conversation panel" >&2; exit 1; }
+  grep -q 'a-1  *brief "Add CSV export"' <<< "$ma_out" || { echo "FAIL: Conversation missing brief title 'Add CSV export'" >&2; exit 1; }
+  if grep -qE '## Goal|7c1f2f0e|completed task' <<< "$ma_out"; then
+    echo "FAIL: Conversation leaked '## Goal', a UUID or a report line" >&2
+    exit 1
+  fi
+  grep -q 'sm-child  *brief ".*" · fix×1 · last fix ' <<< "$ma_out" || { echo "FAIL: Conversation missing 'fix×N' for a multi-round worker" >&2; exit 1; }
+  grep -q 'a-3  *brief "Fix the importer" · last done ' <<< "$ma_out" || { echo "FAIL: Conversation a-3 line wrong" >&2; exit 1; }
+
+  # Older plans collapse to exactly one line
+  [[ "$(grep -c '^History  ' <<< "$ma_out")" == 1 ]] || { echo "FAIL: expected exactly one History line" >&2; exit 1; }
+  grep -q "^History  1 earlier plan · ✓1 ✗0" <<< "$ma_out" || { echo "FAIL: History summary wrong" >&2; exit 1; }
+done
+
+# Sidecar metadata survives filtering raw workers down to a different manager.
+printf 'model_tier=strong\n' >> "$scope_dir/b-1.status"
+cat > "$scope_dir/b-1.live" <<'EOF'
+tokens_in=40000
+tokens_out=3000
+activity=SCOPED-live-activity
+EOF
+scoped_live="$(SQUAD_MANAGER_ID=m-b run_scope 136 --layout cards)"
+grep -q 'SCOPED-live-activity' <<< "$scoped_live"
+grep -q '43k' <<< "$scoped_live"
+grep -q 'strong' <<< "$scoped_live"
+
+# Alternate layouts retain manager grouping and strict scope with richer fields.
+for alt_layout in cards tree; do
+  grouped="$(SQUAD_MANAGER_ID=m-a LINES=100 run_scope 120 --all-managers --layout "$alt_layout")"
+  grep -q '^Manager m-a$' <<< "$grouped"
+  grep -q '^Manager m-b$' <<< "$grouped"
+  assert_max_width "$grouped" 120 "grouped $alt_layout"
+  scoped="$(SQUAD_MANAGER_ID=m-a run_scope 120 --layout "$alt_layout")"
+  if grep -qE 'b-1|legacy|m-b|B private brief|secret' <<< "$scoped"; then
+    echo "FAIL: $alt_layout leaked another manager" >&2
+    exit 1
+  fi
+done
+
+# Focus (present) mode: diagram + waiting group only
+focus_out="$(SQUAD_MANAGER_ID=m-a run_scope 120 --focus)"
+echo "=== Focus (COLUMNS=120) ==="
+printf '%s\n' "$focus_out"
+echo "==========================="
+assert_max_width "$focus_out" 120 "m-a focus COLUMNS=120"
+grep -q "│ 01 a-2 " <<< "$focus_out" || { echo "FAIL: focus view missing main lane" >&2; exit 1; }
+grep -q "^Waiting on you" <<< "$focus_out" || { echo "FAIL: focus view missing waiting group" >&2; exit 1; }
+if grep -qE '^Conversation|^History|^Outcomes' <<< "$focus_out"; then
+  echo "FAIL: focus view must hide Conversation, Outcomes and History" >&2
+  exit 1
+fi
+
+# Colour mode keeps the exact visible layout and has valid UTF-8
+color_out="$(SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_MANAGER_ID=m-a run_scope 80)"
+assert_utf8 "$color_out" "m-a colour"
+if grep -q '@@' <<< "$color_out"; then
+  echo "FAIL: unsubstituted animation placeholder in coloured output" >&2
+  exit 1
+fi
+
+# 2. --all-managers shows everything grouped per manager (legacy under the inferred manager)
+all_out="$(run_scope 120 --all-managers)"
+echo "=== All-managers lifecycle (COLUMNS=120) ==="
+printf '%s\n' "$all_out"
+echo "============================================"
+assert_max_width "$all_out" 120 "all-managers COLUMNS=120"
+grep -q "all managers (2)" <<< "$all_out" || { echo "FAIL: header missing 'all managers (2)'" >&2; exit 1; }
+grep -q "│ a-1 \|│ 04 a-1 " <<< "$all_out" || { echo "FAIL: all-managers missing a-1" >&2; exit 1; }
+grep -q "│ 01 b-1 " <<< "$all_out" || { echo "FAIL: all-managers missing b-1" >&2; exit 1; }
+grep -q "legacy-1" <<< "$all_out" || { echo "FAIL: all-managers should show legacy rows" >&2; exit 1; }
+[[ "$(grep -cE '│ (m-a|m-b) ' <<< "$all_out")" == 2 ]] || { echo "FAIL: expected one manager node per manager" >&2; exit 1; }
+grep -q "^▸ m-a · plan p1" <<< "$all_out" || { echo "FAIL: missing per-manager group label for m-a" >&2; exit 1; }
+grep -q "^▸ m-b · plan p1" <<< "$all_out" || { echo "FAIL: missing per-manager group label for m-b" >&2; exit 1; }
+
+# 3. Tree and pipeline apply the same strict scope
+for lay in tree pipeline; do
+  lay_out="$(SQUAD_MANAGER_ID=m-a run_scope 100 --layout "$lay")"
+  if grep -qE "b-1|legacy-1" <<< "$lay_out"; then
+    echo "FAIL: $lay layout for m-a leaked b-1 / legacy-1" >&2
+    exit 1
+  fi
+  grep -q "a-1" <<< "$lay_out" || { echo "FAIL: $lay layout missing a-1" >&2; exit 1; }
+done
+
+# 4. Without a known manager id the legacy files stay visible (backward compatible)
+legacy_out="$(run_scope 120 --layout tree)"
+grep -q "legacy-1" <<< "$legacy_out" || { echo "FAIL: legacy rows should show when no manager id is known" >&2; exit 1; }
+
+# ==============================================================================
+# S. Auto-close when squad is idle
+# ==============================================================================
+autoclose_dir="$tmp/autoclose_workers"
+mkdir -p "$autoclose_dir"
+ac_now="$(date +%s)"
+cat > "$autoclose_dir/w-1.status" <<EOF
+worker=w-1
+manager=m-auto
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+state=completed
+started=$(( ac_now - 60 ))
+finished=$(( ac_now - 20 ))
+plan=/path/to/plan-auto.md
+EOF
+
+# 1. --once output unchanged (no countdown text)
+once_out="$(SQUAD_MANAGER_ID=m-auto "$root/scripts/squad-orchestration.sh" --once "$autoclose_dir")"
+if grep -qE "closing in|All done · closing" <<< "$once_out"; then
+  echo "FAIL: --once output contained countdown text" >&2
+  exit 1
+fi
+
+# 2. Fixture where all workers are completed, SQUAD_ORCHESTRATION_HOLD=1:
+#    live process exits within ~4 s with status 0, and a marker file containing its pid is removed.
+ac_out_1="$tmp/autoclose_1.log"
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=1 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-auto \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_1" 2>&1 &
+ac_pid_1="$!"
+echo "$ac_pid_1" > "$autoclose_dir/.orchestration-m-m_auto.pid"
+
+ac_exited_1=0
+ac_deadline_1=$(( $(date +%s) + 5 ))
+while (( $(date +%s) < ac_deadline_1 )); do
+  if ! kill -0 "$ac_pid_1" 2>/dev/null; then
+    ac_exited_1=1
+    break
+  fi
+  sleep 0.1
+done
+
+if (( ac_exited_1 == 0 )); then
+  echo "FAIL: live process with SQUAD_ORCHESTRATION_HOLD=1 did not exit within ~4 s" >&2
+  kill -9 "$ac_pid_1" 2>/dev/null || true
+  exit 1
+fi
+
+ac_status_1=0
+wait "$ac_pid_1" || ac_status_1=$?
+if (( ac_status_1 != 0 )); then
+  echo "FAIL: live process auto-close exited with status $ac_status_1, expected 0" >&2
+  cat "$ac_out_1" >&2
+  exit 1
+fi
+
+if [[ -f "$autoclose_dir/.orchestration-m-m_auto.pid" ]]; then
+  echo "FAIL: marker file was not removed on auto-close" >&2
+  exit 1
+fi
+
+# 3. Same with one worker state=running (pid = a live pid such as test's $$):
+#    still alive after 3 s; then kill it.
+cat > "$autoclose_dir/w-running.status" <<EOF
+worker=w-running
+manager=m-auto
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+state=running
+pid=$$
+started=$(( ac_now - 30 ))
+plan=/path/to/plan-auto.md
+EOF
+
+ac_out_run="$tmp/autoclose_run.log"
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=1 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-auto \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_run" 2>&1 &
+ac_pid_run="$!"
+
+sleep 3
+if ! kill -0 "$ac_pid_run" 2>/dev/null; then
+  echo "FAIL: live process with running worker unexpectedly exited" >&2
+  exit 1
+fi
+kill "$ac_pid_run" 2>/dev/null || true
+wait "$ac_pid_run" 2>/dev/null || true
+rm -f "$autoclose_dir/w-running.status"
+
+# 4. SQUAD_ORCHESTRATION_HOLD=0 → still alive after 3 s.
+ac_out_zero="$tmp/autoclose_zero.log"
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=0 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-auto \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_zero" 2>&1 &
+ac_pid_zero="$!"
+
+sleep 3
+if ! kill -0 "$ac_pid_zero" 2>/dev/null; then
+  echo "FAIL: live process with SQUAD_ORCHESTRATION_HOLD=0 unexpectedly exited" >&2
+  exit 1
+fi
+kill "$ac_pid_zero" 2>/dev/null || true
+wait "$ac_pid_zero" 2>/dev/null || true
+
+# 5. During countdown, write a new status with state=running → no exit.
+ac_out_dyn="$tmp/autoclose_dyn.log"
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=3 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-auto \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_dyn" 2>&1 &
+ac_pid_dyn="$!"
+
+sleep 1
+cat > "$autoclose_dir/w-new.status" <<EOF
+worker=w-new
+manager=m-auto
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+state=running
+pid=$$
+started=$(date +%s)
+plan=/path/to/plan-auto.md
+EOF
+
+sleep 3
+if ! kill -0 "$ac_pid_dyn" 2>/dev/null; then
+  echo "FAIL: live process exited despite worker becoming running during countdown" >&2
+  exit 1
+fi
+kill "$ac_pid_dyn" 2>/dev/null || true
+wait "$ac_pid_dyn" 2>/dev/null || true
+rm -f "$autoclose_dir/w-new.status"
+
+# 6. Fixture dir with only another manager's status files (manager=m-other, completed),
+#    SQUAD_MANAGER_ID=m-x, SQUAD_ORCHESTRATION_HOLD=1, live mode → process exits 0 within ~4 s.
+ac_empty_dir="$tmp/autoclose_empty"
+mkdir -p "$ac_empty_dir"
+cat > "$ac_empty_dir/w-other.status" <<EOF
+worker=w-other
+manager=m-other
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+state=completed
+started=$(( $(date +%s) - 60 ))
+finished=$(( $(date +%s) - 20 ))
+plan=/path/to/plan-other.md
+EOF
+
+ac_out_empty="$tmp/autoclose_empty.log"
+COLUMNS=100 \
+SQUAD_ORCHESTRATION_LIVE=1 \
+SQUAD_ORCHESTRATION_HOLD=1 \
+SQUAD_ORCHESTRATION_INTERVAL=1 \
+SQUAD_ORCHESTRATION_FPS=10 \
+SQUAD_MANAGER_ID=m-x \
+SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
+  "$root/scripts/squad-orchestration.sh" "$ac_empty_dir" >"$ac_out_empty" 2>&1 &
+ac_pid_empty="$!"
+echo "$ac_pid_empty" > "$ac_empty_dir/.orchestration-m-m_x.pid"
+
+ac_exited_empty=0
+ac_deadline_empty=$(( $(date +%s) + 5 ))
+while (( $(date +%s) < ac_deadline_empty )); do
+  if ! kill -0 "$ac_pid_empty" 2>/dev/null; then
+    ac_exited_empty=1
+    break
+  fi
+  sleep 0.1
+done
+
+if (( ac_exited_empty == 0 )); then
+  echo "FAIL: empty-scope live process with SQUAD_ORCHESTRATION_HOLD=1 did not exit within ~4 s" >&2
+  kill -9 "$ac_pid_empty" 2>/dev/null || true
+  exit 1
+fi
+
+ac_status_empty=0
+wait "$ac_pid_empty" || ac_status_empty=$?
+if (( ac_status_empty != 0 )); then
+  echo "FAIL: empty-scope live process auto-close exited with status $ac_status_empty, expected 0" >&2
+  cat "$ac_out_empty" >&2
+  exit 1
+fi
+
+if [[ -f "$ac_empty_dir/.orchestration-m-m_x.pid" ]]; then
+  echo "FAIL: marker file was not removed on empty-scope auto-close" >&2
+  exit 1
+fi
+
+if ! grep -q "Nothing running · closing in" "$ac_out_empty"; then
+  echo "FAIL: empty-scope footer text did not include 'Nothing running · closing in'" >&2
+  cat "$ac_out_empty" >&2
+  exit 1
+fi
 
 echo "PASS: squad_orchestration_smoke"
