@@ -24,6 +24,8 @@ source "$script_dir/lib/squad-panes.sh"
 source "$script_dir/lib/squad-plan.sh"
 # shellcheck source=lib/squad-engine.sh
 source "$script_dir/lib/squad-engine.sh"
+# shellcheck source=lib/squad-log-summary.sh
+source "$script_dir/lib/squad-log-summary.sh"
 
 usage() {
   cat <<'EOF'
@@ -412,6 +414,17 @@ latest_status_with_worktree() {
     [[ -n "$(status_get "$file" worktree)" ]] && { printf '%s\n' "$file"; return 0; }
   done < <(worker_status_files "$1")
   return 0
+}
+
+record_worktree_action() {
+  local file
+  while IFS= read -r file; do
+    if [[ "$(status_get "$file" worktree)" == "$home/$target" ]]; then
+      printf '%s=%s\n' "$1" "$(date +%s)" >>"$file"
+      squad_record_status "$file"
+      break
+    fi
+  done < <(worker_status_files "$target")
 }
 
 # "  <id>  <worktree path>" for each worker worktree that still exists.
@@ -873,6 +886,7 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
     fi
     if [[ "$action" == discard ]]; then
       worktree_remove "$root" "$target"
+      record_worktree_action discarded
       echo "Discarded $target's worktree and branch squad/$target."
       continue
     fi
@@ -881,11 +895,13 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
     worktree_patch "$root" "$target" >"$patch_file"
     if [[ ! -s "$patch_file" ]]; then
       worktree_remove "$root" "$target"
+      record_worktree_action merged
       echo "$target made no changes; removed its worktree."
     elif ! review_gate "$target" "$patch_file"; then
       exit_status=3
     elif apply_output="$(worktree_apply "$root" "$patch_file")"; then
       worktree_remove "$root" "$target"
+      record_worktree_action merged
       echo "Merged $target into $root ($(git apply --numstat "$patch_file" | wc -l | tr -d ' ') files, uncommitted). Worktree removed."
     else
       conflicted="$(printf '%s\n' "$apply_output" | sed -n "s/^Applied patch to '\(.*\)' with conflicts\.$/\1/p")"
@@ -1551,6 +1567,20 @@ output_age() {
   printf '%d' "$newest"
 }
 
+write_live() {
+  local summary metrics activity input cached output tmp
+  case "$engine" in codex|claude|ccr|agy|opencode) ;; *) return 0 ;; esac
+  command -v jq >/dev/null 2>&1 || return 0
+  summary="$(summarise_log "$log_file" "$engine" 1)" || return 0
+  # Preserve empty tab-separated token fields as zero.
+  metrics="$(printf '%s\n' "$summary" | head -n 1 | awk -F '\t' '{print ($4 == "" ? 0 : $4), ($5 == "" ? 0 : $5), ($6 == "" ? 0 : $6)}')"
+  read -r input cached output <<<"$metrics"
+  [[ "$input" =~ ^[0-9]+$ && "$cached" =~ ^[0-9]+$ && "$output" =~ ^[0-9]+$ ]] || return 0
+  activity="$(printf '%s\n' "$summary" | tail -n +2 | tail -n 1 | LC_ALL=C tr -d '\000-\037\177' | LC_ALL=C cut -b 1-200)"
+  tmp="$(mktemp "$status_file.live.XXXXXX")" || return 0
+  { printf 'tokens_in=%s\ntokens_cached=%s\ntokens_out=%s\nactivity=%s\nupdated=%s\n' "$input" "$cached" "$output" "$activity" "$(date +%s)" >"$tmp" && mv "$tmp" "${status_file%.status}.live"; } || rm -f "$tmp"
+}
+
 timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 stall_seconds="${SQUAD_WORKER_STALL_SECONDS:-$(( stall_minutes * 60 ))}"
 if (( status == 0 )); then
@@ -1559,6 +1589,11 @@ if (( status == 0 )); then
   # Watchdog: stop runs that exceed the time limit or stop producing output,
   # so a stuck worker reports back instead of leaving its pane pending.
   model_log_size=-1
+  live_log_size=0
+  live_updated=0
+  live_pid=""
+  live_interval="${SQUAD_WORKER_LIVE_INTERVAL:-15}"
+  [[ "$live_interval" =~ ^[1-9][0-9]*$ ]] || live_interval=15
   while kill -0 "$engine_pid" 2>/dev/null; do
     sleep 1
     current_log_size="$(wc -c <"$log_file")"
@@ -1580,6 +1615,14 @@ if (( status == 0 )); then
       fi
       [[ "$model_changed" == 0 ]] || write_status running
     fi
+    live_now="$(date +%s)"
+    if [[ "$current_log_size" != "$live_log_size" ]] && (( live_now - live_updated >= live_interval )) &&
+       { [[ -z "$live_pid" ]] || ! kill -0 "$live_pid" 2>/dev/null; }; then
+      live_log_size="$current_log_size"
+      live_updated="$live_now"
+      (write_live) >/dev/null 2>&1 &
+      live_pid=$!
+    fi
     if (( $(date +%s) - started_at > timeout_seconds )); then
       stop_reason="timed out after $(( timeout_seconds / 60 ))m"
     elif (( stall_seconds > 0 )) && (( $(output_age) > stall_seconds )); then
@@ -1592,6 +1635,10 @@ if (( status == 0 )); then
     fi
   done
   wait "$engine_pid" 2>/dev/null || status=$?
+  if [[ -n "$live_pid" ]] && kill -0 "$live_pid" 2>/dev/null; then
+    pkill -TERM -P "$live_pid" 2>/dev/null || true
+    kill -TERM "$live_pid" 2>/dev/null || true
+  fi
   engine_pid=""
   if [[ -n "$stop_reason" ]]; then
     status=124
@@ -1646,6 +1693,7 @@ if [[ -n "$worktree_path" ]]; then
   if [[ -s "$patch_file" ]]; then
     changed_files="$(git apply --numstat "$patch_file" 2>/dev/null | wc -l | tr -d ' ')"
   fi
+  read -r added deleted <<<"$(git apply --numstat "$patch_file" 2>/dev/null | awk '{a += $1; d += $2} END {print a+0, d+0}')"
   worktree_note="Worktree: $changed_files changed file(s) in $worktree_path (branch squad/$worker_id). Review: git -C $worktree_path diff $worktree_base_commit. Merge: squad-worker --merge $worker_id. Discard: squad-worker --discard $worker_id."
   if [[ -n "$owned_paths" ]]; then
     scope_violation="$(git -C "$worktree_path" diff --no-renames --name-only "$worktree_base_commit" HEAD -- . ':(exclude).claude' ':(exclude,glob)**/.claude/**' 2>/dev/null |
@@ -1726,6 +1774,25 @@ $report"
     report="$verify_line
 $(tail -n 20 "$verify_log" | bounded_lines 200)
 Log: $workspace_root/$verify_log
+$report"
+  fi
+fi
+if [[ -n "$worktree_path" ]]; then
+  evidence="Base: $worktree_base_commit
+Diff: git -C $worktree_path diff $worktree_base_commit
+Changed: $changed_files file(s), +$added -$deleted"
+  if [[ -n "$owned_paths" ]]; then
+    if [[ -n "$scope_violation" ]]; then evidence="$evidence
+Scope: VIOLATION — $scope_violation"
+    else evidence="$evidence
+Scope: ok"; fi
+  fi
+  if [[ -n "$verify_command" ]]; then
+    report="${report%%$'\n'*}
+$evidence
+${report#*$'\n'}"
+  else
+    report="$evidence
 $report"
   fi
 fi

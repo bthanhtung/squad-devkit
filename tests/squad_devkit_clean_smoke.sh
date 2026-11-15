@@ -27,6 +27,7 @@ make_run() {
 }
 
 make_run old-done completed $(( now - 30 * 86400 ))
+touch "$workers/old-done.verify.log" "$workers/old-done.live"
 make_run recent-done completed $(( now - 3600 ))
 make_run old-running running $(( now - 30 * 86400 )) "$$"
 make_run old-lost running $(( now - 30 * 86400 )) 999999
@@ -38,6 +39,7 @@ printf 'keep\n' >"$workspace/reports/report.html"
 
 "$clean" "$workspace" --quiet 2>"$temp_directory/log"
 [[ ! -e "$workers/old-done.status" && ! -e "$workers/old-done.log" && ! -e "$workers/old-done.md" ]] || fail
+[[ ! -e "$workers/old-done.verify.log" && ! -e "$workers/old-done.live" ]] || fail
 [[ ! -e "$workers/old-lost.status" ]] || fail
 [[ -e "$workers/recent-done.status" && -e "$workers/recent-done.md" ]] || fail
 [[ -e "$workers/old-running.status" ]] || fail
