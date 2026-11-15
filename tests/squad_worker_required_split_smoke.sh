@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export SQUAD_WORKER_VIEW=panes SQUAD_DEVKIT_NOTIFY=0
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'if [[ -n "${TMUX_TMPDIR:-}" && "$TMUX_TMPDIR" == "$tmp/tmux" ]]; then tmux kill-server 2>/dev/null || true; fi; rm -rf "$tmp"' EXIT
