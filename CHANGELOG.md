@@ -6,6 +6,12 @@ releases.
 
 ## [Unreleased]
 
+### Behaviour changes
+- High-risk plans refuse launches below the strong tier unless `--tier-reason` is provided; children of sub-managers are exempt and record the reason in `tier_override`.
+- Printed reports and task summaries are capped at `SQUAD_WORKER_REPORT_LINES` (default 40); verification results appear first.
+- Fix runs reuse the worktree and receive the previous round's report and diff stat.
+- The manager prompt lists mapped models as text.
+
 ### Added
 - In-session `squad-devkit update` and `squad-devkit reload` (`--update`, `--reload`, `restart`): refreshes `.squad/roles/` templates, re-links devkit commands, sends `SIGHUP` to running `squad-orchestration.sh` views, and prints the updated manager instructions to stdout so a running manager session adopts pulled devkit changes or updated config without restarting. `update` fast-forward pulls the devkit checkout first (skipping the pull and exiting `1` after reloading if the checkout has local changes) and re-execs the new script for the reload steps.
 - Hierarchy mode (`squad-worker <id> --role sub-manager`, `scripts/squad-submanager.sh`, `templates/devkit/sub-manager.md`, `--parent`, `--budget-tokens`, `--max-children`, `squad-worker --tree [--json]`): delegates complex tasks across multiple independent areas to sub-managers who plan and review child workers running in the sub-manager's worktree. The outer driver runs child workers directly so sandboxed engines without network access can execute children safely, while authority to merge, commit, and push remains strictly with the root manager.
@@ -16,6 +22,11 @@ releases.
   custom setup (choose the manager, which workers to enable, and their
   preference order). The saved order becomes the manager's preference order,
   shown as "in the order the human chose".
+- High-risk plans now refuse non-strong worker launches unless `--tier-reason`
+  records an override; workers track attempt counts and include previous-round
+  report and diff context. `--verify` runs an acceptance command and blocks
+  `--merge` on failure; printed reports are capped. Manager startup uses a
+  compact mapped model catalog and a shorter manager role prompt.
 - Structured reviewer verdict: `reviewer` and `security` workers end their report
   with `VERDICT: APPROVED` or `VERDICT: CHANGES_REQUESTED`, recorded as `verdict=`
   in the status file. `squad-worker --merge` no longer counts a reviewer that

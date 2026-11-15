@@ -2,8 +2,9 @@
 # Find project-local selections first, then the orchestration workspace.
 # JSON is parsed as data only; never eval/source a saved selection.
 squad_worker_saved_selection() {
-  local directory file start
-  for start in "${project_directory:-$PWD}" "${SQUAD_DEVKIT_WORKSPACE:-${SQUAD_WORKTREE_WORKSPACE:-${workspace_root:-$PWD}}}"; do
+  local directory file start index=0
+  for start in "${project_directory:-$PWD}" "${SQUAD_DEVKIT_WORKSPACE:-${SQUAD_WORKTREE_WORKSPACE:-${workspace_root:-$PWD}}}" "${HOME:-}"; do
+    index=$((index + 1))
     [[ -d "$start" ]] || continue
     directory="$(cd "$start" && pwd)"
     while :; do
@@ -28,7 +29,7 @@ squad_worker_saved_selection() {
         fi
         return 0
       fi
-      [[ "$directory" != / ]] || break
+      [[ "$index" != 3 && "$directory" != / ]] || break
       directory="$(dirname "$directory")"
     done
   done

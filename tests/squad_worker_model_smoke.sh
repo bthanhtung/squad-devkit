@@ -237,3 +237,24 @@ printf '{"version":1,"engines":{"codex":{"balanced":{"model":"$(touch marker)"}}
 if (model=''; squad_worker_select_model) 2>/dev/null; then exit 1; fi
 [[ ! -e marker ]]
 echo 'PASS: saved mappings, project/catalog lookup, effort, precedence, invalid JSON'
+
+# Global settings are a whole-file fallback shared by launch selection and catalog.
+mkdir -p "$HOME/.squad"
+printf '%s\n' '{"version":1,"engines":{"codex":{"balanced":{"model":"global-model"},"fast":{"model":"global-fast"}}}}' >"$HOME/.squad/worker-models.json"
+project_directory="$tmp/outside"; engine=codex; model_tier=balanced; model=''
+squad_worker_select_model
+[[ "$model" == global-model ]]
+(cd "$tmp/outside"; "$root/scripts/squad-worker.sh" --models --engine codex) >"$tmp/catalog"
+jq -e '.[] | select(.tier == "balanced") | .candidate == "global-model"' "$tmp/catalog" >/dev/null
+model=explicit; squad_worker_select_model; [[ "$model" == explicit ]]
+model=''; SQUAD_WORKER_CODEX_MODEL_BALANCED=env-choice squad_worker_select_model; [[ "$model" == env-choice ]]
+printf '%s\n' '{"version":1,"engines":{"codex":{"fast":{"model":"local-fast"}}}}' >"$tmp/project/.squad/worker-models.json"
+project_directory="$tmp/project/sub"; model=''
+if squad_worker_select_model 2>"$tmp/error"; then exit 1; fi
+grep -q 'Missing model mapping' "$tmp/error"
+project_directory="$tmp/outside"
+printf '%s\n' '{broken' >"$HOME/.squad/worker-models.json"
+if (model=''; squad_worker_select_model) 2>"$tmp/error"; then exit 1; fi
+grep -q 'Invalid worker models' "$tmp/error"
+(cd "$tmp/outside"; "$root/scripts/squad-worker.sh" --models --engine codex) >"$tmp/catalog"
+jq -e '.[] | select(.tier == "balanced") | .candidate == null and (.error | contains("Invalid worker models"))' "$tmp/catalog" >/dev/null
