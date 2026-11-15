@@ -1024,8 +1024,16 @@ if [[ "$plan_path" != none ]]; then
   plan_risk="$(plan_field "$plan_path" risk)"
   plan_complexity="$(plan_field "$plan_path" complexity)"
   if [[ "$plan_risk" == high && "$model_tier" != strong && -z "$tier_reason" ]]; then
-    echo 'squad-worker: high-risk plans require --model-tier strong or --tier-reason "<reason>".' >&2
-    exit 2
+    parent_status=""
+    if [[ -n "$parent_id" && -n "${early_workspace:-}" ]]; then
+      parent_status="$(cd "$early_workspace" && worker_status_files "$parent_id" | head -n 1)"
+    fi
+    if [[ -n "$parent_status" && "$(status_get "$early_workspace/$parent_status" role)" == sub-manager ]]; then
+      tier_reason="sub-manager child of $parent_id"
+    else
+      echo 'squad-worker: high-risk plans require --model-tier strong or --tier-reason "<reason>".' >&2
+      exit 2
+    fi
   fi
   if [[ "$plan_complexity" == high && "$model_tier" != strong ]]; then
     echo 'squad-worker: high complexity; consider --model-tier strong.' >&2
@@ -1707,18 +1715,18 @@ if [[ -n "$verify_command" ]]; then
   fi
   verify_display="$(printf '%s' "$verify_command" | tr '\r\n' '  ')"
   if [[ "$verify" == pass ]]; then
-    report="$report
-Verify: pass — $verify_display"
+    report="Verify: pass — $verify_display
+$report"
   else
     if [[ "$verify" == timeout ]]; then
       verify_line="Verify: FAIL (timeout after $verify_timeout min) — $verify_display"
     else
       verify_line="Verify: FAIL (exit $verify_exit) — $verify_display"
     fi
-    report="$report
-$verify_line
+    report="$verify_line
 $(tail -n 20 "$verify_log" | bounded_lines 200)
-Log: $workspace_root/$verify_log"
+Log: $workspace_root/$verify_log
+$report"
   fi
 fi
 write_status completed 0

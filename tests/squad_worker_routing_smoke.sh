@@ -59,6 +59,17 @@ status=0
 run floor --plan .squad/plans/high.md --brief x 2>"$tmp/err" || status=$?
 [[ "$status" == 2 ]]
 grep -q -- '--tier-reason' "$tmp/err"
+mkdir -p .squad/workers
+printf 'role=sub-manager\ndepth=1\n' >.squad/workers/sm-1-20260101-000000.status
+run sm-child --parent sm-1 --model example --no-worktree --plan .squad/plans/high.md --brief x
+grep -qx 'tier_override=sub-manager child of sm-1' "$(last_status sm-child)"
+for parent in missing dev-parent; do
+  [[ "$parent" != dev-parent ]] || printf 'role=dev\ndepth=1\n' >.squad/workers/dev-parent-20260101-000000.status
+  status=0
+  run rejected-child --parent "$parent" --model example --no-worktree --plan .squad/plans/high.md --brief x 2>"$tmp/err" || status=$?
+  [[ "$status" == 2 ]]
+  grep -q 'high-risk plans require' "$tmp/err"
+done
 run override --plan .squad/plans/high.md --tier-reason test --brief x
 grep -qx 'tier_override=test' "$(last_status override)"
 # Explicit strong mappings are provided through Claude's built-in aliases.
@@ -96,6 +107,11 @@ echo 'PASS: verification and merge gate'
 REPORT="$(awk 'BEGIN { for (i=1;i<=100;i++) print "line " i }')" run cap --no-worktree --brief x
 [[ $(wc -l <"$tmp/out") -le 41 ]]
 [[ $(wc -l <"${tmp}/ws/$(sed -n 's#^report=.*/\.squad/#.squad/#p' "$(last_status cap)")") -ge 100 ]]
+REPORT="$(awk 'BEGIN { for (i=1;i<=50;i++) print "line " i }')" run cap-verify --no-worktree --verify true --brief x
+grep -q 'Verify: pass' "$tmp/out"
+grep -q 'Verify: pass' "$(sed -n 's/^report=//p' "$(last_status cap-verify)")"
+squad task list --agent cap-verify --status completed >"$tmp/tasks"
+grep -q 'Verify: pass' "$tmp/tasks"
 REPORT="$(printf '%01000d' 0 | tr 0 x)" run long --no-worktree --brief x
 if grep -q "$(printf '%0401d' 0 | tr 0 x)" "$tmp/out"; then exit 1; fi
 echo 'PASS: report caps'
