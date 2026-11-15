@@ -23,52 +23,46 @@ work and stop when they are done, so idle agents cost nothing.
 <p align="center"><sub>A real run in tmux: three Claude haiku workers fix a bug, write tests, and update docs in parallel, each in its own git worktree, then everything is merged and the tests pass.</sub></p>
 
 **Contents:** [Highlights](#highlights) · [Demos](#demos) · [Install](#install) ·
-[Usage](#usage) · [Workers](#workers) · [Monitor and savings](#monitor-and-savings) ·
+[Usage](#usage) · [Workers](#workers) · [Watching workers](#watching-workers) ·
 [Configuration](#configuration) · [Project status](#project-status) · [Security](#security) ·
 [FAQ](#faq) · [Contributing](#contributing) · [Credits](#credits) · [License](#license) ·
 [squad CLI reference](./docs/squad-cli.md)
 
 ## Highlights
 
-- **Plans like a senior team.** Every request is triaged (workstream, risk,
-  complexity, whether a human must decide) and planned from five perspectives:
-  principal engineer, engineering manager, technical lead, QA, and end user.
-- **Right worker for the job.** Workers are chosen by trust and cost:
-  `claude` > `codex` > `grok`, `agy` > `ccr`. Claude workers use the smallest
-  model that fits (haiku by default, sonnet or opus when needed).
-- **The manager owns the outcome.** Reports are checked against `git diff` and
-  re-run verification; defects go back to the same worker with `path:line`
-  detail, moving up a model or engine if a fix fails twice.
-- **Workers can push back.** A worker can question the manager or another
-  worker (`squad-ask`) when the brief is ambiguous or there is a better approach.
-- **Isolated by default.** In a git repository every editing worker gets its
-  own worktree and branch, so parallel workers never overwrite each other; the
-  manager reviews each diff and merges it with a three-way merge.
-- **Nothing hangs.** Workers have a time limit and stall detection; failures
-  report to the manager, which re-runs or reassigns the task.
-- **Live visibility.** Each worker opens a monitor pane beside the manager in
-  tmux, Orca, Herdr, WezTerm, Kitty, iTerm2, or Ghostty; other terminals
-  (macOS Terminal.app, GNOME Terminal, Konsole, ...) need tmux for manager workers; standalone runs may open a dashboard. With claude-hud, the manager's status line shows your weekly quota
-  and the tokens the squad saved.
-- **Lean by design.** Instructions live in the system prompt, workers start with
-  MCP servers off, old run data is pruned automatically, and a Codex manager
-  takes over if Claude Code hits its usage limit.
+- **Plans like a senior team.** Every request is triaged by risk and complexity, then planned from
+  five angles: principal engineer, engineering manager, tech lead, QA, and end user.
+- **Right worker for the job.** Workers are chosen by trust and cost (`claude` > `codex` > `grok`,
+  `agy`, `opencode` > `ccr`), using the smallest model that fits the brief.
+- **The manager owns the outcome.** Reports are checked against `git diff` and verification
+  commands; defects go back with `path:line` detail, escalating models if needed.
+- **Workers can push back.** Workers question ambiguous briefs or propose better approaches with
+  `squad-ask` instead of guessing.
+- **Isolated by default.** Editing workers get their own git worktree and branch, so parallel tasks
+  never overwrite each other; the manager merges changes cleanly.
+- **Nothing hangs.** Workers run with time limits and stall detection; failures report back for
+  reassignment or re-runs.
+- **Live visibility.** One orchestration pane per manager (lifecycle flow chart, closes itself
+  when idle) or one pane per worker; supported in tmux, Orca, Herdr, WezTerm, Kitty, iTerm2,
+  and Ghostty.
+- **Lean by design.** Instructions live in system prompts, MCP servers stay off until requested,
+  and a Codex manager takes over if Claude hits usage limits.
 
 ## Demos
 
-**Setup wizard** — detect installed AI CLIs and choose the manager and worker preference order (`squad-devkit --setup`):
+**Setup wizard** — Detect installed AI CLIs and configure preferences (`squad-devkit --setup`):
 
 ![Setup wizard](./assets/demo/setup-wizard.gif)
 
-**Orchestration view** — live lifecycle graph, detailed cards, pipeline, and tree views (`g` graph, `c` cards, `t` tree, Tab / `l` cycles; `p` pins the pane) (and `a` / `--all-managers` to show every manager in the workspace):
+**Orchestration view** — Live lifecycle flow chart and worker details (`g` graph, `c` cards, `t` tree, `j`/`k` select, `i` details, `a` all managers, `p` keep open):
 
 ![Orchestration view graph/pipeline/tree](./assets/demo/orchestration-graph.gif)
 
-**Hierarchy mode** — root → sub-manager → workers with branch zoom (`1`–`9` to zoom in, `Esc` to return):
+**Hierarchy mode** — Root manager delegates independent areas to sub-managers (`1`–`9` zoom, `Esc` return):
 
 ![Hierarchy mode](./assets/demo/hierarchy.gif)
 
-**Classic panes (`--view panes`)** — per-worker split monitor panes beside the manager:
+**Classic panes (`--view panes`)** — Dedicated split monitor pane for each running worker:
 
 ![Classic panes](./assets/demo/panes.gif)
 
@@ -78,10 +72,10 @@ Regenerate with `vhs scripts/demo/<name>.tape`.
 
 Requirements: macOS or Linux, [`squad`](./docs/squad-cli.md), `jq`, one manager
 CLI (`claude`, `codex`, `agy`, `gemini`, `grok`, or `opencode`), and at least one
-worker engine (`claude`, `codex`, `grok`, `agy`, or `ccr` from
+worker engine (`claude`, `codex`, `opencode`, `grok`, `agy`, or `ccr` from
 [claude-code-router](https://github.com/musistudio/claude-code-router)).
-Manager monitor splits work in tmux, Orca, Herdr, WezTerm, Kitty, iTerm2, and Ghostty; Zellij requires tmux for manager runs;
-other terminals need tmux for manager workers; standalone runs may open a dashboard.
+Monitor panes split in tmux, Orca, Herdr, WezTerm, Kitty, iTerm2, and Ghostty. In other
+terminals (including Zellij), run manager workers inside tmux.
 
 ```bash
 # macOS
@@ -99,21 +93,11 @@ Prebuilt `squad` binaries for Linux are also on the
 [squad releases page](https://github.com/mco-org/squad/releases). Make sure
 `~/.local/bin` is on your `PATH`.
 
-The installer links `squad-devkit`, `squad-worker`, and `squad-monitor` into
-`~/.local/bin`, then runs a setup wizard that detects the installed AI CLIs and
-offers two choices: **Default (recommended)** keeps Claude Code as the manager
-and every installed worker in the built-in trust order, while **Personal
-custom** lets you pick the manager, which workers to enable, and their
-preference order. The saved order is the manager's preference order (it prefers
-earlier engines), and the installer, when claude-hud is installed, turns on its
-weekly-quota and usage-pace display. Run `squad-devkit --setup` to change the
-setup at any time.
-
-The installer also adds a `squad-devkit` skill to Claude Code and Codex
-(`~/.claude/skills`, `~/.codex/skills`, linked to this repository so `git pull`
-updates it). In any session you can then ask to hand work to workers, check
-them, or merge a worker's worktree, without starting a separate manager.
-`squad-devkit --doctor` checks the setup.
+The installer links commands into `~/.local/bin` and runs a setup wizard to detect AI CLIs and
+configure manager and worker preference order. Run `squad-devkit --setup` to change preferences
+later. It also adds a `squad-devkit` skill to Claude Code and Codex (`~/.claude/skills`,
+`~/.codex/skills`) to manage workers directly from existing sessions. Run `squad-devkit --doctor`
+to check your setup.
 
 ## Usage
 
@@ -127,19 +111,19 @@ squad-devkit reload                                   # reload roles, links, vie
 squad-devkit --version
 ```
 
-Describe the work in the chat. The manager investigates, writes a plan to
-`.squad/plans/`, starts workers in parallel, answers their questions, verifies
-their results, and reports back with evidence. From your home directory it runs
-in the general workspace `~/.squad-devkit`, where requests such as log checks
-and reports need no repository; for code changes it finds the repositories
-involved. In git repositories the launcher leaves the working tree clean.
+Describe the work in the chat. The manager investigates, writes a plan to `.squad/plans/`, starts
+workers in parallel, answers their questions, verifies their results, and reports back with evidence.
+From your home directory it runs in the general workspace `~/.squad-devkit`; in a git repository it
+works with that project and leaves the working tree clean.
 
 ### Update without restarting
 
-Inside a running manager session, ask the manager to update or reload (or have it run `squad-devkit update` or `squad-devkit reload` / `restart` from its Bash tool):
+Inside a running manager session, ask the manager to update or reload without restarting:
 
-- `squad-devkit update` (or `--update`) runs `git pull --ff-only` in the devkit checkout (refusing to pull when the checkout has local changes) and then runs `reload` with the updated script.
-- `squad-devkit reload` (or `--reload`, `restart`) refreshes `.squad/roles/` templates, re-links commands in `~/.local/bin`, sends `SIGHUP` to running `squad-orchestration` views so they re-exec in place, and prints the refreshed manager instructions to stdout so the active manager session adopts the new configuration and role prompt immediately without restarting.
+| Command | Action |
+|---|---|
+| `squad-devkit update` | Pulls latest devkit via `git pull --ff-only` and reloads scripts. |
+| `squad-devkit reload` | Refreshes role templates, re-links commands, re-execs orchestration views via SIGHUP, and adopts updated manager instructions. |
 
 ## Workers
 
@@ -159,66 +143,37 @@ squad-worker --stop dev-1           # or --stop all
 |---|---|---|
 | `claude` | highest | Work that must be right the first time; `haiku` by default, `sonnet` for complex or high-risk work, `opus` for the hardest |
 | `codex` | high | Normal implementation, debugging, and tests; the only engine with MCP access |
-| `grok`, `agy` | medium | Low-risk implementation or a second opinion (experimental) |
+| `grok`, `agy`, `opencode` | medium | Low-risk implementation or a second opinion (experimental) |
 | `ccr` | basic | Docs and small exact edits; cheap model, file tools only |
 
-Roles: `dev`, `tester`, `reviewer`, `researcher`, or any name; a role with a file
-in `.squad/roles/` gets that prompt. Use `--project <path>` to work in another
-repository.
+Roles: `dev`, `tester`, `reviewer`, `researcher`, or any role from `.squad/roles/`. Use `--project <path>`
+to work in another repository. High-risk plans require `--model-tier strong`; `--verify '<command>'`
+runs after the worker in its worktree and blocks `--merge` on failure.
 
-High-risk plans require `--model-tier strong`; `--tier-reason "<reason>"` records an override. `--verify '<acceptance command>'` runs after the worker in its worktree and blocks `--merge` on failure. Fix rounds receive the previous report and diff stat automatically.
-
-In a git repository, editing workers run in their own worktree under
-`.squad/worktrees/` on branch `squad/<id>`, started from a snapshot of
-your working tree (including uncommitted and new files). Your files and index
-stay untouched until `--merge`, which applies the changes uncommitted with a
-three-way merge and leaves conflict markers if two workers changed the same
-lines. Reviewers and researchers read the project directly; `--no-worktree`
-does the same for any role.
+In git repositories, editing workers run in isolated worktrees under `.squad/worktrees/` on branch
+`squad/<id>` created from a snapshot of your working tree. Your files stay untouched until
+`squad-worker --merge`, which applies changes uncommitted with a three-way merge. Reviewers and
+researchers read the project directly; `--no-worktree` disables isolation.
 
 ### Hierarchy mode
 
-For high-complexity tasks that split into two or more independent areas, the root manager can delegate each area to a sub-manager instead of briefing every worker directly (`squad-worker sm-<area> --role sub-manager`). The sub-manager plans child tasks, reviews their changes, and sends a single summary back to root.
+For complex tasks spanning multiple areas, the manager can delegate to sub-managers (`--role sub-manager`).
+Sub-managers plan child tasks, review changes, and report back to root, keeping the root context lean.
+Authority to merge, commit, and push remains strictly with the root manager. See
+[hierarchy mode](./docs/squad-devkit.md#hierarchy-mode).
 
-- **When it saves tokens**: On large multi-area tasks, delegating keeps the root manager's context lean and uses cost-effective models for localized planning and review loops. On small or moderate tasks, brief workers directly to avoid the 2–3 turn sub-manager overhead.
-- **Flags**:
-  - `--role sub-manager`: launches the sub-manager workflow (`scripts/squad-submanager.sh`, `templates/devkit/sub-manager.md`).
-  - `--parent <id>`: tracks hierarchy relationships (depth is limited to 2; sub-managers cannot spawn sub-managers).
-  - `--budget-tokens <n>`: branch token budget cap (default 600,000); stops before starting a turn or child when the branch total exceeds it.
-  - `--max-children <1-6>`: maximum children the sub-manager may plan (default 3; prefer 1–3).
-  - `squad-worker --tree [--json]`: displays worker hierarchy and branch token totals in text or JSON.
-- **Root authority**: Authority to merge (`squad-worker --merge sm-<area>`), commit, and push remains strictly with the root manager; sub-managers cannot merge worktrees or push code.
-- **Sandbox execution**: The outer driver launches and coordinates child workers in the sub-manager's worktree because sandboxed AI engines (like Antigravity `agy`) have no network access and cannot start child AI workers or write outside the worktree directly.
+## Watching workers
 
-## Monitor and savings
+Workers report progress live through an orchestration pane or dedicated per-worker panes:
 
-In a manager session, the first worker opens one live **orchestration view** (`squad-orchestration`) beside the manager: it shows the manager → workers flow grouped by plan, each worker's state, engine/model, elapsed time, tokens, fix rounds, and the message timeline (briefs, questions, answers, completions, failures). Later workers update the same view without opening more panes. Pass `squad-devkit --view panes` (or set `SQUAD_WORKER_VIEW=panes`, or `view=panes` in `~/.config/squad-devkit/config`) to open one monitor pane per worker instead (`panes` remains the default when running `squad-worker` directly).
+| View | Mode | Behavior |
+|---|---|---|
+| `orchestration` | Default for manager | Single live lifecycle flow chart showing all workers, plan tasks, questions, and message timeline. Closes automatically when idle. |
+| `panes` | Direct default, `--view panes` | Dedicated split pane per worker streaming events and commands under a live status line. Closes after a configurable delay. |
 
-In the orchestration view, press `c` for cards with live activity, verification and merge status; select a worker with `j`/`k` and press `i` for details. See [watching workers](docs/squad-devkit.md#watching-workers) for layouts and controls. Set `SQUAD_DEVKIT_NOTIFY=0` to disable desktop notifications.
+With claude-hud, the manager's status line shows tokens saved, for example: `squad 2 running · saved 1.2M tok (+3.4M cache) · claude workers 0.8M (+12M cache)`.
 
-Use `squad-worker dev-1 --plan .squad/plans/feature.md --task` to brief a worker from its plan task, `squad-devkit --stats --days 7` for recent run statistics, or `squad-devkit --doctor --split-test` to check a monitor split.
-
-In `panes` mode, each worker pane streams its activity (commands, file changes, tool calls,
-messages) under a single live status line, without redrawing the screen, so it
-never flickers. When the run ends it shows a summary, the merge command, and the
-report, then closes itself 60 seconds later.
-Manager workers require a confirmed split and a rendered live monitor before the engine starts. If the terminal cannot split, use `squad-devkit --tmux`; disabling panes causes the run to fail. Standalone workers use best-effort panes and may open a dashboard instead.
-For independent panes in Terminal.app, use `squad-devkit --tmux`.
-Orca needs its running CLI, `jq`, and a manager launched with `--here` from an
-Orca terminal (`ORCA_PANE_KEY`), or an explicit runtime-issued
-`SQUAD_DEVKIT_ORCA_TERMINAL` handle. No active terminal is selected implicitly.
-Herdr desktop (`HC_TERMINAL_ID`) uses `herdr-app` and `jq` to resolve the
-manager terminal to a unique local pane (`spaces[].machine: null`), splits
-explicitly in that tab with `cwd` preserved via `argv`, verifies the created
-pane/terminal in `herdr-app ls`, and restores manager focus; Herdr TUI
-(`HERDR_ENV=1`, `HERDR_PANE_ID`) uses `herdr pane split`.
-
-`squad-monitor --all` shows every run as a table in any terminal. With
-claude-hud, the manager's status line adds the squad label, for example
-`squad 2 running · saved 1.2M tok (+3.4M cache) · claude workers 0.8M (+12M cache)`:
-the fresh tokens (input not served from cache, plus output) that workers on
-other engines processed instead of Claude during this session; cache reads are
-shown separately because they cost far less.
+Terminal splits are supported in tmux, Ghostty, Herdr desktop/TUI, Orca, WezTerm, Kitty, and iTerm2; see [watching workers](./docs/squad-devkit.md#watching-workers) for setup details, controls, and Terminal.app/Linux fallbacks.
 
 ## Configuration
 
@@ -230,20 +185,34 @@ shown separately because they cost far less.
 | `SQUAD_DEVKIT_RETENTION_DAYS` | `7` | Days to keep finished worker runs |
 | `SQUAD_DEVKIT_MAX_MB` | `200` | Size cap for `.squad/workers` |
 | `SQUAD_DEVKIT_STATUSLINE` | `1` | `0` turns off the squad status-line label |
+| `SQUAD_DEVKIT_NOTIFY` | `1` | `0` disables desktop notifications |
 | `SQUAD_WORKER_CLAUDE_MODEL` | `haiku` | Default model for Claude workers |
 | `SQUAD_WORKER_CODEX_PROFILE` | CLI configuration | Default Codex profile for workers |
 | `SQUAD_WORKER_TIMEOUT` / `SQUAD_WORKER_STALL` | `45` / `10` | Minutes before a run is stopped / counted as stuck |
 | `SQUAD_WORKER_VIEW` | `orchestration` (manager) / `panes` (direct) | Worker progress view: `orchestration` (one live flow view) or `panes` (one split per worker; `--view`, or `view=` in config) |
 | `SQUAD_WORKER_VERIFY_TIMEOUT` | `10` | Minutes allowed for `--verify` |
 | `SQUAD_WORKER_REPORT_LINES` | `40` | Maximum report lines printed by a worker |
+| `SQUAD_ORCHESTRATION_HOLD` | `SQUAD_WORKER_PANE_HOLD`, else `60` | Seconds before an idle orchestration pane closes itself (`0` = never) |
 | `SQUAD_WORKER_PANE_HOLD` | `60` | Seconds a finished monitor pane stays open (`panes` view) |
 | `SQUAD_WORKER_WORKTREE` | `auto` | `0` disables git worktree isolation |
 | `SQUAD_WORKER_SANDBOX` | `1` | `0` disables engine sandbox (Codex and Claude workers) |
 | `SQUAD_DEVKIT_ROUTER_URL` | unset | Optional advisory triage router for `squad-route` |
 
-`squad-devkit --clean` prunes old worker runs on demand and `--clean-all`
-removes every finished run. Full reference:
-[docs/squad-devkit.md](./docs/squad-devkit.md).
+`squad-devkit --clean` prunes old worker runs on demand and `--clean-all` removes every finished run.
+Full reference: [docs/squad-devkit.md](./docs/squad-devkit.md).
+
+### Model selection
+
+`--model` beats `--model-tier fast|balanced|strong`. Run `squad config workers` after `squad init` to choose
+models and assign tiers, and use `squad-worker --models` to list the local engine catalog. See
+[worker model selection](./docs/squad-devkit.md#worker-model-selection) and
+[worker capability tiers](./docs/squad-devkit.md#worker-capability-tiers-and-local-catalog).
+
+### YOLO sessions
+
+`--yolo` opts in native permission bypass for Claude, Codex, and AGY sessions, disabling engine
+permission checks and sandboxing. Use only in a trusted environment. See
+[opt-in YOLO sessions](./docs/squad-devkit.md#opt-in-yolo-sessions).
 
 ## Project status
 
@@ -254,7 +223,7 @@ experimental:
 | Area | Status |
 |---|---|
 | Claude Code manager, Codex and ccr workers, worktrees and merging | Verified in real runs |
-| Monitor panes in Herdr desktop (`herdr-app`, local spaces), Herdr TUI, tmux, and Ghostty | Verified in real runs (AGY CLI may still exit 1 after emitting a successful result event, marking wrapper status failed) |
+| Monitor panes in Herdr desktop (`herdr-app`, local spaces), Herdr TUI, tmux, and Ghostty | Verified in real runs |
 | Codex manager fallback when Claude Code hits a limit | Handoff verified with a simulated limit error |
 | Claude workers | File edits verified; shell commands rely on Claude Code's sandbox |
 | `grok` and `agy` workers; `agy`, `gemini`, `grok`, `opencode` managers | Experimental: built from each CLI's documentation, covered by tests with stand-in CLIs; AGY CLI may exit 1 after a successful result event |
@@ -266,176 +235,54 @@ If you try an experimental path, please report what worked or failed in an
 
 ## Security
 
-Codex workers run sandboxed to the project, Claude workers accept edits and run
-shell commands only inside Claude Code's sandbox, and ccr workers get file tools
-only. squad-devkit never stores credentials, and worker prompts forbid reading
-them from configuration files. See [SECURITY.md](./SECURITY.md) for details and
-how to report a vulnerability.
+Codex workers run sandboxed to the project, Claude workers accept edits and run shell commands only inside
+Claude Code's sandbox, and ccr workers get file tools only. squad-devkit never stores credentials, and
+worker prompts forbid reading them from configuration files. See [SECURITY.md](./SECURITY.md) for details
+and how to report a vulnerability.
 
 ## FAQ
 
 **Why not just use Claude Code subagents?**
-Subagents run inside your Claude Code session on Claude models, so every task
-draws from the same quota. squad-devkit keeps Claude for planning and review
-and sends the bulk of the work to other engines (Codex, cheap ccr models), each
-in its own process and git worktree, with a time limit and a live pane you can
-watch or stop.
+Subagents run inside your Claude Code session on Claude models, so every task draws from the same
+quota. squad-devkit keeps Claude for planning and review and sends the bulk of the work to other
+engines (Codex, cheap ccr models), each in its own process and git worktree, with a time limit and
+a live pane you can watch or stop.
 
 **How many tokens does it actually save?**
-Two measured examples: a trivial edit by a Codex worker costs about 18k tokens
-instead of 52–98k, because workers start with MCP servers off; and the earlier
-setup with three always-on workers burned about 1M tokens polling before any
-work arrived, which on-demand workers avoid entirely. The status line shows the
-running total for your own session. See
+Two measured examples: a trivial edit by a Codex worker costs about 18k tokens instead of 52–98k,
+because workers start with MCP servers off; and the earlier setup with three always-on workers
+burned about 1M tokens polling before any work arrived, which on-demand workers avoid entirely.
+The status line shows the running total for your own session. See
 [Why this saves tokens](./docs/squad-devkit.md#why-this-saves-tokens).
 
 **Do I need Claude Code?**
-No. It is the default and best-tested manager, but Codex, Gemini CLI, Grok,
-Antigravity, and OpenCode can manage too (`squad-devkit --setup`).
+No. It is the default and best-tested manager, but Codex, Gemini CLI, Grok, Antigravity, and
+OpenCode can manage too (`squad-devkit --setup`).
 
 **Can a worker break my repository?**
-Editing workers never touch your working tree. They work on a `squad/<id>`
-branch in `.squad/worktrees/`, and nothing reaches your files until the manager
-(or you) runs `squad-worker --merge`, which leaves the changes uncommitted for
-review.
+Editing workers never touch your working tree. They work on a `squad/<id>` branch in
+`.squad/worktrees/`, and nothing reaches your files until the manager (or you) runs
+`squad-worker --merge`, which leaves the changes uncommitted for review.
 
 **Windows?**
 Not supported yet. WSL has not been tested; reports are welcome.
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the
-development setup and the checks CI runs, and [CHANGELOG.md](./CHANGELOG.md)
-for release notes.
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the development setup and
+the checks CI runs, and [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 ## Credits
 
 squad-devkit is built by [TungDaDev](https://github.com/bthanhtung) on
-[squad](https://github.com/mco-org/squad) by mco-org, which provides the SQLite
-message bus, task records, and the `squad` CLI.
+[squad](https://github.com/mco-org/squad) by mco-org, which provides the SQLite message bus,
+task records, and the `squad` CLI.
 
 ## License
 
-squad-devkit is released under the [GNU General Public License v3.0](./LICENSE).
-You may use, study, share, and modify it; if you distribute a modified version,
-it must stay under GPL-3.0 with its source available.
+squad-devkit is released under the [GNU General Public License v3.0](./LICENSE). You may use,
+study, share, and modify it; if you distribute a modified version, it must stay under GPL-3.0 with
+its source available.
 
-The code that comes from the upstream squad CLI keeps its original MIT license
-and copyright notice, in [LICENSES/MIT-squad.txt](./LICENSES/MIT-squad.txt).
-
-### Opt-in YOLO sessions
-
-`squad-devkit --yolo --manager codex` starts a session with native engine
-permission bypass; workers started by that manager inherit it. Claude, Codex,
-and AGY are supported. `squad-worker dev-1 --engine claude --yolo --brief "Run the checks"`
-opts in a single worker independently. Without opt-in, existing behavior is unchanged.
-
-The session boolean `SQUAD_DEVKIT_YOLO=1` carries opt-in through here, tmux,
-Ghostty, and manager fallback; `0` disables inheritance. It is never saved to
-configuration. Unsupported engines reject YOLO. YOLO conflicts with worker
-`--sandbox` and `SQUAD_WORKER_SANDBOX=1`; omit YOLO to use sandboxing.
-Claude uses `--dangerously-skip-permissions` with session sandboxing disabled,
-Codex uses `--dangerously-bypass-approvals-and-sandbox`, and AGY uses
-`--dangerously-skip-permissions` without `--sandbox`.
-
-Without YOLO, AGY workers run with `--sandbox` and a session-only `--settings`
-that allows every command inside the sandbox, because headless AGY stops the
-whole run when a command is denied; the sandbox blocks writes outside the
-worktree and temp directories and blocks network access; tests that need files
-elsewhere in $HOME fail there and should be rerun by the manager.
-
-Use only in an environment you trust: this bypasses engine permission checks
-and engine sandboxing, not OS/admin restrictions. Conversational instructions
-are not permission controls. No global settings or role instructions change.
-An existing tmux session keeps its original mode; exit it before changing modes.
-
-### Worker model selection
-
-`--model NAME` overrides `SQUAD_WORKER_<ENGINE>_MODEL` (uppercase engine:
-`CLAUDE`, `CODEX`, `OPENCODE`, `GROK`, `AGY`, `CCR`). Empty environment values
-use the default: Claude uses `haiku`; other engines use their CLI default.
-Codex `--profile` selects a configuration profile, not a model; an explicit
-model overrides the profile's model. Model names come from the installed CLI
-and provider; no fixed model catalog is assumed.
-
-CCR uses its router default. Model overrides (flag or environment) are rejected:
-router/provider mapping cannot be guaranteed by forwarding Claude's `--model`.
-Configure the router separately or use `--engine claude --model NAME`.
-
-Startup stderr, `squad-worker --list`, individual monitors and the dashboard
-show requested selection, its source, and actual model evidence separately.
-Status retains `model` for compatibility and adds `requested_model`,
-`model_source` (`flag`, `tier-environment`, `environment`, `builtin`, `cli-default`, `router-default`),
-and `actual_model`. Claude/CCR/AGY structured assistant and result model-usage
-fields supply reported models (comma-separated when multiple); status refreshes
-while running and persists the evidence on completion or failure. Init selection aliases are excluded from actual evidence. AGY also displays `configured_model` and `configured_model_source` separately;
-the native init model has source `agy-init`, or both fields are `unknown` when absent.
-This configuration does not prove which model actually executed. A router's
-reported alias may not identify its upstream provider. AGY uses stream-json output (plain wrapper output remains compatible). Other engines currently
-remain `actual=unknown`: requests, profiles and free-form text are not proof.
-Old status files display unknown provenance/actual model. No credentials or
-router configuration are inspected for model discovery.
-
-### Worker capability tiers and local catalog
-
-Assign concrete models supported by your installed provider; these are capability
-policy mappings, not correctness, availability, pricing or subscription guarantees.
-Use setup to choose models from your installed providers:
-
-Run `squad config workers` after `squad init` to choose models by friendly name
-and exact ID, assign fast/balanced/strong tiers, and choose supported reasoning
-effort independently. Terminal init offers setup; scripted init never fetches
-models or waits for input. Re-init preserves selections. Setup reviews changes
-before saving `.squad/worker-models.json`; `q` or EOF cancels without replacing it.
-Run `squad config workers --global` from anywhere to save defaults and the discovery
-cache under `$HOME/.squad`; HOME must name an existing absolute directory.
-
-Discovery uses installed `agy models` and `codex debug models`, with bounded
-child processes and no inference. Refresh, retry, or choose an explicitly labeled
-cached list with its source and timestamp (lists over seven days old say stale).
-Codex output is marked refresh unconfirmed unless its cache timestamp advances;
-its `models_cache.json` is a fallback only. Catalogs do not verify account access.
-Other engines explain unsupported discovery; Claude aliases and CCR routing remain.
-No credentials or shell/provider configuration are read or changed by setup.
-
-```sh
-squad config workers
-squad config workers --global
-squad-worker --models                       # installed engines; JSON, no paid calls
-squad-worker --models --engine codex        # known engine, even if not installed
-squad-devkit --workers codex,claude          # manager sees only enabled installed candidates
-squad-worker dev-1 --engine codex --model-tier balanced --brief 'Implement the bounded fix and run its tests'
-squad-worker review-1 --engine codex --model-tier strong --model 'your-explicit-model' --brief 'Review the public contract change'
-```
-
-`--model` wins over tier configuration. Tiers resolve
-`SQUAD_WORKER_<ENGINE>_MODEL_<FAST|BALANCED|STRONG>`; only balanced may fall back
-to `SQUAD_WORKER_<ENGINE>_MODEL`. Next comes the saved tier in local JSON,
-then Claude's otherwise unmapped tiers use
-`haiku`, `sonnet`, `opus`. Without a tier existing behavior is preserved, including
-Claude's `haiku` default. Other unmapped tiers fail before task/worktree creation;
-CCR rejects tier and model overrides because its router selects the model.
-Model names reject control characters. Catalog `candidate` is configured or built-in,
-`null` means unresolved/default, and `provider_availability` is always `unverified`.
-Catalog mode never creates tasks/worktrees or launches engines. Use
-`squad-worker --models --project DIR` to inspect an external project's mappings.
-Both launch and catalog search project ancestors first, then the squad workspace;
-then `$HOME/.squad/worker-models.json` if neither search found a file. The first
-file supplies all saved tiers; files are not merged. Saved effort applies
-only when that saved model wins: Codex gets `-c model_reasoning_effort="VALUE"`, AGY
-gets `--effort VALUE`. Environment/explicit model overrides use CLI effort defaults.
-Codex uses its CLI configuration unless `--profile` or
-`SQUAD_WORKER_CODEX_PROFILE` explicitly selects a profile; tier is never effort.
-Devkit warns about missing supported tiers for selected, installed engines.
-
-Managers triage task/risk/complexity first: fast for mechanical/docs low-risk work,
-balanced for normal bounded implementation/debug/tests, strong for high-risk,
-complex, uncertain-root-cause, security or public-contract work. The strongest
-applicable criterion wins, even for mechanical/docs edits; prefer the cheapest
-worker that meets the required bar. Choose tools first
-(MCP requires Codex), then a mapped model; record engine/model/tier/profile/reason
-in plan and brief. Profiles are not models. Never choose disabled/unmapped
-candidates or silently downgrade; escalate failed rounds, use another capable
-enabled engine, or report the required mapping. Router advice cannot override
-safety/quality policy. Status and monitor labels add `model_tier` while preserving
-requested and actual model evidence separately.
+The code that comes from the upstream squad CLI keeps its original MIT license and copyright notice,
+in [LICENSES/MIT-squad.txt](./LICENSES/MIT-squad.txt).
