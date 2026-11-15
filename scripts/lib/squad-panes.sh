@@ -284,8 +284,57 @@ squad_panes_herdr_app() {
   printf '%s\n' "$created_pane"
 }
 
+SQUAD_PANES_REAPED=0
+
+squad_panes_herdr_reap_stale() {
+  local manager_pane="${1:-}"
+  SQUAD_PANES_REAPED=0
+  [[ -n "$manager_pane" ]] || return 0
+  command -v herdr >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 0
+
+  local list_json="" candidate_panes=""
+  list_json="$(herdr pane list 2>/dev/null || true)"
+  [[ -n "$list_json" ]] || return 0
+
+  candidate_panes="$(printf '%s\n' "$list_json" | jq -r --arg mgr "$manager_pane" '
+    (.result.panes // []) as $panes |
+    ([$panes[]? | select(.pane_id == $mgr) | .tab_id | select(type == "string" and length > 0)][0]) as $tab |
+    select($tab != null) |
+    $panes[]? |
+    select(.tab_id == $tab and
+           .pane_id != $mgr and
+           ((.label? | type == "string") and (.label | startswith("squad")))) |
+    .pane_id
+  ' 2>/dev/null || true)"
+
+  [[ -n "$candidate_panes" ]] || return 0
+
+  local pane_id="" pinfo=""
+  while IFS= read -r pane_id; do
+    [[ -n "$pane_id" ]] || continue
+    pinfo="$(herdr pane process-info --pane "$pane_id" 2>/dev/null || true)"
+    [[ -n "$pinfo" ]] || continue
+    if printf '%s\n' "$pinfo" | jq -e '
+      .result.process_info as $pi |
+      ($pi.foreground_processes | type == "array" and length == 1) and
+      ($pi.foreground_processes[0] as $fg |
+       $fg.pid != null and
+       $fg.pid == $pi.shell_pid and
+       (($fg.name // "" | sub("^-"; "")) as $name |
+        ($name == "zsh" or $name == "bash" or $name == "sh" or $name == "fish")))
+    ' >/dev/null 2>&1; then
+      if herdr pane close "$pane_id" >/dev/null 2>&1; then
+        SQUAD_PANES_REAPED=$((SQUAD_PANES_REAPED + 1))
+      fi
+    fi
+  done <<< "$candidate_panes"
+
+  return 0
+}
+
 squad_panes_herdr() {
   local manager="$1" previous="$2" command_script="$3" title="$4" workspace="$5" output="" created
+  squad_panes_herdr_reap_stale "$manager"
   if [[ -n "$previous" ]]; then
     output="$(herdr pane split "$previous" --direction down --cwd "$workspace" --no-focus 2>/dev/null || true)"
   fi

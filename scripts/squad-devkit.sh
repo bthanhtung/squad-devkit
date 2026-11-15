@@ -895,6 +895,15 @@ run_reload() {
   fi
   printf '%d orchestration views reloaded\n' "$view_count"
 
+  if [[ -n "${HERDR_PANE_ID:-}" ]]; then
+    # shellcheck source=/dev/null
+    source "$script_dir/lib/squad-panes.sh"
+    squad_panes_herdr_reap_stale "$HERDR_PANE_ID"
+    if [[ "${SQUAD_PANES_REAPED:-0}" -gt 0 ]]; then
+      printf '%d stale squad panes closed\n' "$SQUAD_PANES_REAPED"
+    fi
+  fi
+
   local prompt=""
   prompt="$(build_manager_prompt)" || return $?
   local mgr_id="${SQUAD_MANAGER_ID:-manager}"
