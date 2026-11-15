@@ -1882,4 +1882,138 @@ if ! grep -q "Nothing running · closing in" "$ac_out_empty"; then
   exit 1
 fi
 
+# Source the panel's definitions without entering either event loop.
+panel_harness="$tmp/panel-harness.sh"
+sed '/^# One-shot execution mode/,$d' "$root/scripts/squad-orchestration.sh" >"$panel_harness"
+# Resolve libraries from the real script while keeping all test files temporary.
+sed "s|^source_file=.*|source_file='$root/scripts/squad-orchestration.sh'|" "$panel_harness" >"$panel_harness.tmp"
+mv "$panel_harness.tmp" "$panel_harness"
+cat >>"$panel_harness" <<'PANEL_TEST'
+load_data
+selection_sync
+first="$selected_id"
+[[ -n "$first" ]]
+panel_key k
+[[ "$selected_id" == "$first" ]]
+panel_key j
+selection_sync
+second="$selected_id"
+[[ "$second" != "$first" ]]
+load_data
+selection_sync
+[[ "$selected_id" == "$second" ]]
+panel_key j
+[[ "$selected_id" == "$second" ]]
+cycle_flow_filter
+selection_sync
+[[ "$selected_id" == "$second" ]]
+selected_id=removed
+selection_sync
+[[ "$selected_id" == "$first" ]]
+zoom_target=missing
+selection_sync
+[[ -z "$selected_id" && "$selected_index" == -1 ]]
+zoom_target=""
+selection_sync
+panel_key i
+for width in 80 60 18; do
+  COLUMNS="$width"
+  build_frame_templates
+  render_cached_frame 0
+  [[ "$REPLY" != *$'\033'* ]]
+  while IFS= read -r line; do (( ${#line} <= width )); done <<<"$REPLY"
+done
+zoom_target="$selected_id"
+panel_key esc
+[[ "$details_open" == 0 && -n "$zoom_target" ]]
+panel_key esc
+[[ -z "$zoom_target" ]]
+panel_key d
+[[ "$action_message" == 'Actions disabled in --once' ]]
+# Stub only external effects; production dispatch still passes canonical argv.
+once=0
+script_dir="$TEST_ACTION_DIR"
+export TEST_ACTION_LOG TEST_ACTION_DIR
+panel_key s
+panel_key n
+[[ ! -e "$TEST_ACTION_LOG" ]]
+panel_key s
+panel_key y
+[[ "$(cat "$TEST_ACTION_LOG")" == "--stop $selected_id" ]]
+selected_id=all
+stop_pending=all
+panel_key y
+[[ "$action_message" == 'Invalid worker ID' ]]
+selection_sync
+squad_open_monitor() {
+  [[ "$6" == required && "$2" == "$selected_id monitor" ]]
+  grep -F -- "${W_STATUS_FILE[$selected_index]}" "$1" >/dev/null
+  return 1
+}
+panel_key m
+[[ "$action_message" == 'Monitor split failed' ]]
+panel_key r
+[[ "$action_message" == 'Report unavailable' ]]
+report_path="$TEST_ACTION_DIR/report with spaces"
+printf 'hostile $(touch %s)\033[31m\n' "$TEST_ACTION_DIR/executed" >"$report_path"
+printf '\nreport=%s\n' "$report_path" >>"${W_STATUS_FILE[$selected_index]}"
+export TEST_PAGER_LOG="$TEST_ACTION_DIR/paged"
+PAGER="$TEST_ACTION_DIR/pager with spaces"
+cat >"$PAGER" <<'PAGER_STUB'
+#!/bin/bash
+cat >"$TEST_PAGER_LOG"
+PAGER_STUB
+chmod +x "$PAGER"
+page_selected r
+[[ -s "$TEST_PAGER_LOG" && ! -e "$TEST_ACTION_DIR/executed" ]]
+[[ "$(cat "$TEST_PAGER_LOG")" != *$'\033'* ]]
+mkdir -p "$TEST_ACTION_DIR/worktree with spaces"
+W_WORKTREE[$selected_index]="$TEST_ACTION_DIR/worktree with spaces"
+cat >"$TEST_ACTION_DIR/git" <<'GIT_STUB'
+#!/bin/bash
+printf '%s\n' "$@" >"$TEST_ACTION_DIR/git-args"
+printf 'selected diff\n'
+GIT_STUB
+chmod +x "$TEST_ACTION_DIR/git"
+PATH="$TEST_ACTION_DIR:$PATH" page_selected d
+[[ "$(cat "$TEST_PAGER_LOG")" == 'selected diff' ]]
+grep -Fx -- "$TEST_ACTION_DIR/worktree with spaces" "$TEST_ACTION_DIR/git-args" >/dev/null
+# New questions notify once, initial history and subsequent replay do not.
+question_seen=(); questions_initialized=0
+H_TS=(old); H_FROM=(worker); H_TO=(manager); H_TYPE=(QUESTION); H_BODY=('QUESTION old')
+notifications=0
+squad_notify() { notifications=$(( notifications + 1 )); }
+notify_questions
+[[ "$notifications" == 0 ]]
+H_TS[1]="$notification_start"; H_FROM[1]=worker; H_TO[1]=manager; H_TYPE[1]=QUESTION; H_BODY[1]='QUESTION new'
+notify_questions
+notify_questions
+[[ "$notifications" == 1 ]]
+PANEL_TEST
+mkdir -p "$tmp/actions" "$tmp/interaction"
+cat >"$tmp/actions/squad-worker.sh" <<'ACTION_STUB'
+#!/bin/bash
+printf '%s %s' "$1" "$2" >"$TEST_ACTION_LOG"
+ACTION_STUB
+chmod +x "$tmp/actions/squad-worker.sh"
+for id in alpha beta; do
+  cat >"$tmp/interaction/$id.status" <<EOF_STATUS
+worker=$id
+started=$now
+state=completed
+model=\$(touch $tmp/hostile)
+report=$tmp/missing report
+plan=$tmp/missing plan
+EOF_STATUS
+done
+TEST_ACTION_DIR="$tmp/actions" TEST_ACTION_LOG="$tmp/action.log" \
+  bash "$panel_harness" --once "$tmp/interaction"
+[[ ! -e "$tmp/hostile" ]]
+for width in 80 60 18; do
+  detail_out="$(COLUMNS="$width" SQUAD_ORCHESTRATION_SWITCH_LAYOUT=j,i \
+    "$root/scripts/squad-orchestration.sh" --once "$tmp/interaction")"
+  assert_max_width "$detail_out" "$width" "details COLUMNS=$width"
+  [[ "$detail_out" != *$'\033'* ]]
+done
+
 echo "PASS: squad_orchestration_smoke"

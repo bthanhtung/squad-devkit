@@ -60,6 +60,8 @@ Interactive keys:
   v                    Cycle Flow filter (all -> questions -> failures)
   e                    Toggle expanding '+N earlier' worker rows
   1-9 / z / Esc        Zoom into sub-manager / cycle / unzoom
+  j/k or arrows        Select worker; i details; Esc back
+  d/r/s/m              Diff / report / stop (y/n) / monitor split
   q                    Quit
 
 Environment:
@@ -4149,7 +4151,7 @@ build_lifecycle_frame() {
   return 0
 }
 
-build_frame_templates() {
+build_base_frame_templates() {
   FRAME_TPL=("" "" "" "")
   DIAG_T0=""
   DIAG_T1=""
@@ -4161,7 +4163,8 @@ build_frame_templates() {
   terminal_columns
   columns="$REPLY"
   terminal_lines
-  lines="$REPLY"
+  lines=$(( REPLY - 2 ))
+  (( lines >= 1 )) || lines=1
   ensure_pad_len "$columns"
 
   local rule_line="${DASHES_PAD:0:$columns}"
@@ -4502,6 +4505,168 @@ cycle_flow_filter() {
   esac
 }
 
+# Keep selection by ID across reloads; only loaded, scoped workers are eligible.
+selected_id=""
+selected_index=-1
+details_open=0
+stop_pending=""
+action_message=""
+question_seen=()
+questions_initialized=0
+notification_start="${SQUAD_ORCHESTRATION_NOW:-$(date +%s)}"
+source "$script_dir/lib/squad-notify.sh"
+source "$script_dir/lib/squad-panes.sh"
+
+selection_sync() {
+  local i
+  selected_index=-1
+  for (( i=0; i<TOTAL_WORKERS; i++ )); do
+    [[ -z "$zoom_target" || "${W_PARENT[$i]}" == "$zoom_target" || "${W_NAME[$i]}" == "$zoom_target" ]] || continue
+    if [[ "${W_NAME[$i]}" == "$selected_id" ]]; then selected_index=$i; return; fi
+  done
+  for (( i=0; i<TOTAL_WORKERS; i++ )); do
+    [[ -z "$zoom_target" || "${W_PARENT[$i]}" == "$zoom_target" || "${W_NAME[$i]}" == "$zoom_target" ]] || continue
+    selected_index=$i; selected_id="${W_NAME[$i]}"; return
+  done
+  selected_id=""
+}
+
+notify_questions() {
+  local i key seen old
+  for (( i=0; i<${#H_TS[@]}; i++ )); do
+    [[ "${H_TYPE[$i]}" == QUESTION ]] || continue
+    key="${H_TS[$i]}|${H_FROM[$i]}|${H_TO[$i]}|${H_BODY[$i]}"
+    seen=0
+    for old in ${question_seen[@]+"${question_seen[@]}"}; do
+      [[ "$old" != "$key" ]] || seen=1
+    done
+    if (( seen == 0 )); then
+      question_seen[${#question_seen[@]}]="$key"
+      rfc3339_to_epoch "${H_TS[$i]}"
+      if (( questions_initialized == 1 && once == 0 && REPLY >= notification_start )); then
+        squad_notify "Question from ${H_FROM[$i]}" "${H_BODY[$i]}" || true
+      fi
+    fi
+  done
+  questions_initialized=1
+}
+
+selected_field() {
+  REPLY=""
+  local line
+  [[ $selected_index -ge 0 ]] || return 0
+  [[ -f "${W_STATUS_FILE[$selected_index]}" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "${line%%=*}" != "$1" ]] || REPLY="${line#*=}"
+  done <"${W_STATUS_FILE[$selected_index]}"
+}
+
+# A pager is an executable name, never a shell expression; strip terminal controls.
+page_selected() {
+  local kind="$1" path output base
+  output="$(mktemp "${TMPDIR:-/tmp}/squad-panel.XXXXXXXX")" || return 1
+  if [[ "$kind" == d ]]; then
+    path="${W_WORKTREE[$selected_index]}"
+    selected_field base; base="$REPLY"
+    [[ "$base" =~ ^[0-9a-fA-F]{7,40}$ ]] || base=HEAD
+    if [[ ! -d "$path" ]] || ! git -C "$path" diff --no-ext-diff --no-textconv "$base" -- >"$output" 2>/dev/null; then
+      action_message="Diff unavailable"; rm -f "$output"; return 0
+    fi
+  else
+    selected_field report; path="$REPLY"
+    if [[ ! -f "$path" ]]; then action_message="Report unavailable"; rm -f "$output"; return 0; fi
+    cat -- "$path" >"$output"
+  fi
+  [[ -z "$saved_tty" ]] || stty "$saved_tty" 2>/dev/null || true
+  LC_ALL=C tr -d '\000-\010\013-\037\177' <"$output" | "${PAGER:-less}" || action_message="Pager failed"
+  rm -f "$output"
+  [[ -z "$saved_tty" ]] || stty -icanon -echo 2>/dev/null || true
+}
+
+panel_key() {
+  local key="$1" i step command_script
+  selection_sync
+  if [[ -n "$stop_pending" ]]; then
+    if [[ "$key" == y ]]; then
+      if [[ "$stop_pending" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ && "$stop_pending" != all ]]; then
+        if (cd "$WS_ROOT" && "$script_dir/squad-worker.sh" --stop "$stop_pending") >/dev/null 2>&1; then
+          action_message="Stop requested: $stop_pending"
+        else action_message="Stop failed: $stop_pending"; fi
+      else action_message="Invalid worker ID"; fi
+    else action_message="Stop cancelled"; fi
+    stop_pending=""
+    return 0
+  fi
+  case "$key" in
+    j|k)
+      step=1; [[ "$key" != k ]] || step=-1
+      i=$(( selected_index + step ))
+      while (( i >= 0 && i < TOTAL_WORKERS )); do
+        if [[ -z "$zoom_target" || "${W_PARENT[$i]}" == "$zoom_target" || "${W_NAME[$i]}" == "$zoom_target" ]]; then
+          selected_id="${W_NAME[$i]}"; break
+        fi
+        i=$(( i + step ))
+      done
+      ;;
+    i) details_open=$(( 1 - details_open )) ;;
+    esc)
+      if (( details_open == 1 )); then details_open=0
+      elif [[ -z "$locked_root" ]]; then zoom_target=""; fi
+      ;;
+    d|r|s|m)
+      (( selected_index >= 0 )) || return 0
+      if (( once == 1 )); then action_message="Actions disabled in --once"; return 0; fi
+      case "$key" in
+        d|r) page_selected "$key" ;;
+        s) stop_pending="$selected_id" ;;
+        m)
+          command_script="$(mktemp "$workers_dir/.panel-monitor.XXXXXXXX")" || return 0
+          printf '#!/bin/bash\nexec %q %q\n' "$script_dir/squad-worker-monitor.sh" "${W_STATUS_FILE[$selected_index]}" >"$command_script"
+          chmod +x "$command_script"
+          if squad_open_monitor "$command_script" "$selected_id monitor" "$WS_ROOT" "$workers_dir" "$command_script" required >/dev/null 2>&1; then
+            action_message="Monitor opened: $selected_id"
+          else action_message="Monitor split failed"; rm -f "$command_script"; fi
+          ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+  idle_start_sec=$SECONDS
+  AUTO_CLOSE_PINNED="${is_pinned:-0}"
+  return 0
+}
+
+build_frame_templates() {
+  selection_sync
+  notify_questions
+  build_base_frame_templates
+  local columns footer text key n
+  terminal_columns; columns="$REPLY"
+  footer=""
+  text="$(printf "> %s · j/k select · i details" "${selected_id:-no worker}" | LC_ALL=C tr -d '[:cntrl:]')"
+  trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+  if (( details_open == 1 && selected_index >= 0 )); then
+    footer=""
+    for key in worker model model_tier attempt tier_override plan worktree log report verify verify_exit merged discarded scope_violation; do
+      selected_field "$key"
+      text="$(printf '%s: %s' "$key" "${REPLY:-—}" | LC_ALL=C tr -d '[:cntrl:]')"
+      trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+    done
+    text="round: ${W_ROUND[$selected_index]} ${W_ROUND_REASON[$selected_index]:-} · merge: ${W_MERGE_STATE[$selected_index]:-—}"
+    trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+    text="activity: ${W_ACTIVITY[$selected_index]:-—} · tokens: ${W_TOK[$selected_index]:-0}"
+    text="$(printf '%s' "$text" | LC_ALL=C tr -d '[:cntrl:]')"
+    trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+    text="d diff · r report · s stop · m monitor · Esc back"
+    trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+    FRAME_TPL=("" "" "" "")
+  fi
+  text="$action_message"
+  [[ -z "$stop_pending" ]] || text="Stop $stop_pending? y/n"
+  if [[ -n "$text" ]]; then trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'; fi
+  for n in 0 1 2 3; do FRAME_TPL[$n]+="$footer"; done
+}
+
 # One-shot execution mode
 if (( once == 1 )) || { [[ ! -t 1 ]] && [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" != 1 ]]; }; then
   load_data
@@ -4524,6 +4689,7 @@ if (( once == 1 )) || { [[ ! -t 1 ]] && [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" != 1
           zoom_target=""
           ;;
       esac
+      panel_key "$next_step" || true
       build_frame_templates
       render_cached_frame "$forced_frame"
     done
@@ -4690,7 +4856,7 @@ while true; do
   fi
 
   if (( RUNNING_COUNT == 0 )); then
-    if (( is_pinned == 1 )); then
+    if (( is_pinned == 1 || details_open == 1 )); then
       if (( AUTO_CLOSE_PINNED != 1 || AUTO_CLOSE_COUNTING != 0 )); then
         AUTO_CLOSE_PINNED=1
         AUTO_CLOSE_COUNTING=0
@@ -4762,6 +4928,16 @@ while true; do
       sleep "$frame_delay"
     fi
     if (( key_pressed == 1 )); then
+      if [[ "$key" == $'\033' ]]; then
+        arrow=""
+        IFS= read -r -s -t 1 -n 2 arrow 2>/dev/null || true
+        case "$arrow" in '[A') key=k ;; '[B') key=j ;; *) key=esc ;; esac
+      fi
+      if panel_key "$key"; then
+        build_frame_templates
+        subframe=0
+        continue
+      fi
       case "$key" in
         q|Q)
           exit 0
