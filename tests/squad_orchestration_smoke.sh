@@ -1422,4 +1422,94 @@ for word in "stale 3m05s" "waiting 3m15s" "verify FAIL" "merged" "discarded" "un
   }
 done
 
+# Flow filters, multiline boundaries, pins, plan progress and expansion.
+flow_dir="$tmp/flow/.squad/workers"
+mkdir -p "$flow_dir"
+cat > "$tmp/flow/plan.md" <<'EOF'
+## Tasks
+### Wave 1
+- prose is not a task
+- flow-1 (codex, strong): First. Files: a. Depends on: none.
+- flow-2 (codex, strong): Second. Files: b. Depends on: flow-1.
+- pending-3 (agy, balanced): Third. Files: c. Depends on: flow-2.
+## Acceptance
+- unrelated (text): outside Tasks
+EOF
+for idx in 1 2; do
+  cat > "$flow_dir/flow-$idx.status" <<EOF
+worker=flow-$idx
+engine=codex
+model=gpt-5
+state=running
+pid=$$
+started=$(( now - 30 + idx ))
+plan=plan.md
+tokens=$(( idx * 1000 ))
+EOF
+done
+cat > "$tmp/flow/history" <<'EOF'
+[2026-11-14T07:00:00Z] flow-1 -> manager-4: QUESTION: PINNED choose a layout with enough room to show this complete long question
+  continuation-tail
+[2026-11-14T07:01:00Z] flow-2 -> manager-4: QUESTION: CLEARED old question
+[2026-11-14T07:02:00Z] manager-4 -> flow-2: ANSWER: accepted
+[2026-11-14T07:03:00Z] flow-2 -> manager-4: completed task recent-one
+[2026-11-14T07:04:00Z] flow-2 -> manager-4: worker failed FAILURE-marker
+[2026-11-14T07:05:00Z] flow-2 -> manager-4: completed task recent-two
+[2026-11-14T07:06:00Z] flow-2 -> manager-4: completed task recent-three
+EOF
+flow_render() {
+  SQUAD_ORCHESTRATION_HISTORY_CMD='cat history' COLUMNS="${flow_cols:-80}" LINES=60 \
+    "$root/scripts/squad-orchestration.sh" --once --since "$since" "$@" "$flow_dir"
+}
+if flow_render --flow-filter invalid >/dev/null 2>&1; then
+  echo "FAIL: invalid Flow filter accepted" >&2
+  exit 1
+else
+  [[ "$?" == 2 ]]
+fi
+flow_all="$(flow_render)"
+flow_only="$(flow_render --flow-filter questions)"
+flow_fail="$(flow_render --flow-filter failures)"
+grep -q 'PINNED' <<< "$flow_all"
+grep -q 'continuation-tail' <<< "$flow_only"
+grep -q 'ANSWER' <<< "$flow_only"
+! grep -q 'FAILURE-marker' <<< "$flow_only"
+grep -q 'FAILURE-marker' <<< "$flow_fail"
+! grep -q 'PINNED' <<< "$flow_fail"
+! grep -q 'CLEARED' <<< "$flow_all"
+grep -q '0/3 tasks · 3k tok' <<< "$flow_all"
+grep -q 'pending-3 · pending · after flow-2' <<< "$flow_all"
+grep -q 'flow-2 after flow-1' <<< "$flow_all"
+! grep -q 'unrelated' <<< "$flow_all"
+for flow_layout in tree pipeline; do
+  flow_other="$(flow_render --layout "$flow_layout")"
+  grep -q '0/3 tasks · 3k tok' <<< "$flow_other"
+  grep -q 'pending-3' <<< "$flow_other"
+  grep -q 'after flow-' <<< "$flow_other"
+done
+mv "$tmp/flow/plan.md" "$tmp/flow/saved-plan.md"
+flow_missing="$(flow_render)"
+grep -q 'Plan plan' <<< "$flow_missing"
+! grep -q 'pending-3' <<< "$flow_missing"
+printf '## Tasks\n- old prose without metadata\n' > "$tmp/flow/plan.md"
+! grep -q '/1 tasks' <<< "$(flow_render)"
+mv "$tmp/flow/saved-plan.md" "$tmp/flow/plan.md"
+for flow_cols in 80 60 18; do
+  flow_narrow="$(flow_render --flow-filter questions)"
+  assert_max_width "$flow_narrow" "$flow_cols" "Flow wrapping COLUMNS=$flow_cols"
+  [[ "$flow_narrow" != *$'\033'* ]]
+done
+flow_cols=80
+printf 'state=completed\nfinished=%s\n' "$now" >> "$flow_dir/flow-2.status"
+grep -q '1/3 tasks' <<< "$(flow_render)"
+printf '[2026-11-14T07:07:00Z] manager-4 -> flow-1: ANSWER: resolved\n' >> "$tmp/flow/history"
+! grep -q 'PINNED' <<< "$(flow_render)"
+# Both controls use the existing once-mode key simulation.
+flow_switched="$(SQUAD_ORCHESTRATION_SWITCH_LAYOUT=f,f flow_render)"
+grep -q 'failures' <<< "$flow_switched"
+six_expanded="$(SQUAD_ORCHESTRATION_SWITCH_LAYOUT=e COLUMNS=80 LINES=60 \
+  "$root/scripts/squad-orchestration.sh" --once --since "$since" "$six_dir")"
+! grep -q '+2 earlier' <<< "$six_expanded"
+for idx in 1 2 3 4 5 6; do grep -q "w-$idx" <<< "$six_expanded"; done
+
 echo "PASS: squad_orchestration_smoke"

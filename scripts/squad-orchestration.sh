@@ -33,15 +33,23 @@ export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
 usage() {
   cat <<'EOF'
-Usage: squad-orchestration.sh [--once] [--since EPOCH] [--layout LAYOUT] [--root ID] [WORKERS_DIR]
+Usage: squad-orchestration.sh [--once] [--since EPOCH] [--layout LAYOUT] [--root ID] [--flow-filter MODE] [WORKERS_DIR]
 
 Live terminal orchestration view showing manager and worker flow.
 
-  --once            Render one frame without escape codes and exit
-  --since EPOCH     Show runs started at or after EPOCH (default: $SQUAD_DEVKIT_SESSION_START or 0)
-  --layout LAYOUT   Layout to render: graph, pipeline, or tree (default: $SQUAD_ORCHESTRATION_LAYOUT or graph)
-  --root ID         Start zoomed into sub-manager ID (Esc disabled)
-  -h, --help        Show this help
+  --once               Render one frame without escape codes and exit
+  --since EPOCH        Show runs started at or after EPOCH (default: $SQUAD_DEVKIT_SESSION_START or 0)
+  --layout LAYOUT      Layout to render: graph, pipeline, or tree (default: $SQUAD_ORCHESTRATION_LAYOUT or graph)
+  --root ID            Start zoomed into sub-manager ID (Esc disabled)
+  --flow-filter MODE   Flow filter: all, questions, or failures (default: $SQUAD_ORCHESTRATION_FLOW_FILTER or all)
+  -h, --help           Show this help
+
+Interactive keys:
+  g / p / t / Tab      Switch layout (graph, pipeline, tree)
+  f                    Cycle Flow filter (all -> questions -> failures)
+  e                    Toggle expanding '+N earlier' worker rows
+  1-9 / z / Esc        Zoom into sub-manager / cycle / unzoom
+  q                    Quit
 
 Environment:
   SQUAD_ORCHESTRATION_LIVE=1  Keep live loop running even when stdout is not a TTY (for tests)
@@ -51,6 +59,9 @@ EOF
 once=0
 since="${SQUAD_DEVKIT_SESSION_START:-0}"
 layout="${SQUAD_ORCHESTRATION_LAYOUT:-graph}"
+flow_filter="${SQUAD_ORCHESTRATION_FLOW_FILTER:-all}"
+expand_earlier=0
+[[ "${SQUAD_ORCHESTRATION_EXPAND:-0}" == "1" ]] && expand_earlier=1
 locked_root=""
 zoom_target=""
 workers_dir=""
@@ -103,6 +114,17 @@ while (( $# > 0 )); do
       fi
       zoom_target="$locked_root"
       ;;
+    --flow-filter)
+      if (( $# < 2 )); then
+        echo "Option --flow-filter requires an argument" >&2
+        exit 2
+      fi
+      flow_filter="$2"
+      shift
+      ;;
+    --flow-filter=*)
+      flow_filter="${1#*=}"
+      ;;
     -*)
       echo "Unknown option: $1" >&2
       exit 2
@@ -127,6 +149,14 @@ case "$layout" in
   graph|pipeline|tree) ;;
   *)
     echo "Invalid layout: $layout (expected tree, graph, or pipeline)" >&2
+    exit 2
+    ;;
+esac
+
+case "$flow_filter" in
+  all|questions|failures) ;;
+  *)
+    echo "Invalid flow filter: $flow_filter (expected all, questions, or failures)" >&2
     exit 2
     ;;
 esac
@@ -456,17 +486,57 @@ fmt_model_tier() {
   trunc_str "${REPLY} ${abbr}" "$max_w"
 }
 
+WRAP_LINES=()
+wrap_text() {
+  local text="$1" width="$2" max_lines="${3:-4}"
+  WRAP_LINES=()
+  if (( width <= 0 )); then
+    WRAP_LINES[0]=""
+    return
+  fi
+  text="${text//$'\r'/}"
+  text="${text//$'\n'/ }"
+  text="${text//$'\t'/ }"
+  if (( ${#text} <= width )); then
+    WRAP_LINES[0]="$text"
+    return
+  fi
+  while (( ${#text} > width )); do
+    if (( max_lines > 0 && ${#WRAP_LINES[@]} + 1 >= max_lines )); then
+      trunc_str "$text" "$width"
+      WRAP_LINES[${#WRAP_LINES[@]}]="$REPLY"
+      return
+    fi
+    local chunk="${text:0:$width}"
+    if [[ "${text:$width:1}" != " " && "$chunk" == *" "* ]]; then
+      chunk="${chunk% *}"
+    fi
+    [[ -n "$chunk" ]] || chunk="${text:0:$width}"
+    WRAP_LINES[${#WRAP_LINES[@]}]="$chunk"
+    text="${text:${#chunk}}"
+    while [[ "$text" == " "* ]]; do text="${text# }"; done
+  done
+  [[ -z "$text" ]] || WRAP_LINES[${#WRAP_LINES[@]}]="$text"
+}
+
 # Shared worker state-to-glyph/text/colour resolver for graph, tree, and pipeline views.
 # Sets ST_PLAIN, ST_DISP, ST_COLOR, ST_IS_SPIN.
 resolve_worker_state() {
   local w="$1"
-  local eff_state="${2:-${W_STATE[$w]}}"
+  local eff_state="${2:-}"
+  if [[ -z "$eff_state" ]] && (( w >= 0 )); then
+    eff_state="${W_STATE[$w]}"
+  fi
   local max_w="${3:-999}"
   local glyph="" label="" keep_glyph=0
   ST_COLOR=""
   ST_IS_SPIN=0
 
-  if [[ "$eff_state" == "running" ]]; then
+  if [[ "$eff_state" == "pending" ]]; then
+    glyph="○"
+    label="pending"
+    ST_COLOR="$dim"
+  elif [[ "$eff_state" == "running" ]]; then
     if (( W_ASKING[w] == 1 )); then
       glyph="?"
       keep_glyph=1
@@ -635,6 +705,87 @@ clean_msg_preview() {
   esac
 }
 
+resolve_plan_file() {
+  local raw_p="${1:-}"
+  REPLY=""
+  [[ -n "$raw_p" && "$raw_p" != "(no plan)" && "$raw_p" != "none" ]] || return 0
+  case "$raw_p" in
+    *$'\n'*|*$'\r'*) return 0 ;;
+  esac
+  local cand="$raw_p"
+  if [[ "$cand" != /* ]]; then
+    cand="${WS_ROOT}/${cand}"
+  fi
+  if [[ -f "$cand" && -r "$cand" ]]; then
+    local p_dir
+    if p_dir="$(cd "$(dirname "$cand")" 2>/dev/null && pwd -P)"; then
+      REPLY="${p_dir}/$(basename "$cand")"
+    else
+      REPLY="$cand"
+    fi
+  fi
+  return 0
+}
+
+# Prints tab-separated lines: id<TAB>engine<TAB>deps from ## Tasks of a plan file.
+# Only matches '- <id> (<meta>): ...' lines; ignores wave headings and prose.
+parse_plan_tasks() {
+  local plan_file="$1"
+  [[ -f "$plan_file" && -r "$plan_file" ]] || return 0
+  awk '
+    BEGIN { in_tasks = 0 }
+    { gsub(/\r/, "") }
+    /^##[[:space:]]+/ {
+      h = tolower($0)
+      sub(/^##[[:space:]]+/, "", h)
+      sub(/[[:space:]:]+$/, "", h)
+      in_tasks = (h == "tasks")
+      next
+    }
+    !in_tasks { next }
+    /^[[:space:]]*[-*][[:space:]]+/ {
+      line = $0
+      sub(/^[[:space:]]*[-*][[:space:]]+/, "", line)
+      if (match(line, /^[A-Za-z0-9._-]+[[:space:]]*\(/)) {
+        tid = substr(line, 1, RLENGTH - 1)
+        sub(/[[:space:]]+$/, "", tid)
+        rest = substr(line, RLENGTH + 1)
+        close_p = index(rest, ")")
+        if (close_p == 0) next
+        meta = substr(rest, 1, close_p - 1)
+        after_p = substr(rest, close_p + 1)
+        if (after_p !~ /^[[:space:]]*:/) next
+        eng = meta
+        sub(/[,;].*$/, "", eng)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", eng)
+        if (eng !~ /^[A-Za-z0-9_-]+$/) eng = ""
+        deps = ""
+        low_after = tolower(after_p)
+        dp = index(low_after, "depends on:")
+        if (dp > 0) {
+          dstr = substr(after_p, dp + 11)
+          gsub(/\([^)]*\)/, "", dstr)
+          sub(/\.[[:space:]]+.*$/, "", dstr)
+          sub(/;.*$/, "", dstr)
+          sub(/\.[[:space:]]*$/, "", dstr)
+          n = split(dstr, arr, ",")
+          for (i = 1; i <= n; i++) {
+            d = arr[i]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", d)
+            sub(/\.$/, "", d)
+            low_d = tolower(d)
+            if (low_d == "" || low_d == "none" || low_d == "n/a" || low_d == "-") continue
+            if (d ~ /^[A-Za-z0-9._-]+$/) {
+              deps = (deps == "" ? d : deps ", " d)
+            }
+          }
+        }
+        printf "%s\t%s\t%s\n", tid, eng, deps
+      }
+    }
+  ' "$plan_file" 2>/dev/null || true
+}
+
 WS_ROOT="$(resolve_workspace_root "$workers_dir")"
 WS_NAME="${WS_ROOT##*/}"
 [[ -n "$WS_NAME" ]] || WS_NAME="$(basename "$WS_ROOT")"
@@ -645,6 +796,7 @@ W_NAME=()
 W_STARTED=()
 W_FINISHED=()
 W_PLAN_NAME=()
+W_PLAN_PATH=()
 W_STATE=()
 W_ENGINE=()
 W_MODEL=()
@@ -663,6 +815,7 @@ W_SM_INDEX=()
 W_LAST_TYPE=()
 W_LAST_TS=()
 W_ASKING=()
+W_ASK_H_IDX=()
 W_EDGE_ARROW=()
 W_EDGE_TEXT=()
 W_EDGE_TYPE=()
@@ -681,14 +834,24 @@ W_IS_STALE=()
 W_ASK_TS=()
 W_ASK_AGE=()
 W_ROUND_REASON=()
+W_DEPS=()
 SM_LIST=()
 
 P_NAME=()
+P_FILE=()
 P_ACTIVE=()
 P_LAST_TS=()
 P_DONE_CNT=()
 P_FAIL_CNT=()
+P_TOK=()
+P_TASK_TOTAL=()
+P_TASK_DONE=()
 P_ORDER=()
+
+PT_PLAN=()
+PT_ID=()
+PT_ENGINE=()
+PT_DEPS=()
 
 H_TS=()
 H_FROM=()
@@ -714,6 +877,7 @@ load_data() {
   W_STARTED=()
   W_FINISHED=()
   W_PLAN_NAME=()
+  W_PLAN_PATH=()
   W_STATE=()
   W_ENGINE=()
   W_MODEL=()
@@ -732,6 +896,7 @@ load_data() {
   W_LAST_TYPE=()
   W_LAST_TS=()
   W_ASKING=()
+  W_ASK_H_IDX=()
   W_EDGE_ARROW=()
   W_EDGE_TEXT=()
   W_EDGE_TYPE=()
@@ -750,14 +915,24 @@ load_data() {
   W_ASK_TS=()
   W_ASK_AGE=()
   W_ROUND_REASON=()
+  W_DEPS=()
   SM_LIST=()
 
   P_NAME=()
+  P_FILE=()
   P_ACTIVE=()
   P_LAST_TS=()
   P_DONE_CNT=()
   P_FAIL_CNT=()
+  P_TOK=()
+  P_TASK_TOTAL=()
+  P_TASK_DONE=()
   P_ORDER=()
+
+  PT_PLAN=()
+  PT_ID=()
+  PT_ENGINE=()
+  PT_DEPS=()
 
   H_TS=()
   H_FROM=()
@@ -848,6 +1023,7 @@ load_data() {
         W_STARTED[$found_idx]="$f_started"
         W_FINISHED[$found_idx]="$f_finished"
         W_PLAN_NAME[$found_idx]="$f_plan"
+        W_PLAN_PATH[$found_idx]="$f_plan"
         W_STATE[$found_idx]="$f_state"
         raw_pids[$found_idx]="$f_pid"
         W_ENGINE[$found_idx]="$f_engine"
@@ -881,6 +1057,7 @@ load_data() {
           W_STARTED[$found_idx]="$f_started"
           W_FINISHED[$found_idx]="$f_finished"
           W_PLAN_NAME[$found_idx]="$f_plan"
+          W_PLAN_PATH[$found_idx]="$f_plan"
           W_STATE[$found_idx]="$f_state"
           raw_pids[$found_idx]="$f_pid"
           W_ENGINE[$found_idx]="$f_engine"
@@ -1049,7 +1226,9 @@ load_data() {
     W_LAST_TYPE[$wi]=""
     W_LAST_TS[$wi]=""
     W_ASKING[$wi]=0
+    W_ASK_H_IDX[$wi]=-1
     W_MSG_RECENT[$wi]=0
+    W_DEPS[$wi]=""
 
     wi=$(( wi + 1 ))
   done
@@ -1082,9 +1261,10 @@ load_data() {
   local regex="^[[:space:]*]*\\[([^]]+)\\][[:space:]]+([^[:space:]]+)[[:space:]]*->[[:space:]]*([^:]+):[[:space:]]*(.*)$"
   local sender_names=()
   local sender_counts=()
-  local raw_line
+  local raw_line last_h_idx=-1
   while IFS= read -r raw_line; do
-    [[ -n "$raw_line" ]] || continue
+    raw_line="${raw_line//$'\r'/}"
+    [[ -n "$raw_line" ]] || { last_h_idx=-1; continue; }
     if [[ "$raw_line" =~ $regex ]]; then
       local h_ts="${BASH_REMATCH[1]}"
       local h_from="${BASH_REMATCH[2]}"
@@ -1099,6 +1279,7 @@ load_data() {
       H_TO[$h_idx]="$h_to"
       H_TYPE[$h_idx]="$h_type"
       H_BODY[$h_idx]="$h_body"
+      last_h_idx="$h_idx"
 
       # Track sender frequency (excluding known workers so root manager is inferred)
       local from_is_worker=0
@@ -1157,18 +1338,38 @@ load_data() {
               if [[ "$h_type" == "QUESTION" ]]; then
                 W_ASKING[$wi]=1
                 W_ASK_TS[$wi]="$h_ts"
-              else
-                W_ASKING[$wi]=0
-                W_ASK_TS[$wi]=""
+                W_ASK_H_IDX[$wi]="$h_idx"
               fi
             elif [[ "$h_to" == "$wn" && "$h_type" == "ANSWER" ]]; then
               W_ASKING[$wi]=0
               W_ASK_TS[$wi]=""
+              W_ASK_H_IDX[$wi]=-1
             fi
           fi
         fi
         wi=$(( wi + 1 ))
       done
+    elif [[ "$raw_line" == " "* || "$raw_line" == $'\t'* ]] && (( last_h_idx >= 0 )) && [[ "${H_TYPE[$last_h_idx]}" == "QUESTION" || "${H_TYPE[$last_h_idx]}" == "ANSWER" ]]; then
+      local cont="$raw_line"
+      cont="${cont//$'\t'/ }"
+      if [[ "$cont" =~ [[:cntrl:]] ]]; then
+        cont="$(printf '%s' "$cont" | tr -d '[:cntrl:]')"
+      fi
+      while [[ "$cont" == " "* ]]; do
+        cont="${cont# }"
+      done
+      while [[ "$cont" == *" " ]]; do
+        cont="${cont% }"
+      done
+      if [[ -n "$cont" && "${#H_BODY[$last_h_idx]}" -lt 1000 ]]; then
+        if [[ -n "${H_BODY[$last_h_idx]}" ]]; then
+          H_BODY[$last_h_idx]="${H_BODY[$last_h_idx]} ${cont}"
+        else
+          H_BODY[$last_h_idx]="$cont"
+        fi
+      fi
+    else
+      last_h_idx=-1
     fi
   done <<< "$history_raw"
 
@@ -1192,6 +1393,7 @@ load_data() {
     if [[ "${W_STATE[$wi]}" != "running" ]]; then
       W_ASKING[$wi]=0
       W_ASK_TS[$wi]=""
+      W_ASK_H_IDX[$wi]=-1
     elif (( W_ASKING[wi] == 1 )) && [[ -n "${W_ASK_TS[$wi]}" ]]; then
       rfc3339_to_epoch "${W_ASK_TS[$wi]}"
       local ask_ep="$REPLY"
@@ -1239,11 +1441,20 @@ load_data() {
     if (( p_found < 0 )); then
       p_found="$p_cnt"
       P_NAME[$p_found]="$p_name"
+      P_FILE[$p_found]=""
       P_ACTIVE[$p_found]=0
       P_LAST_TS[$p_found]=0
       P_DONE_CNT[$p_found]=0
       P_FAIL_CNT[$p_found]=0
+      P_TOK[$p_found]=0
+      P_TASK_TOTAL[$p_found]=0
+      P_TASK_DONE[$p_found]=0
     fi
+    if [[ -z "${P_FILE[$p_found]}" && -n "${W_PLAN_PATH[$wi]}" ]]; then
+      resolve_plan_file "${W_PLAN_PATH[$wi]}"
+      P_FILE[$p_found]="$REPLY"
+    fi
+    P_TOK[$p_found]=$(( P_TOK[p_found] + W_TOK[wi] ))
 
     if [[ "${W_STATE[$wi]}" == "running" ]] || (( W_ASKING[$wi] == 1 || W_KIDS_RUNNING[wi] > 0 )); then
       P_ACTIVE[$p_found]=1
@@ -1263,6 +1474,52 @@ load_data() {
     esac
 
     wi=$(( wi + 1 ))
+  done
+
+  # Parse ## Tasks from each resolved plan file for progress, dependencies, and pending tasks
+  local p_cnt="${#P_NAME[@]}"
+  local pi=0
+  while (( pi < p_cnt )); do
+    local p_file="${P_FILE[$pi]}"
+    if [[ -n "$p_file" && -f "$p_file" && -r "$p_file" ]]; then
+      local parsed_tasks
+      parsed_tasks="$(parse_plan_tasks "$p_file")"
+      if [[ -n "$parsed_tasks" ]]; then
+        local t_line
+        while IFS= read -r t_line; do
+          [[ -n "$t_line" ]] || continue
+          local t_id="${t_line%%$'\t'*}"
+          local t_rest="${t_line#*$'\t'}"
+          local t_eng="${t_rest%%$'\t'*}"
+          local t_deps="${t_rest#*$'\t'}"
+          [[ -n "$t_id" ]] || continue
+
+          P_TASK_TOTAL[$pi]=$(( P_TASK_TOTAL[pi] + 1 ))
+          local matched_w=-1
+          wi=0
+          while (( wi < TOTAL_WORKERS )); do
+            if [[ "${W_PLAN_NAME[$wi]}" == "${P_NAME[$pi]}" && "${W_NAME[$wi]}" == "$t_id" ]]; then
+              matched_w="$wi"
+              break
+            fi
+            wi=$(( wi + 1 ))
+          done
+          if (( matched_w >= 0 )); then
+            W_DEPS[$matched_w]="$t_deps"
+            if [[ "${W_STATE[$matched_w]}" == "completed" && "${W_VERIFY[$matched_w]}" != "fail" && "${W_VERIFY[$matched_w]}" != "timeout" ]]; then
+              P_TASK_DONE[$pi]=$(( P_TASK_DONE[pi] + 1 ))
+            fi
+          else
+            local pt_idx="${#PT_ID[@]}"
+            PT_PLAN[$pt_idx]="$pi"
+            PT_ID[$pt_idx]="$t_id"
+            PT_ENGINE[$pt_idx]="$t_eng"
+            PT_DEPS[$pt_idx]="$t_deps"
+          fi
+        done <<< "$parsed_tasks"
+      fi
+    fi
+    pi=$(( pi + 1 ))
   done
 
   # Rank plans: plans with running/asking worker first, then newest activity, then name
@@ -1357,13 +1614,58 @@ load_data() {
   done
 }
 
+# Format expanded or collapsed plan header into REPLY, scoped to zoom_target when set.
+format_plan_header_line() {
+  local pi="$1" columns="$2" collapsed="${3:-0}"
+  local plan_tok="${P_TOK[$pi]}"
+  local plan_done="${P_DONE_CNT[$pi]}"
+  local plan_fail="${P_FAIL_CNT[$pi]}"
+  local t_done="${P_TASK_DONE[$pi]}"
+  local t_tot="${P_TASK_TOTAL[$pi]}"
+
+  if [[ -n "$zoom_target" ]]; then
+    plan_tok=0
+    plan_done=0
+    plan_fail=0
+    t_tot=0
+    t_done=0
+    local wi=0
+    while (( wi < TOTAL_WORKERS )); do
+      if [[ "${W_PLAN_NAME[$wi]}" == "${P_NAME[$pi]}" && "${W_PARENT[$wi]}" == "$zoom_target" ]]; then
+        plan_tok=$(( plan_tok + W_TOK[wi] ))
+        case "${W_STATE[$wi]}" in
+          completed)   plan_done=$(( plan_done + 1 )) ;;
+          failed|lost) plan_fail=$(( plan_fail + 1 )) ;;
+        esac
+      fi
+      wi=$(( wi + 1 ))
+    done
+  fi
+
+  local plain
+  if (( collapsed == 1 )); then
+    plain="▸ Plan ${P_NAME[$pi]}"
+  else
+    plain="Plan ${P_NAME[$pi]}"
+  fi
+  if (( t_tot > 0 )); then
+    plain="${plain} · ${t_done}/${t_tot} tasks"
+  fi
+  if (( plan_tok > 0 )); then
+    fmt_human_count "$plan_tok"
+    plain="${plain} · ${REPLY} tok"
+  fi
+  if (( collapsed == 1 )); then
+    local age=$(( DATA_NOW - P_LAST_TS[pi] ))
+    fmt_elapsed "$age"
+    plain="${plain} · ✓${plan_done} ✗${plan_fail} · last ${REPLY} ago"
+  fi
+  trunc_str "$plain" "$columns"
+}
+
 format_collapsed_plan_line() {
   local pi="$1" columns="$2"
-  local age=$(( DATA_NOW - P_LAST_TS[pi] ))
-  fmt_elapsed "$age"
-  local age_str="$REPLY"
-  local plain="▸ Plan ${P_NAME[$pi]} · ✓${P_DONE_CNT[$pi]} ✗${P_FAIL_CNT[$pi]} · last ${age_str} ago"
-  trunc_str "$plain" "$columns"
+  format_plan_header_line "$pi" "$columns" 1
   if [[ -n "$dim" ]]; then
     REPLY="${dim}${REPLY}${reset}"
   fi
@@ -1395,6 +1697,17 @@ build_tree_diagram() {
     (( ${#REPLY} > max_em_len )) && max_em_len="${#REPLY}"
     wi=$(( wi + 1 ))
   done
+  if [[ -z "$zoom_target" ]]; then
+    local pt_i=0 pt_cnt="${#PT_ID[@]}"
+    while (( pt_i < pt_cnt )); do
+      local pt_len="${#PT_ID[$pt_i]}"
+      (( pt_len > max_w_len )) && max_w_len="$pt_len"
+      if [[ -n "${PT_ENGINE[$pt_i]}" ]]; then
+        (( ${#PT_ENGINE[$pt_i]} > max_em_len )) && max_em_len="${#PT_ENGINE[$pt_i]}"
+      fi
+      pt_i=$(( pt_i + 1 ))
+    done
+  fi
 
   local plan_list=()
   local raw_p_cnt="${#P_ORDER[@]}"
@@ -1422,6 +1735,31 @@ build_tree_diagram() {
   local p_cnt="${#plan_list[@]}"
   local num_expanded="$p_cnt"
   (( num_expanded > 2 )) && num_expanded=2
+  if (( expand_earlier == 1 && num_expanded == 2 )); then
+    local p0="${plan_list[0]}" p0_items=0
+    wi=0
+    while (( wi < TOTAL_WORKERS )); do
+      if [[ "${W_PLAN_NAME[$wi]}" == "${P_NAME[$p0]}" ]]; then
+        if [[ -n "$zoom_target" ]]; then
+          [[ "${W_PARENT[$wi]}" == "$zoom_target" ]] && p0_items=$(( p0_items + 1 ))
+        else
+          p0_items=$(( p0_items + 1 ))
+        fi
+      fi
+      wi=$(( wi + 1 ))
+    done
+    if [[ -z "$zoom_target" ]]; then
+      local pt_i=0 pt_cnt="${#PT_ID[@]}"
+      while (( pt_i < pt_cnt )); do
+        (( PT_PLAN[pt_i] == p0 )) && p0_items=$(( p0_items + 1 ))
+        pt_i=$(( pt_i + 1 ))
+      done
+    fi
+    local half_avail=$(( (diag_budget - (p_cnt - 2)) / 2 - 2 ))
+    if (( p0_items > half_avail && p0_items > 4 )); then
+      num_expanded=1
+    fi
+  fi
   local collapsed_cnt=$(( p_cnt - num_expanded ))
 
   # Check how many worker lines each expanded plan can show within diag_budget
@@ -1477,9 +1815,11 @@ build_tree_diagram() {
     local max_lines_budget=$(( plan_budget - 2 ))
     (( max_lines_budget >= 1 )) || max_lines_budget=1
     local max_d1_show="$max_lines_budget"
-    (( max_d1_show <= 4 )) || max_d1_show=4
+    if (( expand_earlier == 0 && max_d1_show > 4 )); then
+      max_d1_show=4
+    fi
 
-    # Build ordered list of (worker_idx, rel_depth, is_last_in_group) for display
+    # Build ordered list of (worker_idx_or_pending, rel_depth) for display
     local pw=()
     local pw_rel_depth=()
     local d1_idx=0
@@ -1522,6 +1862,16 @@ build_tree_diagram() {
       fi
       d1_idx=$(( d1_idx + 1 ))
     done
+    if [[ -z "$zoom_target" ]]; then
+      local pt_i=0 pt_cnt="${#PT_ID[@]}"
+      while (( pt_i < pt_cnt )); do
+        if (( PT_PLAN[pt_i] == pi )); then
+          pw[${#pw[@]}]=$(( TOTAL_WORKERS + pt_i ))
+          pw_rel_depth[${#pw_rel_depth[@]}]=1
+        fi
+        pt_i=$(( pt_i + 1 ))
+      done
+    fi
 
     local pw_cnt="${#pw[@]}"
     local show_cnt=0
@@ -1546,8 +1896,8 @@ build_tree_diagram() {
       rest_cnt=$(( pw_cnt - show_cnt ))
     fi
 
-    local plan_line="Plan ${P_NAME[$pi]}"
-    (( ${#plan_line} <= columns )) || plan_line="${plan_line:0:$columns}"
+    format_plan_header_line "$pi" "$columns" 0
+    local plan_line="$REPLY"
     DIAG_T0+="${plan_line}"$'\n'
     DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 1 ))
 
@@ -1593,9 +1943,45 @@ build_tree_diagram() {
         else
           branch="   ├─▶ "
         fi
-        pad_str "${W_NAME[$w]}" $(( max_w_len + 2 ))
+        if (( w >= TOTAL_WORKERS )); then
+          local pt_i=$(( w - TOTAL_WORKERS ))
+          pad_str "${PT_ID[$pt_i]}" $(( max_w_len + 2 ))
+        else
+          pad_str "${W_NAME[$w]}" $(( max_w_len + 2 ))
+        fi
       fi
       local worker_col="$REPLY"
+
+      if (( w >= TOTAL_WORKERS )); then
+        local pt_i=$(( w - TOTAL_WORKERS ))
+        fmt_eng_mod "${PT_ENGINE[$pt_i]}" ""
+        trunc_str "$REPLY" 42
+        pad_str "$REPLY" $(( max_em_len + 2 ))
+        local eng_mod_col="$REPLY"
+
+        resolve_worker_state -1 "pending" 999
+        local state_plain="$ST_PLAIN"
+        if (( ${#state_plain} < 12 )); then
+          pad_str "$state_plain" 12
+          state_plain="$REPLY"
+        else
+          state_plain="${state_plain} "
+        fi
+        local tail_part=""
+        if [[ -n "${PT_DEPS[$pt_i]}" ]]; then
+          tail_part="after ${PT_DEPS[$pt_i]}"
+        fi
+        local row_plain="${branch}${worker_col}${eng_mod_col}${state_plain}${tail_part}"
+        (( ${#row_plain} <= columns )) || row_plain="${row_plain:0:$columns}"
+        local row_display="$row_plain"
+        if [[ -n "$dim" ]]; then
+          row_display="${dim}${row_plain}${reset}"
+        fi
+        DIAG_T0+="${row_display}"$'\n'
+        DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 1 ))
+        idx=$(( idx + 1 ))
+        continue
+      fi
 
       fmt_eng_mod "${W_ENGINE[$w]}" "${W_MODEL[$w]}"
       if [[ -n "${W_MODEL_TIER[$w]}" ]]; then
@@ -1645,6 +2031,9 @@ build_tree_diagram() {
       if [[ -n "${W_MERGE_STATE[$w]}" ]]; then
         tail_part="${tail_part}  ${W_MERGE_STATE[$w]}"
       fi
+      if [[ -n "${W_DEPS[$w]}" ]]; then
+        tail_part="${tail_part}  after ${W_DEPS[$w]}"
+      fi
       if [[ "${W_STATE[$w]}" == "running" ]]; then
         if [[ -n "${W_OUT_AGE[$w]}" ]]; then
           fmt_elapsed "${W_OUT_AGE[$w]}"
@@ -1693,16 +2082,23 @@ build_tree_diagram() {
     done
 
     if (( rest_cnt > 0 )); then
-      local r_done=0 r_fail=0
+      local r_done=0 r_fail=0 r_pend=0
       while (( idx < pw_cnt )); do
         local rw="${pw[$idx]}"
-        case "${W_STATE[$rw]}" in
-          completed)   r_done=$(( r_done + 1 )) ;;
-          failed|lost) r_fail=$(( r_fail + 1 )) ;;
-        esac
+        if (( rw >= TOTAL_WORKERS )); then
+          r_pend=$(( r_pend + 1 ))
+        else
+          case "${W_STATE[$rw]}" in
+            completed)   r_done=$(( r_done + 1 )) ;;
+            failed|lost) r_fail=$(( r_fail + 1 )) ;;
+          esac
+        fi
         idx=$(( idx + 1 ))
       done
       local sum_plain="   +${rest_cnt} earlier · ✓${r_done} ✗${r_fail}"
+      if (( r_pend > 0 )); then
+        sum_plain="${sum_plain} ○${r_pend}"
+      fi
       trunc_str "$sum_plain" "$columns"
       if [[ -n "$dim" ]]; then
         DIAG_T0+="${dim}${REPLY}${reset}"$'\n'
@@ -1899,7 +2295,8 @@ build_graph_diagram() {
     (( row_cnt > per_row )) && row_cnt="$per_row"
     local rest_cnt=$(( pw_cnt - row_cnt ))
 
-    local plan_line="Plan ${P_NAME[$pi]}"
+    format_plan_header_line "$pi" "$columns"
+    local plan_line="$REPLY"
     (( ${#plan_line} <= columns )) || plan_line="${plan_line:0:$columns}"
     DIAG_T0+="${plan_line}"$'\n'
     DIAG_T1+="${plan_line}"$'\n'
@@ -2365,7 +2762,7 @@ build_graph_diagram() {
     fi
     DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 12 ))
 
-    if (( rest_cnt > 0 )); then
+    if (( rest_cnt > 0 && expand_earlier == 0 )); then
       local r_done=0 r_fail=0 r_idx="$row_cnt"
       while (( r_idx < pw_cnt )); do
         local rw="${pw[$r_idx]}"
@@ -2387,6 +2784,52 @@ build_graph_diagram() {
       DIAG_T3+="${sum_line}"$'\n'
       DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 1 ))
     fi
+
+    local extra_rows=() extra_i=0
+    if (( expand_earlier == 1 )); then
+      extra_i="$row_cnt"
+      while (( extra_i < pw_cnt )); do
+        local ew="${pw[$extra_i]}"
+        resolve_worker_state "$ew" "${W_STATE[$ew]}" 999
+        extra_rows[${#extra_rows[@]}]="  ${W_NAME[$ew]} · ${ST_PLAIN}"
+        extra_i=$(( extra_i + 1 ))
+      done
+    fi
+    extra_i=0
+    while (( extra_i < pw_cnt )); do
+      local ew="${pw[$extra_i]}"
+      if [[ -n "${W_DEPS[$ew]}" ]]; then
+        extra_rows[${#extra_rows[@]}]="  ${W_NAME[$ew]} after ${W_DEPS[$ew]}"
+      fi
+      extra_i=$(( extra_i + 1 ))
+    done
+    if [[ -z "$zoom_target" ]]; then
+      extra_i=0
+      while (( extra_i < ${#PT_ID[@]} )); do
+        if (( PT_PLAN[extra_i] == pi )); then
+          extra_rows[${#extra_rows[@]}]="  ${PT_ID[$extra_i]} · pending${PT_DEPS[$extra_i]:+ · after ${PT_DEPS[$extra_i]}}"
+        fi
+        extra_i=$(( extra_i + 1 ))
+      done
+    fi
+    extra_i=0
+    while (( extra_i < ${#extra_rows[@]} && DIAG_LINE_COUNT < diag_budget )); do
+      trunc_str "${extra_rows[$extra_i]}" "$columns"
+      local extra_line="${dim}${REPLY}${reset}"$'\n' extra_height=1
+      if [[ "${extra_rows[$extra_i]}" == *" · pending"* ]] && (( DIAG_LINE_COUNT + 3 <= diag_budget )); then
+        trunc_str "${extra_rows[$extra_i]#  }" $(( columns - 4 ))
+        local pending_text="$REPLY" pending_w=$(( ${#REPLY} + 2 ))
+        local pending_border="${DASHES_PAD:0:$pending_w}"
+        extra_line="${dim}┌${pending_border}┐"$'\n'"│ ${pending_text} │"$'\n'"└${pending_border}┘${reset}"$'\n'
+        extra_height=3
+      fi
+      DIAG_T0+="$extra_line"
+      DIAG_T1+="$extra_line"
+      DIAG_T2+="$extra_line"
+      DIAG_T3+="$extra_line"
+      DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + extra_height ))
+      extra_i=$(( extra_i + 1 ))
+    done
 
     rank=$(( rank + 1 ))
   done
@@ -2703,6 +3146,35 @@ build_pipeline_diagram() {
     rank=$(( rank + 1 ))
   done
 
+  # Pipeline columns stay compact; plan details share the remaining diagram space.
+  local detail_i=0
+  while (( detail_i < num_expanded && DIAG_LINE_COUNT < diag_budget )); do
+    local detail_pi="${P_ORDER[$detail_i]}"
+    format_plan_header_line "$detail_pi" "$columns"
+    DIAG_T0+="${REPLY}"$'\n'
+    DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 1 ))
+    local detail_w=0
+    while (( detail_w < TOTAL_WORKERS && DIAG_LINE_COUNT < diag_budget )); do
+      if [[ "${W_PLAN_NAME[$detail_w]}" == "${P_NAME[$detail_pi]}" && -n "${W_DEPS[$detail_w]}" ]] &&
+         { [[ -z "$zoom_target" || "${W_PARENT[$detail_w]}" == "$zoom_target" ]]; }; then
+        trunc_str "  ${W_NAME[$detail_w]} after ${W_DEPS[$detail_w]}" "$columns"
+        DIAG_T0+="${REPLY}"$'\n'
+        DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 1 ))
+      fi
+      detail_w=$(( detail_w + 1 ))
+    done
+    local detail_pt=0
+    while [[ -z "$zoom_target" ]] && (( detail_pt < ${#PT_ID[@]} && DIAG_LINE_COUNT < diag_budget )); do
+      if (( PT_PLAN[detail_pt] == detail_pi )); then
+        trunc_str "  ${PT_ID[$detail_pt]} · pending${PT_DEPS[$detail_pt]:+ · after ${PT_DEPS[$detail_pt]}}" "$columns"
+        DIAG_T0+="${dim}${REPLY}${reset}"$'\n'
+        DIAG_LINE_COUNT=$(( DIAG_LINE_COUNT + 1 ))
+      fi
+      detail_pt=$(( detail_pt + 1 ))
+    done
+    detail_i=$(( detail_i + 1 ))
+  done
+
   DIAG_T1="$DIAG_T0"
   DIAG_T2="$DIAG_T0"
   DIAG_T3="$DIAG_T0"
@@ -2759,7 +3231,7 @@ build_frame_templates() {
   fi
   local keys_part=""
   if (( once == 0 )); then
-    keys_part="[g]raph [p]ipeline [t]ree [q]uit"
+    keys_part="[g]raph [p]ipeline [t]ree [f]ilter [e]arlier [q]uit"
   fi
 
   local use_keys=0 use_tok=0 use_since=1 use_layout=1 use_ws=1 use_title=1
@@ -2909,65 +3381,76 @@ build_frame_templates() {
     local max_flow_fit=$(( rem_after_diag - 2 ))
     local flow_limit="$flow_cfg"
     (( flow_limit > max_flow_fit )) && flow_limit="$max_flow_fit"
-    local show_msgs="$hist_cnt"
-    (( show_msgs > flow_limit )) && show_msgs="$flow_limit"
-
-    flow_block+="${rule_line}"$'\n'
-    local flow_hdr="Flow (latest ${flow_limit})"
-    (( ${#flow_hdr} <= columns )) || flow_hdr="${flow_hdr:0:$columns}"
-    flow_block+="${flow_hdr}"$'\n'
-
-    local h_idx=$(( hist_cnt - show_msgs ))
+    local flow_ids=() pinned_ids=() recent_ids=()
+    local h_idx=0
     while (( h_idx < hist_cnt )); do
-      local f_ts="${H_TS[$h_idx]}"
-      local f_from="${H_FROM[$h_idx]}"
-      local f_to="${H_TO[$h_idx]}"
-      local f_type="${H_TYPE[$h_idx]}"
-      local f_body="${H_BODY[$h_idx]}"
-
-      rfc3339_to_hhmm "$f_ts"
-      local f_hhmm="$REPLY"
-      clean_msg_preview "$f_type" "$f_body"
-      local f_preview="$REPLY"
-
-      local f_arrow="${f_from} ──${f_type}──▶ ${f_to}"
-      local arrow_col
-      if (( ${#f_arrow} < 32 )); then
-        pad_str "$f_arrow" 32
-        arrow_col="$REPLY"
-      else
-        arrow_col="${f_arrow}  "
+      local visible=0 pinned=0 wi=0
+      while (( wi < TOTAL_WORKERS )); do
+        if [[ "${H_FROM[$h_idx]}" == "${W_NAME[$wi]}" || "${H_TO[$h_idx]}" == "${W_NAME[$wi]}" ]]; then
+          if [[ -z "$zoom_target" || "${W_PARENT[$wi]}" == "$zoom_target" || "${W_NAME[$wi]}" == "$zoom_target" ]]; then
+            visible=1
+            (( W_ASK_H_IDX[wi] == h_idx )) && pinned=1
+          fi
+        fi
+        wi=$(( wi + 1 ))
+      done
+      if (( visible == 1 )); then
+        local typ="${H_TYPE[$h_idx]}"
+        if [[ "$flow_filter" == all || "$flow_filter" == questions && ( "$typ" == QUESTION || "$typ" == ANSWER ) || "$flow_filter" == failures && "$typ" == failed ]]; then
+          if (( pinned == 1 )); then
+            pinned_ids[${#pinned_ids[@]}]="$h_idx"
+          else
+            recent_ids[${#recent_ids[@]}]="$h_idx"
+          fi
+        fi
       fi
-
-      local prefix="  ${f_hhmm}  ${arrow_col}"
-      local prefix_len="${#prefix}"
-      local avail=$(( columns - prefix_len ))
-      (( avail > 0 )) || avail=1
-      trunc_str "$f_preview" "$avail"
-      f_preview="$REPLY"
-
-      local flow_row_plain="${prefix}${f_preview}"
-      local flow_row_display="$flow_row_plain"
-      if (( ${#flow_row_plain} > columns )); then
-        flow_row_display="${flow_row_plain:0:$columns}"
-      elif (( use_color == 1 )); then
-        local color_arrow
-        case "$f_type" in
-          brief)    color_arrow="${c_brief}──brief──▶${reset}" ;;
-          ANSWER)   color_arrow="${c_answer}──ANSWER──▶${reset}" ;;
-          QUESTION) color_arrow="${c_question}──QUESTION──▶${reset}" ;;
-          done)     color_arrow="${c_done}──done──▶${reset}" ;;
-          failed)   color_arrow="${c_failed}──failed──▶${reset}" ;;
-          *)        color_arrow="${dim}──${f_type}──▶${reset}" ;;
-        esac
-        local colored_arrow="${f_from} ${color_arrow} ${f_to}"
-        local pad_spaces=$(( ${#arrow_col} - ${#f_arrow} ))
-        local spaces_str="${SPACES_PAD:0:$pad_spaces}"
-        flow_row_display="  ${dim}${f_hhmm}${reset}  ${colored_arrow}${spaces_str}${f_preview}"
-      fi
-
-      flow_block+="${flow_row_display}"$'\n'
       h_idx=$(( h_idx + 1 ))
+    done
+    flow_ids=( ${pinned_ids[@]+"${pinned_ids[@]}"} )
+    local recent_start=$(( ${#recent_ids[@]} - flow_limit + ${#pinned_ids[@]} ))
+    (( recent_start >= 0 )) || recent_start=0
+    while (( recent_start < ${#recent_ids[@]} )); do
+      flow_ids[${#flow_ids[@]}]="${recent_ids[$recent_start]}"
+      recent_start=$(( recent_start + 1 ))
+    done
+    flow_block+="${rule_line}"$'\n'
+    trunc_str "Flow (latest ${flow_limit}) · ${flow_filter} [f]ilter [e]arlier" "$columns"
+    flow_block+="${REPLY}"$'\n'
+    local used=0 fi_idx=0
+    while (( fi_idx < ${#flow_ids[@]} && used < flow_limit )); do
+      h_idx="${flow_ids[$fi_idx]}"
+      local f_type="${H_TYPE[$h_idx]}"
+      rfc3339_to_hhmm "${H_TS[$h_idx]}"
+      local prefix="  ${REPLY}  ${H_FROM[$h_idx]} ──${f_type}──▶ ${H_TO[$h_idx]}  "
+      clean_msg_preview "$f_type" "${H_BODY[$h_idx]}"
+      local preview="$REPLY" avail=$(( columns - ${#prefix} ))
+      if (( avail < 12 )); then
+        trunc_str "$prefix" "$columns"
+        flow_block+="${REPLY}"$'\n'
+        used=$(( used + 1 ))
+        prefix="  "
+        avail=$(( columns - 2 ))
+      fi
+      local remaining=$(( flow_limit - used ))
+      local pins_left=$(( ${#pinned_ids[@]} - fi_idx - 1 ))
+      if (( pins_left > 0 && remaining > pins_left )); then
+        remaining=$(( remaining - pins_left ))
+      fi
+      if (( remaining <= 0 )); then break; fi
+      if [[ "$f_type" == QUESTION || "$f_type" == ANSWER ]]; then
+        wrap_text "$preview" "$avail" "$remaining"
+      else
+        trunc_str "$preview" "$avail"
+        WRAP_LINES=( "$REPLY" )
+      fi
+      local li=0 indent="${SPACES_PAD:0:${#prefix}}"
+      while (( li < ${#WRAP_LINES[@]} && used < flow_limit )); do
+        flow_block+="${prefix}${WRAP_LINES[$li]}"$'\n'
+        prefix="$indent"
+        used=$(( used + 1 ))
+        li=$(( li + 1 ))
+      done
+      fi_idx=$(( fi_idx + 1 ))
     done
   fi
 
@@ -3011,6 +3494,14 @@ if [[ -t 1 ]] && command -v perl >/dev/null 2>&1; then
   perl -MFcntl -e 'fcntl(STDOUT, F_SETFL, fcntl(STDOUT, F_GETFL, 0) & ~O_NONBLOCK)' 2>/dev/null || true
 fi
 
+cycle_flow_filter() {
+  case "$flow_filter" in
+    all) flow_filter=questions ;;
+    questions) flow_filter=failures ;;
+    failures) flow_filter=all ;;
+  esac
+}
+
 # One-shot execution mode
 if (( once == 1 )) || { [[ ! -t 1 ]] && [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" != 1 ]]; }; then
   load_data
@@ -3024,6 +3515,8 @@ if (( once == 1 )) || { [[ ! -t 1 ]] && [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" != 1
         graph|pipeline|tree)
           layout="$next_step"
           ;;
+        f|filter) cycle_flow_filter ;;
+        e|expand) expand_earlier=$(( 1 - expand_earlier )) ;;
         zoom:*)
           zoom_target="${next_step#zoom:}"
           ;;
@@ -3124,6 +3617,16 @@ while true; do
         ;;
       p|P)
         layout="pipeline"
+        build_frame_templates
+        subframe=0
+        ;;
+      f|F)
+        cycle_flow_filter
+        build_frame_templates
+        subframe=0
+        ;;
+      e|E)
+        expand_earlier=$(( 1 - expand_earlier ))
         build_frame_templates
         subframe=0
         ;;
