@@ -7,6 +7,7 @@ if [[ -z "${TEST_SIGHUP_RESET:-}" ]] && command -v perl >/dev/null 2>&1; then
 fi
 
 export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+unset SQUAD_MANAGER_ID SQUAD_AGENT_ID SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORKSPACE SQUAD_DEVKIT_YOLO SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_DEVKIT_SESSION_START
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
