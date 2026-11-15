@@ -42,9 +42,10 @@ notified when each one finishes. The manager also chooses each worker's role
 
 ## Install
 
-You need macOS and `squad` (`brew install mco-org/tap/squad`). You also need at
-least one manager CLI and, for workers, `codex` and/or `ccr`
-(`@musistudio/claude-code-router`). Ghostty and tmux are optional backends.
+You need macOS or Linux and `squad` (installed by scripts/install-devkit.sh (or
+`cargo build --release`)). You also need at least one manager CLI and, for
+workers, `codex` and/or `ccr` (`@musistudio/claude-code-router`). Ghostty and tmux
+are optional backends.
 
 ```sh
 /absolute/path/to/squad/scripts/install-devkit.sh

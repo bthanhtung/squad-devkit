@@ -1,10 +1,10 @@
 [package]
 name = "squad"
-version = "0.7.6"
+version = "1.0.2"
 edition = "2021"
 license = "GPL-3.0-only"
-description = "Multi-AI-agent terminal collaboration via simple CLI commands"
-repository = "https://github.com/mco-org/squad"
+description = "Multi-AI-agent terminal collaboration message bus CLI for squad-devkit (originally from mco-org/squad)"
+repository = "https://github.com/bthanhtung/squad-devkit"
 
 [dependencies]
 anyhow = "1"

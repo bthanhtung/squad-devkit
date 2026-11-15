@@ -1,11 +1,13 @@
 # Contributing
 
 Thanks for helping improve squad-devkit. This repository contains the `squad`
-CLI (Rust, from [mco-org/squad](https://github.com/mco-org/squad)) and
+CLI (Rust, originally from [mco-org/squad](https://github.com/mco-org/squad)) and
 squad-devkit, the manager-and-workers layer built from shell scripts in
 `scripts/` and role prompts in `templates/devkit/`.
 
 ## Development setup
+
+`squad` is installed by scripts/install-devkit.sh (or `cargo build --release`).
 
 ```bash
 brew install jq tmux ripgrep shellcheck zsh   # or your platform's equivalents

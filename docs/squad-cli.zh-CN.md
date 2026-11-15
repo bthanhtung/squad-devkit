@@ -51,21 +51,7 @@
 
 ## 安装
 
-```bash
-# Homebrew (macOS)
-brew install mco-org/tap/squad
-
-# Windows（GitHub Releases）
-# 1. 下载 squad-x86_64-pc-windows-msvc.zip
-# 2. 解压，把 squad.exe 放到类似 C:\Tools\squad 的目录
-# 3. 把该目录加入 PATH
-
-# 或从 GitHub Releases 下载其他预编译二进制
-# https://github.com/mco-org/squad/releases
-
-# 或从源码编译
-cargo install --git https://github.com/mco-org/squad.git
-```
+`squad` installed by scripts/install-devkit.sh (or `cargo build --release`).
 
 ## 快速开始
 

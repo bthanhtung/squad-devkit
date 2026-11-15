@@ -1,24 +1,10 @@
 # squad CLI reference
 
-This is the reference for the underlying [`squad`](https://github.com/mco-org/squad) CLI by mco-org, which squad-devkit uses as its message bus and task store ([简体中文](./squad-cli.zh-CN.md)). For squad-devkit itself, see the [README](../README.md).
+This is the reference for the `squad` CLI (originally from [mco-org/squad](https://github.com/mco-org/squad)), which squad-devkit uses as its message bus and task store ([简体中文](./squad-cli.zh-CN.md)). For squad-devkit itself, see the [README](../README.md).
 
 ## Install
 
-```bash
-# Homebrew (macOS)
-brew install mco-org/tap/squad
-
-# Windows (GitHub Releases)
-# 1. Download squad-x86_64-pc-windows-msvc.zip
-# 2. Extract squad.exe to a folder like C:\Tools\squad
-# 3. Add that folder to PATH
-
-# Or download another prebuilt binary from GitHub Releases
-# https://github.com/mco-org/squad/releases
-
-# Or build from source
-cargo install --git https://github.com/mco-org/squad.git
-```
+`squad` is installed by scripts/install-devkit.sh (or `cargo build --release`).
 
 ## Quick Start
 

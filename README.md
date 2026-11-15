@@ -70,34 +70,26 @@ Regenerate with `vhs scripts/demo/<name>.tape`.
 
 ## Install
 
-Requirements: macOS or Linux, [`squad`](./docs/squad-cli.md), `jq`, one manager
+Requirements: macOS or Linux, bash, git, one manager
 CLI (`claude`, `codex`, `agy`, `gemini`, `grok`, or `opencode`), and at least one
 worker engine (`claude`, `codex`, `opencode`, `grok`, `agy`, or `ccr` from
 [claude-code-router](https://github.com/musistudio/claude-code-router)).
+`jq` is optional (used when present).
 Monitor panes split in tmux, Orca, Herdr, WezTerm, Kitty, iTerm2, and Ghostty. In other
 terminals (including Zellij), run manager workers inside tmux.
 
 ```bash
-# macOS
-brew install mco-org/tap/squad jq
-
-# Linux (or anywhere with Rust): build squad from source, jq from your package manager
-cargo install --git https://github.com/mco-org/squad.git
-sudo apt-get install jq        # or dnf, pacman, ...
-
 git clone https://github.com/bthanhtung/squad-devkit.git
 squad-devkit/scripts/install-devkit.sh
+# Or compile squad from source:
+# squad-devkit/scripts/install-devkit.sh --build-squad
 ```
-
-Prebuilt `squad` binaries for Linux are also on the
-[squad releases page](https://github.com/mco-org/squad/releases). Make sure
-`~/.local/bin` is on your `PATH`.
 
 The installer links commands into `~/.local/bin` and runs a setup wizard to detect AI CLIs and
 configure manager and worker preference order. Run `squad-devkit --setup` to change preferences
 later. It also adds a `squad-devkit` skill to Claude Code and Codex (`~/.claude/skills`,
 `~/.codex/skills`) to manage workers directly from existing sessions. Run `squad-devkit --doctor`
-to check your setup.
+to check your setup. Make sure `~/.local/bin` is on your `PATH`.
 
 ## Usage
 

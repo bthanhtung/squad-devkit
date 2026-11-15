@@ -7,12 +7,15 @@ source "$script_dir/lib/squad-devkit-agents.sh"
 
 usage() {
   cat <<'EOF'
-Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill]
+Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill] [--build-squad]
 
 Link squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, and squad-ask into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
 and choose the manager CLI. Claude Code is the default when installed; without
 it, the installer asks which installed CLI should manage and saves the answer.
 Re-run it, or run squad-devkit --setup, to change the choice.
+
+Pass --build-squad to compile the squad message bus binary from source using cargo
+instead of downloading a prebuilt release binary.
 
 If the claude-hud status line plugin is installed, the installer also turns on
 its weekly quota and usage-pace display (display.sevenDayThreshold = 0,
@@ -30,6 +33,7 @@ manager_client=""
 no_prompt=0
 configure_hud=1
 install_skill=1
+build_squad=0
 while (( $# > 0 )); do
   case "$1" in
     --manager)
@@ -44,18 +48,148 @@ while (( $# > 0 )); do
     --no-prompt) no_prompt=1 ;;
     --no-hud) configure_hud=0 ;;
     --no-skill) install_skill=0 ;;
+    --build-squad) build_squad=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
 
-if ! command -v squad >/dev/null 2>&1; then
-  echo "Missing command: squad (install it with: brew install mco-org/tap/squad)" >&2
-  exit 1
-fi
+detect_squad_target() {
+  if ! command -v uname >/dev/null 2>&1; then
+    return 1
+  fi
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  case "$os" in
+    Darwin)
+      case "$arch" in
+        arm64|aarch64) echo "aarch64-apple-darwin" ;;
+        x86_64) echo "x86_64-apple-darwin" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    Linux)
+      case "$arch" in
+        x86_64) echo "x86_64-unknown-linux-musl" ;;
+        aarch64|arm64) echo "aarch64-unknown-linux-musl" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_squad() {
+  if [[ "${SQUAD_DEVKIT_SKIP_SQUAD:-0}" == "1" ]] || is_truthy "${SQUAD_DEVKIT_SKIP_SQUAD:-}"; then
+    return 0
+  fi
+
+  local repo_dir cargo_version
+  repo_dir="$(cd "$script_dir/.." && pwd)"
+  cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo_dir/Cargo.toml" | head -n 1)"
+  if [[ -z "$cargo_version" ]]; then
+    echo "Error: could not determine squad version from $repo_dir/Cargo.toml" >&2
+    exit 1
+  fi
+
+  if (( build_squad == 0 )) && command -v squad >/dev/null 2>&1; then
+    local version_output matched=0 token
+    version_output="$(squad --version 2>/dev/null || true)"
+    local -a tokens=()
+    read -r -a tokens <<<"$version_output"
+    for token in "${tokens[@]}"; do
+      if [[ "$token" == "$cargo_version" ]]; then
+        matched=1
+        break
+      fi
+    done
+    if (( matched == 1 )); then
+      return 0
+    fi
+  fi
+
+  local installed=0
+  if (( build_squad == 0 )); then
+    local target
+    if target="$(detect_squad_target)"; then
+      local base_url archive_name archive_url checksums_url tmp_dir
+      base_url="${SQUAD_DEVKIT_RELEASE_URL:-https://github.com/bthanhtung/squad-devkit/releases/download/v$cargo_version}"
+      base_url="${base_url%/}"
+      archive_name="squad-${target}.tar.gz"
+      archive_url="$base_url/$archive_name"
+      checksums_url="$base_url/SHA256SUMS"
+
+      tmp_dir="$(mktemp -d)"
+      if curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS" 2>/dev/null && \
+         curl -fsSL "$archive_url" -o "$tmp_dir/$archive_name" 2>/dev/null; then
+        local checksum_line expected_hash actual_hash
+        checksum_line="$(grep -E "(^|[[:space:]])${archive_name}\$" "$tmp_dir/SHA256SUMS" || true)"
+        if [[ -z "$checksum_line" ]]; then
+          echo "Error: missing checksum for $archive_name in SHA256SUMS" >&2
+          rm -rf "$tmp_dir"
+          exit 1
+        fi
+        expected_hash="$(awk '{print $1}' <<<"$checksum_line")"
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual_hash="$(sha256sum "$tmp_dir/$archive_name" | awk '{print $1}')"
+        elif command -v shasum >/dev/null 2>&1; then
+          actual_hash="$(shasum -a 256 "$tmp_dir/$archive_name" | awk '{print $1}')"
+        else
+          echo "Error: neither sha256sum nor shasum found for checksum verification" >&2
+          rm -rf "$tmp_dir"
+          exit 1
+        fi
+
+        if [[ -z "$actual_hash" || "$actual_hash" != "$expected_hash" ]]; then
+          echo "Error: checksum mismatch for $archive_name (expected $expected_hash, got $actual_hash)" >&2
+          rm -rf "$tmp_dir"
+          exit 1
+        fi
+
+        tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
+        if [[ -f "$tmp_dir/squad" ]]; then
+          mkdir -p "$bin_directory"
+          cp "$tmp_dir/squad" "$bin_directory/squad"
+          chmod 755 "$bin_directory/squad"
+          installed=1
+        fi
+      fi
+      rm -rf "$tmp_dir"
+    fi
+  fi
+
+  if (( installed == 0 )); then
+    if command -v cargo >/dev/null 2>&1; then
+      echo "Building squad from source..."
+      cargo build --release --locked --manifest-path "$repo_dir/Cargo.toml"
+      mkdir -p "$bin_directory"
+      cp "$repo_dir/target/release/squad" "$bin_directory/squad"
+      chmod 755 "$bin_directory/squad"
+      installed=1
+    elif (( build_squad == 0 )) && command -v squad >/dev/null 2>&1; then
+      local existing_version
+      existing_version="$(squad --version 2>/dev/null || true)"
+      echo "Warning: keeping existing squad on PATH ($existing_version)" >&2
+      installed=1
+    else
+      echo "Could not get squad: install Rust (https://rustup.rs) and rerun, or download a binary from https://github.com/bthanhtung/squad-devkit/releases" >&2
+      exit 1
+    fi
+  fi
+
+  if command -v squad >/dev/null 2>&1; then
+    local current_squad
+    current_squad="$(command -v squad)"
+    if [[ "$current_squad" != "$bin_directory/squad" ]]; then
+      printf 'Warning: %s shadows %s/squad earlier on PATH\n' "$current_squad" "$bin_directory" >&2
+    fi
+  fi
+}
 
 bin_directory="${SQUAD_DEVKIT_BIN_DIR:-$HOME/.local/bin}"
+ensure_squad
 mkdir -p "$bin_directory"
 ln -sfn "$script_dir/squad-devkit.sh" "$bin_directory/squad-devkit"
 ln -sfn "$script_dir/squad-worker.sh" "$bin_directory/squad-worker"

@@ -8,20 +8,120 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  release:
-    name: Publish release
+  check:
+    name: Check version and changelog
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check version and changelog
+      - name: Validate versions and changelog
         run: |
           version="${GITHUB_REF_NAME#v}"
           grep -q "^devkit_version=\"$version\"$" scripts/squad-devkit.sh ||
             { echo "scripts/squad-devkit.sh does not declare version $version"; exit 1; }
           grep -q "^## \[$version\]" CHANGELOG.md ||
             { echo "CHANGELOG.md has no [$version] section"; exit 1; }
+          cargo_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ "$cargo_version" != "$version" ]; then
+            echo "Cargo.toml version ($cargo_version) does not match tag version ($version)"
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs: check
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use-cross: false
+
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use-cross: false
+
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use-cross: true
+
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use-cross: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use-cross
+        run: cargo install cross --locked
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.use-cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
+
+      - name: Strip binary
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/squad"
+          case "${{ matrix.target }}" in
+            *linux*)
+              strip "$BIN" 2>/dev/null || true
+              ;;
+            *-apple-darwin)
+              strip "$BIN"
+              ;;
+          esac
+
+      - name: Create archive
+        shell: bash
+        run: |
+          TARGET="${{ matrix.target }}"
+          ARCHIVE="squad-$TARGET.tar.gz"
+          STAGING="staging-$TARGET"
+          mkdir -p "$STAGING"
+          cp "target/$TARGET/release/squad" "$STAGING/"
+          tar -czf "$ARCHIVE" -C "$STAGING" squad
+
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: squad-${{ matrix.target }}
+          path: squad-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [check, build]
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Extract release notes
         run: |
@@ -33,9 +133,27 @@ jobs:
           ' CHANGELOG.md >release-notes.md
           test -s release-notes.md
 
+      - name: Download all release archives
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          cd dist
+          for f in squad-*.tar.gz; do
+            [ -e "$f" ] && shasum -a 256 "$f"
+          done | tee SHA256SUMS
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "squad-devkit $GITHUB_REF_NAME" \
-            --notes-file release-notes.md --verify-tag
+          gh release create "$GITHUB_REF_NAME" \
+            --title "squad-devkit $GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            dist/squad-*.tar.gz \
+            dist/SHA256SUMS
