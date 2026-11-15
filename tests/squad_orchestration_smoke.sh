@@ -201,9 +201,185 @@ assert_utf8() {
 }
 
 # ==============================================================================
-# A. Default layout (--once) is graph
+# A0. Default layout (--once) is minimal Apple-style list
 # ==============================================================================
-graph_output="$(COLUMNS=80 "$root/scripts/squad-orchestration.sh" --once --since "$since" "$workers_dir")"
+list_tmp="$tmp/list_fixture"
+list_workers="$list_tmp/.squad/workers"
+mkdir -p "$list_workers"
+
+dev_b_log="$list_tmp/dev-b-fail.log"
+printf 'starting task\nerror: Your AI credits balance is too low to continue.\n' > "$dev_b_log"
+
+# Plan 1: Active plan: standalone-squad
+cat > "$list_workers/dev-a.status" <<EOF
+worker=dev-a
+manager=manager-2
+engine=agy
+model=gemini-3.8-flash-medium
+role=dev
+title=Ship our own squad binary
+state=running
+pid=$$
+started=$(( now - 159 ))
+plan=/path/to/standalone-squad.md
+activity=editing scripts/install-devkit.sh
+EOF
+
+cat > "$list_workers/dev-b-1.status" <<EOF
+worker=dev-b
+manager=manager-2
+engine=agy
+model=gemini-3.8-flash-medium
+role=dev
+title=Add squad jq
+state=failed
+pid=$$
+started=$(( now - 300 ))
+finished=$(( now - 200 ))
+plan=/path/to/standalone-squad.md
+log=$dev_b_log
+EOF
+
+cat > "$list_workers/dev-b-2.status" <<EOF
+worker=dev-b
+manager=manager-2
+engine=agy
+model=gemini-3.8-flash-medium
+role=dev
+title=Add squad jq
+state=running
+pid=$$
+started=$(( now - 145 ))
+plan=/path/to/standalone-squad.md
+EOF
+
+# Worker with long brief and merged outcome
+cat > "$list_workers/dev-c.status" <<EOF
+worker=dev-c
+manager=manager-2
+engine=agy
+model=gemini-3.8-flash-medium
+role=dev
+title=squad-devkit ships its own squad binary
+state=completed
+merged=true
+pid=$$
+started=$(( now - 400 ))
+finished=$(( now - 350 ))
+plan=/path/to/standalone-squad.md
+EOF
+
+# Plan 2: Finished and merged plan: orchestration-lifecycle
+for n in 1 2 3 4; do
+  cat > "$list_workers/w-done$n.status" <<EOF
+worker=w-done$n
+manager=manager-2
+engine=agy
+model=gemini-flash-medium
+role=dev
+title=Task $n
+state=completed
+merged=true
+pid=$$
+started=$(( now - 600 ))
+finished=$(( now - 500 ))
+plan=/path/to/orchestration-lifecycle.md
+EOF
+done
+
+list_hist="cat <<'HEOF'
+* [2026-11-14T06:55:00Z] manager-2 -> dev-c: Goal: squad-devkit ships its own \`squad\` binary, so users no longer install via npm or brew
+* [2026-11-14T07:00:00Z] manager-2 -> dev-a: Goal: Ship our own squad binary
+* [2026-11-14T07:05:00Z] dev-a -> manager-2: QUESTION from dev-a: Which binary name?
+* [2026-11-14T07:06:00Z] manager-2 -> dev-a: ANSWER from manager-2: squad
+* [2026-11-14T07:01:00Z] manager-2 -> dev-b: Goal: Add squad jq
+* [2026-11-14T07:07:00Z] dev-b -> manager-2: dev-b (agy) failed on task 923b6647-e4b7-4c27-8750-a44dd0086ad4 (exit status 3). Log: ${dev_b_log}. Reassign or rerun the task.
+* [2026-11-14T07:08:00Z] manager-2 -> dev-b: Goal: Add squad jq
+HEOF"
+
+for cols in 80 120; do
+  default_out="$(COLUMNS="$cols" SQUAD_MANAGER_ID=manager-2 SQUAD_ORCHESTRATION_HISTORY_CMD="$list_hist" \
+    "$root/scripts/squad-orchestration.sh" --once "$list_workers")"
+
+  echo "=== Default (list) output under COLUMNS=$cols ==="
+  printf '%s\n' "$default_out"
+  echo "================================================="
+
+  # 1. The manager id appears exactly once
+  mgr_count="$(grep -c "manager-2" <<< "$default_out")"
+  if (( mgr_count != 1 )); then
+    echo "FAIL (COLUMNS=$cols): manager id 'manager-2' must appear exactly once, appeared $mgr_count times" >&2
+    exit 1
+  fi
+
+  # 2. There is no "Flow", "Legend" or "┌" in the default output
+  if grep -qE "Flow|Legend|┌" <<< "$default_out"; then
+    echo "FAIL (COLUMNS=$cols): default output must not contain 'Flow', 'Legend', or box border '┌'" >&2
+    exit 1
+  fi
+
+  # 3. Each worker of the active plan has a line starting with spaces + "↳"
+  grep -q "^  *↳ Ship our own squad binary · 1 question answered" <<< "$default_out" || {
+    echo "FAIL (COLUMNS=$cols): dev-a missing summary row starting with '↳'" >&2
+    exit 1
+  }
+  grep -q "^  *↳ Add squad jq · attempt 1 failed: AI credits too low" <<< "$default_out" || {
+    echo "FAIL (COLUMNS=$cols): dev-b missing summary row starting with '↳'" >&2
+    exit 1
+  }
+
+  # 4. Defect 1 regression: model gemini-3.8-flash-medium renders "flash-medium" uncut at 80 cols
+  grep -q "agy · flash-medium" <<< "$default_out" || {
+    echo "FAIL (COLUMNS=$cols): model gemini-3.8-flash-medium must render 'flash-medium' uncut" >&2
+    exit 1
+  }
+  if grep -q "3\.8-flash" <<< "$default_out"; then
+    echo "FAIL (COLUMNS=$cols): version token 3.8- must be stripped from model" >&2
+    exit 1
+  fi
+
+  # 5. Defect 2 regression: merged worker with long brief shows "· merged" at 80 cols and drops backticks
+  grep -q "^  *↳ squad-devkit ships its own squad binary · merged" <<< "$default_out" || {
+    echo "FAIL (COLUMNS=$cols): merged worker with long brief must show '· merged' at 80 cols" >&2
+    exit 1
+  }
+
+  # 6. Defect 3 regression: failed attempt reads "AI credits too low", never UUIDs, paths, Reassign, Log:
+  grep -q "AI credits too low" <<< "$default_out" || {
+    echo "FAIL (COLUMNS=$cols): failed attempt must read 'AI credits too low'" >&2
+    exit 1
+  }
+  if grep -qE "923b6647|dev-b-fail\.log|Reassign|Log:" <<< "$default_out"; then
+    echo "FAIL (COLUMNS=$cols): failure reason must not contain UUID, path, Reassign or Log:" >&2
+    exit 1
+  fi
+
+  # 7. The finished plan is a single line with "done"
+  plan_lines="$(grep "orchestration-lifecycle" <<< "$default_out")"
+  plan_line_cnt="$(wc -l <<< "$plan_lines" | tr -d ' ')"
+  if (( plan_line_cnt != 1 )); then
+    echo "FAIL (COLUMNS=$cols): finished plan must collapse to exactly one line, got $plan_line_cnt lines" >&2
+    exit 1
+  fi
+  grep -q "done" <<< "$plan_lines" || {
+    echo "FAIL (COLUMNS=$cols): finished plan line must contain 'done'" >&2
+    exit 1
+  }
+
+  # 8. No line is wider than COLUMNS (measure with awk '{print length}' under a UTF-8 locale)
+  assert_max_width "$default_out" "$cols" "list COLUMNS=$cols"
+  while IFS= read -r l; do
+    if (( ${#l} > cols )); then
+      echo "FAIL (COLUMNS=$cols): line exceeds $cols (${#l}): '$l'" >&2
+      exit 1
+    fi
+  done <<< "$default_out"
+done
+
+# ==============================================================================
+# A. Graph layout (--layout graph)
+# ==============================================================================
+graph_output="$(COLUMNS=80 "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$since" "$workers_dir")"
 
 echo "=== Default (graph) output under COLUMNS=80 ==="
 printf '%s\n' "$graph_output"
@@ -235,7 +411,7 @@ if grep -q "Flow (latest" <<< "$graph_output"; then
   exit 1
 fi
 grep -q 'dev-1  brief "This is a multi-line continuation line."' <<< "$graph_output" || { echo "FAIL: Conversation missing dev-1 brief title (first line after ## Goal)" >&2; exit 1; }
-graph_wide="$(COLUMNS=120 "$root/scripts/squad-orchestration.sh" --once --since "$since" "$workers_dir")"
+graph_wide="$(COLUMNS=120 "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$since" "$workers_dir")"
 grep -q 'dev-1  brief "This is a multi-line continuation line." · last done 07:09' <<< "$graph_wide" || {
   echo "FAIL: Conversation missing dev-1 summary line at COLUMNS=120" >&2
   printf '%s\n' "$graph_wide" >&2
@@ -402,7 +578,7 @@ fi
 # ==============================================================================
 # E. Width checks: COLUMNS=80 and COLUMNS=60 for all layouts; COLUMNS=18 fallback
 # ==============================================================================
-for lay in graph pipeline tree; do
+for lay in list graph pipeline tree; do
   for cols in 80 60; do
     w_out="$(COLUMNS="$cols" "$root/scripts/squad-orchestration.sh" --layout "$lay" --once --since "$since" "$workers_dir")"
     assert_max_width "$w_out" "$cols" "$lay COLUMNS=$cols"
@@ -452,7 +628,7 @@ grep -q "… [0-9]* earlier" <<< "$six_short" || { echo "FAIL: LINES=14 should f
 [[ "$(wc -l <<< "$six_short" | tr -d ' ')" -le 14 ]] || { echo "FAIL: LINES=14 render taller than 14 lines" >&2; exit 1; }
 
 # 10. Failing history command still renders
-failing_out="$(SQUAD_ORCHESTRATION_HISTORY_CMD="exit 1" "$root/scripts/squad-orchestration.sh" --once --since "$since" "$workers_dir")"
+failing_out="$(SQUAD_ORCHESTRATION_HISTORY_CMD="exit 1" "$root/scripts/squad-orchestration.sh" --layout graph --once --since "$since" "$workers_dir")"
 grep -q "plan setup-wizard" <<< "$failing_out" || { echo "FAIL: rendering failed with failing history command" >&2; exit 1; }
 
 # 11. Workspace directory starting with .squad- (e.g. $tmp/.squad-ws/.squad/workers)
@@ -958,7 +1134,7 @@ fi
 non_tty_out="$tmp/non_tty_render.log"
 (
   unset SQUAD_ORCHESTRATION_LIVE || true
-  "$root/scripts/squad-orchestration.sh" "$workers_dir" >"$non_tty_out" 2>&1 &
+  "$root/scripts/squad-orchestration.sh" --layout graph "$workers_dir" >"$non_tty_out" 2>&1 &
   echo "$!" >"$tmp/non_tty.pid"
 )
 non_tty_pid="$(cat "$tmp/non_tty.pid")"
@@ -997,7 +1173,7 @@ live_out="$tmp/live_renderer_hup.log"
   SQUAD_ORCHESTRATION_INTERVAL=1 \
   SQUAD_ORCHESTRATION_FPS=10 \
   SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
-  "$root/scripts/squad-orchestration.sh" "$workers_dir" >"$live_out" 2>&1 &
+  "$root/scripts/squad-orchestration.sh" --layout graph "$workers_dir" >"$live_out" 2>&1 &
   echo "$!" >"$tmp/live_renderer.pid"
 )
 live_pid="$(cat "$tmp/live_renderer.pid")"
@@ -1543,7 +1719,7 @@ run_scope() {
 
 # 1. SQUAD_MANAGER_ID=m-a: strict scope
 for cols in 80 120; do
-  ma_out="$(SQUAD_MANAGER_ID=m-a run_scope "$cols")"
+  ma_out="$(SQUAD_MANAGER_ID=m-a run_scope "$cols" --layout graph)"
   echo "=== Scope m-a lifecycle (COLUMNS=$cols) ==="
   printf '%s\n' "$ma_out"
   echo "==========================================="
@@ -1619,7 +1795,7 @@ for alt_layout in cards tree; do
 done
 
 # Focus (present) mode: diagram + waiting group only
-focus_out="$(SQUAD_MANAGER_ID=m-a run_scope 120 --focus)"
+focus_out="$(SQUAD_MANAGER_ID=m-a run_scope 120 --layout graph --focus)"
 echo "=== Focus (COLUMNS=120) ==="
 printf '%s\n' "$focus_out"
 echo "==========================="
@@ -1632,7 +1808,7 @@ if grep -qE '^Conversation|^History|^Outcomes' <<< "$focus_out"; then
 fi
 
 # Colour mode keeps the exact visible layout and has valid UTF-8
-color_out="$(SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_MANAGER_ID=m-a run_scope 80)"
+color_out="$(SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_MANAGER_ID=m-a run_scope 80 --layout graph)"
 assert_utf8 "$color_out" "m-a colour"
 if grep -q '@@' <<< "$color_out"; then
   echo "FAIL: unsubstituted animation placeholder in coloured output" >&2
@@ -1640,7 +1816,7 @@ if grep -q '@@' <<< "$color_out"; then
 fi
 
 # 2. --all-managers shows everything grouped per manager (legacy under the inferred manager)
-all_out="$(run_scope 120 --all-managers)"
+all_out="$(run_scope 120 --layout graph --all-managers)"
 echo "=== All-managers lifecycle (COLUMNS=120) ==="
 printf '%s\n' "$all_out"
 echo "============================================"

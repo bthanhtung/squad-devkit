@@ -48,7 +48,7 @@ Live terminal orchestration view showing manager and worker flow.
 
   --once               Render one frame without escape codes and exit
   --since EPOCH        Show runs started at or after EPOCH (default: $SQUAD_DEVKIT_SESSION_START or 0)
-  --layout LAYOUT      Layout to render: graph, cards, pipeline, or tree (default: $SQUAD_ORCHESTRATION_LAYOUT or graph)
+  --layout LAYOUT      Layout to render: list, graph, cards, pipeline, or tree (default: $SQUAD_ORCHESTRATION_LAYOUT or list)
   --root ID            Start zoomed into sub-manager ID (Esc disabled)
   --flow-filter MODE   Flow filter: all, questions, or failures (default: $SQUAD_ORCHESTRATION_FLOW_FILTER or all)
   --all-managers       Show every manager grouped by manager
@@ -71,7 +71,7 @@ EOF
 
 once=0
 since="${SQUAD_DEVKIT_SESSION_START:-0}"
-layout="${SQUAD_ORCHESTRATION_LAYOUT:-graph}"
+layout="${SQUAD_ORCHESTRATION_LAYOUT:-list}"
 flow_filter="${SQUAD_ORCHESTRATION_FLOW_FILTER:-all}"
 expand_earlier=0
 [[ "${SQUAD_ORCHESTRATION_EXPAND:-0}" == "1" ]] && expand_earlier=1
@@ -80,6 +80,10 @@ zoom_target=""
 all_managers=0
 focus=0
 history_expanded=0
+history_open=0
+LIST_WORKER_ORDER=()
+LIST_ROW1=""
+LIST_ROW2=""
 workers_dir=""
 
 while (( $# > 0 )); do
@@ -168,9 +172,9 @@ if (( once == 0 )) && { [[ -t 1 ]] || [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" == 1 ]
 fi
 
 case "$layout" in
-  graph|cards|pipeline|tree) ;;
+  list|graph|cards|pipeline|tree) ;;
   *)
-    echo "Invalid layout: $layout (expected tree, graph, cards, or pipeline)" >&2
+    echo "Invalid layout: $layout (expected list, tree, graph, cards, or pipeline)" >&2
     exit 2
     ;;
 esac
@@ -948,6 +952,8 @@ load_data() {
   W_ROUND_REASON=()
   W_DEPS=()
   W_MGR=()
+  W_TITLE=()
+  W_PREV_STATE=()
   SM_LIST=()
 
   P_NAME=()
@@ -993,7 +999,7 @@ load_data() {
   local raw_worker=() raw_started=() raw_finished=() raw_plan=() raw_state=()
   local raw_pids=() raw_engine=() raw_model=() raw_tok=() raw_worktree=()
   local raw_status=() raw_log=() raw_tier=() raw_verify=() raw_scope=() raw_merged=() raw_discarded=()
-  local raw_role=() raw_parent=() raw_depth=() raw_mgr=() raw_round=()
+  local raw_role=() raw_parent=() raw_depth=() raw_mgr=() raw_round=() raw_title=() raw_act=()
 
   local status_file line k v
   if [[ -d "$workers_dir" ]]; then
@@ -1001,7 +1007,7 @@ load_data() {
       [[ -e "$status_file" ]] || continue
       local f_worker="" f_started="" f_finished="" f_plan="" f_state="" f_pid=""
       local f_engine="" f_model="" f_tok_in="" f_tok_out="" f_tokens="" f_worktree=""
-      local f_role="" f_parent="" f_depth="" f_manager=""
+      local f_role="" f_parent="" f_depth="" f_manager="" f_title="" f_act=""
       local f_tier="" f_verify="" f_scope="" f_merged="" f_discarded="" f_log=""
       while IFS= read -r line || [[ -n "$line" ]]; do
         [[ "$line" == *=* ]] || continue
@@ -1030,6 +1036,8 @@ load_data() {
           parent)          f_parent="$v" ;;
           depth)           f_depth="$v" ;;
           manager) f_manager="$v" ;;
+          title)   f_title="$v" ;;
+          activity) f_act="$v" ;;
         esac
       done < "$status_file"
 
@@ -1081,12 +1089,16 @@ load_data() {
         raw_scope[$found_idx]="$f_scope"
         raw_merged[$found_idx]="$f_merged"
         raw_discarded[$found_idx]="$f_discarded"
+        raw_title[$found_idx]="$f_title"
+        raw_act[$found_idx]="$f_act"
         prev_started[$found_idx]=-1
         prev_state[$found_idx]=""
         prev_verify[$found_idx]=""
         prev_scope[$found_idx]=""
       else
         raw_round[$found_idx]=$(( raw_round[$found_idx] + 1 ))
+        [[ -z "$f_title" ]] || raw_title[$found_idx]="$f_title"
+        [[ -z "$f_act" ]] || raw_act[$found_idx]="$f_act"
         if [[ -n "$f_parent" && -z "${raw_parent[$found_idx]}" ]]; then
           raw_parent[$found_idx]="$f_parent"
         fi
@@ -1260,6 +1272,8 @@ load_data() {
       W_SCOPE_VIOLATION[$w_idx]="${raw_scope[$ri]}"
       W_MERGED[$w_idx]="${raw_merged[$ri]}"
       W_DISCARDED[$w_idx]="${raw_discarded[$ri]}"
+      W_TITLE[$w_idx]="${raw_title[$ri]:-}"
+      W_PREV_STATE[$w_idx]="${prev_state[$ri]:-}"
       prev_state[$w_idx]="${prev_state[$ri]}"
       prev_verify[$w_idx]="${prev_verify[$ri]}"
       prev_scope[$w_idx]="${prev_scope[$ri]}"
@@ -1326,6 +1340,7 @@ load_data() {
           W_ACTIVITY[$wi]="$l_act"
         fi
       fi
+      [[ -n "${W_ACTIVITY[$wi]}" ]] || W_ACTIVITY[$wi]="${raw_act[$wi]:-}"
       local log_path="${W_LOG[$wi]}"
       if [[ -n "$log_path" && "$log_path" != /* && ! -e "$log_path" && -e "$WS_ROOT/$log_path" ]]; then
         log_path="$WS_ROOT/$log_path"
@@ -3502,6 +3517,10 @@ lc_brief_title() {
       [[ -n "$first_head" ]] || first_head="$text"
       continue
     fi
+    if [[ "$stripped" =~ ^[Gg]oal:[[:space:]]+([^[:space:]].*)$ ]]; then
+      title="${BASH_REMATCH[1]}"
+      break
+    fi
     case "$stripped" in
       [Gg]oal|[Gg]oal:) want=1; continue ;;
       Selection:*|"Files you own"*) continue ;;
@@ -3514,6 +3533,16 @@ lc_brief_title() {
     [[ -n "$first_plain" ]] || first_plain="$stripped"
   done <<< "$all"
   [[ -n "$title" ]] || title="${first_head:-$first_plain}"
+  while [[ "$title" == "#"* ]]; do
+    title="${title###}"
+    title="${title#"${title%%[![:space:]]*}"}"
+  done
+  local goal_pfx_re='^[Gg]oal:?[[:space:]]*(.*)$'
+  if [[ "$title" =~ $goal_pfx_re ]]; then
+    title="${BASH_REMATCH[1]}"
+  fi
+  lc_first_sentence "$title"
+  title="$REPLY"
   lc_clean_text "$title"
 }
 
@@ -4151,6 +4180,835 @@ build_lifecycle_frame() {
   return 0
 }
 
+# Short model for the list view:
+# Strip a leading vendor prefix (gemini-, claude-, gpt-, opencode-go/)
+# and then a leading version token matching ^[0-9]+(\.[0-9]+)*-
+list_short_model() {
+  local m="${1:-}"
+  m="${m//[[:space:]]/}"
+  [[ -n "$m" ]] || { REPLY="default"; return 0; }
+  if [[ "$m" == opencode-go/* ]]; then
+    m="${m#opencode-go/}"
+  else
+    m="${m##*/}"
+  fi
+  if [[ "$m" == gemini-* ]]; then
+    m="${m#gemini-}"
+  elif [[ "$m" == claude-* ]]; then
+    m="${m#claude-}"
+  elif [[ "$m" == gpt-* ]]; then
+    m="${m#gpt-}"
+  fi
+  local ver_re='^[0-9]+(\.[0-9]+)*-(.*)$'
+  if [[ "$m" =~ $ver_re ]]; then
+    m="${BASH_REMATCH[2]}"
+  fi
+  [[ -n "$m" ]] || m="default"
+  REPLY="$m"
+}
+
+# Format brief title for list view:
+# Drop backticks, cut at the first ", " / " so " / " — " / ": " after the first 20 chars,
+# then at most 48 chars on a word boundary with "…".
+fmt_list_brief_title() {
+  local t="$1"
+  t="${t//[\`]/}"
+  while [[ "$t" == "#"* ]]; do
+    t="${t###}"
+    t="${t#"${t%%[![:space:]]*}"}"
+  done
+  local goal_pfx_re='^[Gg]oal:?[[:space:]]*(.*)$'
+  if [[ "$t" =~ $goal_pfx_re ]]; then
+    t="${BASH_REMATCH[1]}"
+  fi
+  lc_clean_text "$t"
+  t="$REPLY"
+  t="${t//[\`]/}"
+
+  # Cut at the first ", " / " so " / " — " / ": " after the first 20 chars
+  if (( ${#t} > 20 )); then
+    local cut_idx=-1
+    local rest="${t:20}"
+    local idx
+    local delims=(", " " so " " — " ": ")
+    for d in "${delims[@]}"; do
+      if [[ "$rest" == *"$d"* ]]; then
+        local before="${rest%%"$d"*}"
+        idx=$(( 20 + ${#before} ))
+        if (( cut_idx < 0 || idx < cut_idx )); then
+          cut_idx=$idx
+        fi
+      fi
+    done
+    if (( cut_idx >= 20 )); then
+      t="${t:0:$cut_idx}"
+      t="${t%"${t##*[![:space:]]}"}"
+    fi
+  fi
+
+  while [[ "$t" == *[,\:—\ -] ]]; do
+    t="${t%[,\:—\ -]}"
+  done
+
+  # Then at most 48 chars on a word boundary with "…"
+  if (( ${#t} > 48 )); then
+    local sub="${t:0:47}"
+    if [[ "${t:47:1}" =~ [[:space:]] ]]; then
+      sub="${sub%"${sub##*[![:space:]]}"}"
+    elif [[ "$sub" == *" "* ]]; then
+      sub="${sub% *}"
+      sub="${sub%"${sub##*[![:space:]]}"}"
+    fi
+    while [[ "$sub" == *[,\:—\ -] ]]; do
+      sub="${sub%[,\:—\ -]}"
+    done
+    t="${sub}…"
+  fi
+
+  lc_clean_text "$t"
+  t="$REPLY"
+  [[ -n "$t" ]] || t="task"
+  REPLY="$t"
+}
+
+# Outcome failure text reader: reads from worker messages, status file, or log tail,
+# maps credits/resource errors to "AI credits too low", and strips UUIDs and paths.
+worker_failure_text() {
+  local w="$1"
+  local wn="${W_NAME[$w]}"
+  local raw_msg="" i
+  for (( i = ${#H_TS[@]} - 1; i >= 0; i-- )); do
+    if [[ "${H_FROM[$i]}" == "$wn" || "${H_TO[$i]}" == "$wn" || "${H_BODY[$i]}" == *"$wn "* || "${H_BODY[$i]}" == *"$wn("* ]]; then
+      if [[ "${H_TYPE[$i]}" == "failed" || "${H_BODY[$i]}" == *" failed"* || "${H_BODY[$i]}" == *"error"* || "${H_BODY[$i]}" == *"exit status"* || "${H_BODY[$i]}" == *"credits"* ]]; then
+        raw_msg="${H_BODY[$i]}"
+        break
+      fi
+    fi
+  done
+
+  # Parse Log path from the message
+  local log_file=""
+  if [[ "$raw_msg" =~ Log:[[:space:]]*([^[:space:]]+) ]]; then
+    log_file="${BASH_REMATCH[1]}"
+    log_file="${log_file%.}"
+    log_file="${log_file%,}"
+  fi
+
+  # Or status file's log= for that attempt
+  local prev_round=$(( W_ROUND[w] - 1 ))
+  local sf_list=()
+  (( prev_round >= 1 )) && sf_list+=("$workers_dir/${wn}-${prev_round}.status")
+  sf_list+=("$workers_dir/${wn}.status")
+
+  if [[ -z "$log_file" || ! -f "$log_file" ]]; then
+    for sf in "${sf_list[@]}" "$workers_dir/${wn}"*.status; do
+      [[ -f "$sf" ]] || continue
+      local sline
+      while IFS= read -r sline || [[ -n "$sline" ]]; do
+        if [[ "$sline" == log=* && -z "$log_file" ]]; then
+          log_file="${sline#log=}"
+          [[ -f "$log_file" ]] && break 2
+        fi
+      done < "$sf"
+    done
+  fi
+
+  if [[ -z "$log_file" || ! -f "$log_file" ]]; then
+    if [[ -n "${W_LOG[$w]:-}" && -f "${W_LOG[$w]}" ]]; then
+      log_file="${W_LOG[$w]}"
+    else
+      for lf in "$workers_dir/${wn}"*.log; do
+        if [[ -f "$lf" ]]; then
+          log_file="$lf"
+          break
+        fi
+      done
+    fi
+  fi
+
+  # Parse exit status N
+  local exit_n=""
+  if [[ "$raw_msg" =~ exit[[:space:]]+status[[:space:]]+([0-9]+) ]]; then
+    exit_n="${BASH_REMATCH[1]}"
+  fi
+  if [[ -z "$exit_n" ]]; then
+    for sf in "${sf_list[@]}" "$workers_dir/${wn}"*.status; do
+      [[ -f "$sf" ]] || continue
+      while IFS= read -r sline || [[ -n "$sline" ]]; do
+        if [[ "$sline" =~ ^(exit|code)=([0-9]+) ]]; then
+          exit_n="${BASH_REMATCH[2]}"
+          break 2
+        fi
+      done < "$sf"
+    done
+  fi
+
+  local found_reason=""
+  if [[ -n "$log_file" && -f "$log_file" ]]; then
+    local tail_content
+    tail_content="$(tail -n 200 "$log_file" 2>/dev/null || true)"
+    if [[ -n "$tail_content" ]]; then
+      # In order:
+      # 1. "AI credits balance is too low" or RESOURCE_EXHAUSTED or "429" -> "AI credits too low"
+      if [[ "$tail_content" == *"AI credits balance is too low"* ]] || \
+         [[ "$tail_content" =~ [Aa][Ii][[:space:]]+credits[[:space:]]+balance[[:space:]]+is[[:space:]]+too[[:space:]]+low ]] || \
+         [[ "$tail_content" == *"RESOURCE_EXHAUSTED"* ]] || \
+         [[ "$tail_content" == *"429"* ]] || \
+         [[ "$tail_content" =~ [Cc]redits[[:space:]]+balance[[:space:]]+is[[:space:]]+too[[:space:]]+low ]]; then
+        found_reason="AI credits too low"
+      # 2. "rate limit" or "usage limit" -> "rate limited"
+      elif [[ "$tail_content" =~ [Rr]ate[[:space:]]+limit ]] || \
+           [[ "$tail_content" =~ [Uu]sage[[:space:]]+limit ]]; then
+        found_reason="rate limited"
+      # 3. "timed out" or "timeout" -> "timed out"
+      elif [[ "$tail_content" =~ [Tt]imed[[:space:]]+out ]] || \
+           [[ "$tail_content" =~ [Tt]imeout ]]; then
+        found_reason="timed out"
+      # 4. Otherwise the first line starting with "error:" or "Error:" (prefix removed, max 40 chars)
+      else
+        local l
+        while IFS= read -r l || [[ -n "$l" ]]; do
+          if [[ "$l" =~ ^[[:space:]]*[Ee]rror:[[:space:]]*(.*)$ ]]; then
+            local clean_err="${BASH_REMATCH[1]}"
+            clean_err="$(printf '%s' "$clean_err" | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}//g; s#(/[a-zA-Z0-9_.-]+)+##g; s#~/[a-zA-Z0-9_.-]+##g; s/Reassign.*//g; s/Log:.*//g')"
+            lc_clean_text "$clean_err"
+            clean_err="$REPLY"
+            if [[ -n "$clean_err" ]]; then
+              trunc_str "$clean_err" 40
+              found_reason="$REPLY"
+              break
+            fi
+          fi
+        done <<< "$tail_content"
+      fi
+    fi
+  fi
+
+  # Fallback if log file doesn't exist or had no match:
+  if [[ -z "$found_reason" ]]; then
+    local check_text="$raw_msg"
+    for sf in "${sf_list[@]}" "$workers_dir/${wn}"*.status; do
+      [[ -f "$sf" ]] || continue
+      while IFS= read -r sline || [[ -n "$sline" ]]; do
+        if [[ "$sline" == error=* || "$sline" == failed=* || "$sline" == reason=* ]]; then
+          check_text="${check_text} ${sline#*=}"
+        fi
+      done < "$sf"
+    done
+    if [[ "$check_text" =~ [Aa][Ii][[:space:]]+credits[[:space:]]+balance[[:space:]]+is[[:space:]]+too[[:space:]]+low ]] || \
+       [[ "$check_text" =~ RESOURCE_EXHAUSTED ]] || \
+       [[ "$check_text" =~ 429 ]] || \
+       [[ "$check_text" =~ [Cc]redits[[:space:]]+balance[[:space:]]+is[[:space:]]+too[[:space:]]+low ]]; then
+      found_reason="AI credits too low"
+    elif [[ "$check_text" =~ [Rr]ate[[:space:]]+limit ]] || \
+         [[ "$check_text" =~ [Uu]sage[[:space:]]+limit ]]; then
+      found_reason="rate limited"
+    elif [[ "$check_text" =~ [Tt]imed[[:space:]]+out ]] || \
+         [[ "$check_text" =~ [Tt]imeout ]]; then
+      found_reason="timed out"
+    fi
+  fi
+
+  # Fallback: exit status N
+  if [[ -z "$found_reason" ]]; then
+    if [[ -n "$exit_n" ]]; then
+      found_reason="exit status $exit_n"
+    else
+      found_reason="error"
+    fi
+  fi
+
+  # Never show UUIDs, paths, "Reassign" or "Log:" text.
+  found_reason="$(printf '%s' "$found_reason" | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}//g; s#(/[a-zA-Z0-9_.-]+)+##g; s#~/[a-zA-Z0-9_.-]+##g; s/Reassign.*//g; s/Log:.*//g')"
+  lc_clean_text "$found_reason"
+  found_reason="$REPLY"
+  [[ -n "$found_reason" ]] || found_reason="error"
+  REPLY="$found_reason"
+}
+
+render_list_worker_rows() {
+  local w="$1"
+  local columns="$2"
+  local mod_col_w="${3:-12}"
+  local wn="${W_NAME[$w]}"
+
+  # Row 1:
+  local glyph_char="●" glyph_disp="●"
+  case "${W_STATE[$w]}" in
+    running)
+      if (( W_ASKING[w] == 1 )); then
+        glyph_char="?"
+        if (( use_color == 1 )); then
+          glyph_disp="${c_asking}?${reset}"
+        else
+          glyph_disp="?"
+        fi
+      else
+        glyph_char="●"
+        if (( use_color == 1 )); then
+          glyph_disp="${c_running}●${reset}"
+        else
+          glyph_disp="●"
+        fi
+      fi
+      ;;
+    completed)
+      if [[ "${W_VERIFY[$w]}" == "fail" || "${W_VERIFY[$w]}" == "timeout" ]]; then
+        glyph_char="✗"
+        if (( use_color == 1 )); then
+          glyph_disp="${c_failed}✗${reset}"
+        else
+          glyph_disp="✗"
+        fi
+      else
+        glyph_char="✓"
+        if (( use_color == 1 )); then
+          glyph_disp="${c_completed}✓${reset}"
+        else
+          glyph_disp="✓"
+        fi
+      fi
+      ;;
+    failed|lost)
+      glyph_char="✗"
+      if (( use_color == 1 )); then
+        glyph_disp="${c_failed}✗${reset}"
+      else
+        glyph_disp="✗"
+      fi
+      ;;
+    stopped)
+      glyph_char="■"
+      if (( use_color == 1 )); then
+        glyph_disp="${c_stopped}■${reset}"
+      else
+        glyph_disp="■"
+      fi
+      ;;
+    *)
+      glyph_char="●"
+      glyph_disp="●"
+      ;;
+  esac
+
+  local id_col_w=8
+  if (( ${#wn} + 1 > id_col_w )); then
+    id_col_w=$(( ${#wn} + 1 ))
+  fi
+  pad_str "$wn" "$id_col_w"
+  local id_padded="$REPLY"
+
+  local eng_mod_padded=""
+  if (( columns >= 48 )); then
+    local eng="${W_ENGINE[$w]}"
+    list_short_model "${W_MODEL[$w]}"
+    local mod_short="$REPLY"
+    trunc_str "$mod_short" 16
+    mod_short="$REPLY"
+    pad_str "$mod_short" "$mod_col_w"
+    local mod_padded="$REPLY"
+    eng_mod_padded="${eng} · ${mod_padded}    "
+  fi
+
+  fmt_elapsed "${W_ELAPSED[$w]}"
+  local elapsed="$REPLY"
+  pad_str "$elapsed" 8
+  local elapsed_padded="$REPLY"
+
+  local act=""
+  if (( W_ROUND[w] > 1 )); then
+    act="attempt ${W_ROUND[w]}"
+  elif [[ -n "${W_ACTIVITY[$w]}" ]]; then
+    act="${W_ACTIVITY[$w]}"
+  else
+    case "${W_STATE[$w]}" in
+      running)
+        if (( W_ASKING[w] == 1 )); then
+          act="waiting"
+        else
+          act="running"
+        fi
+        ;;
+      completed) act="done" ;;
+      failed|lost) act="failed" ;;
+      stopped) act="stopped" ;;
+      *) act="${W_STATE[$w]}" ;;
+    esac
+  fi
+
+  local prefix_plain="  ${glyph_char} ${id_padded}${eng_mod_padded}${elapsed_padded}"
+  local prefix_disp="  ${glyph_disp} ${id_padded}${eng_mod_padded}${elapsed_padded}"
+  local avail1=$(( columns - ${#prefix_plain} ))
+  local act_disp=""
+  if (( avail1 > 0 )); then
+    trunc_str "$act" "$avail1"
+    act_disp="$REPLY"
+  fi
+
+  local is_selected=0
+  if [[ "$wn" == "$selected_id" ]]; then
+    is_selected=1
+  fi
+
+  if (( is_selected == 1 && use_color == 1 )); then
+    local r1_full="${prefix_plain}${act_disp}"
+    pad_str "$r1_full" "$columns"
+    LIST_ROW1="${reverse}${REPLY}${reset}"
+  else
+    LIST_ROW1="${prefix_disp}${act_disp}"
+  fi
+
+  # Row 2:
+  local row2_indent="            ↳ "
+  if (( columns < 36 )); then
+    row2_indent="    ↳ "
+  fi
+  local avail2=$(( columns - ${#row2_indent} ))
+  (( avail2 >= 1 )) || avail2=1
+
+  # 1. Brief title
+  local brief_title="task"
+  local hc="${#H_TS[@]}" hi
+  for (( hi = 0; hi < hc; hi++ )); do
+    if lc_msg_for_worker "$hi" "$wn" && [[ "${H_TYPE[$hi]}" == "brief" ]]; then
+      lc_brief_title "$hi"
+      brief_title="$REPLY"
+      break
+    fi
+  done
+  if [[ "$brief_title" == "task" || -z "$brief_title" || "$brief_title" == "##"* || "$brief_title" =~ ^[Gg]oal ]]; then
+    if [[ -n "${W_TITLE[$w]:-}" ]]; then
+      brief_title="${W_TITLE[$w]}"
+    fi
+  fi
+  fmt_list_brief_title "$brief_title"
+  brief_title="$REPLY"
+
+  # 2. Questions
+  local q_part=""
+  if (( W_ASKING[w] == 1 )); then
+    local q_text=""
+    for (( hi = hc - 1; hi >= 0; hi-- )); do
+      if [[ "${H_FROM[$hi]}" == "$wn" && "${H_TYPE[$hi]}" == "QUESTION" ]]; then
+        clean_msg_preview QUESTION "${H_BODY[$hi]}"
+        lc_first_sentence "$REPLY"
+        lc_clean_text "$REPLY"
+        q_text="$REPLY"
+        break
+      fi
+    done
+    if [[ -n "$q_text" ]]; then
+      local c_yellow=$'\033[33m'
+      if (( use_color == 1 )); then
+        q_part="${c_yellow}asks: ${q_text}${reset}${dim}"
+      else
+        q_part="asks: ${q_text}"
+      fi
+    fi
+  else
+    local q_ans=0
+    for (( hi = 0; hi < hc; hi++ )); do
+      if [[ "${H_FROM[$hi]}" == "$wn" && "${H_TYPE[$hi]}" == "QUESTION" ]]; then
+        local ai
+        for (( ai = hi + 1; ai < hc; ai++ )); do
+          if [[ "${H_TO[$ai]}" == "$wn" && "${H_TYPE[$ai]}" == "ANSWER" ]]; then
+            q_ans=$(( q_ans + 1 ))
+            break
+          fi
+        done
+      fi
+    done
+    if (( q_ans == 1 )); then
+      q_part="1 question answered"
+    elif (( q_ans > 1 )); then
+      q_part="${q_ans} questions answered"
+    fi
+  fi
+
+  # 3. Fix rounds
+  local fix_part=""
+  if [[ "${W_ROUND_REASON[$w]:-}" == "fix" ]] || [[ -z "${W_ROUND_REASON[$w]:-}" && "${W_PREV_STATE[$w]:-}" != "failed" ]]; then
+    local brief_cnt=0
+    for (( hi = 0; hi < hc; hi++ )); do
+      if lc_msg_for_worker "$hi" "$wn" && [[ "${H_TYPE[$hi]}" == "brief" ]]; then
+        brief_cnt=$(( brief_cnt + 1 ))
+      fi
+    done
+    if (( brief_cnt > 1 )); then
+      fix_part="fix ×$(( brief_cnt - 1 ))"
+    fi
+  fi
+
+  # 4. Outcome
+  local outcome_part=""
+  if [[ -n "${W_MERGED[$w]}" || "${W_MERGE_STATE[$w]}" == "merged" ]]; then
+    outcome_part="merged"
+  elif [[ "${W_STATE[$w]}" == "failed" || "${W_STATE[$w]}" == "lost" ]]; then
+    worker_failure_text "$w"
+    outcome_part="failed: $REPLY"
+  elif (( W_ROUND[w] > 1 )) && [[ "${W_PREV_STATE[$w]:-}" == "failed" || "${W_ROUND_REASON[$w]:-}" == "failed" ]]; then
+    worker_failure_text "$w"
+    outcome_part="attempt $(( W_ROUND[w] - 1 )) failed: $REPLY"
+  elif [[ "${W_STATE[$w]}" == "completed" ]]; then
+    outcome_part="report ready"
+  fi
+
+  # Truncate ONLY the title so that every part stays whole
+  local parts="" parts_plain=""
+  if [[ -n "$q_part" ]]; then
+    local q_plain="${q_part//[$'\033'][^m]*m/}"
+    parts="${parts} · ${q_part}"
+    parts_plain="${parts_plain} · ${q_plain}"
+  fi
+  if [[ -n "$fix_part" ]]; then
+    parts="${parts} · ${fix_part}"
+    parts_plain="${parts_plain} · ${fix_part}"
+  fi
+  if [[ -n "$outcome_part" ]]; then
+    parts="${parts} · ${outcome_part}"
+    parts_plain="${parts_plain} · ${outcome_part}"
+  fi
+
+  local avail_title=$(( avail2 - ${#parts_plain} ))
+  if (( avail_title <= 0 )); then
+    brief_title=""
+  elif (( ${#brief_title} > avail_title )); then
+    if (( avail_title <= 1 )); then
+      brief_title="…"
+    else
+      local sub="${brief_title:0:$(( avail_title - 1 ))}"
+      if [[ "${brief_title:$(( avail_title - 1 )):1}" =~ [[:space:]] ]]; then
+        sub="${sub%"${sub##*[![:space:]]}"}"
+      elif [[ "$sub" == *" "* ]]; then
+        sub="${sub% *}"
+        sub="${sub%"${sub##*[![:space:]]}"}"
+      fi
+      while [[ "$sub" == *[,\:—\ -] ]]; do
+        sub="${sub%[,\:—\ -]}"
+      done
+      brief_title="${sub}…"
+    fi
+  fi
+
+  local summary=""
+  if [[ -z "$brief_title" ]]; then
+    summary="${parts# · }"
+  else
+    summary="${brief_title}${parts}"
+  fi
+
+  if [[ -n "$dim" ]]; then
+    LIST_ROW2="${dim}${row2_indent}${summary}${reset}"
+  else
+    LIST_ROW2="${row2_indent}${summary}"
+  fi
+}
+
+build_history_screen() {
+  local columns="$1" rule_line="$2"
+  terminal_lines
+  local screen_lines="$REPLY"
+  local h_frame=""
+  local hdr="squad · message history (${#H_TS[@]} messages)"
+  trunc_str "$hdr" "$columns"
+  if (( use_color == 1 )); then
+    h_frame+="${bold}${REPLY}${reset}"$'\n'
+  else
+    h_frame+="${REPLY}"$'\n'
+  fi
+  h_frame+="${rule_line}"$'\n'
+  local max_msgs=$(( screen_lines - 4 ))
+  (( max_msgs >= 1 )) || max_msgs=1
+  local hist_cnt="${#H_TS[@]}"
+  if (( hist_cnt == 0 )); then
+    h_frame+="  No messages in history."$'\n'
+  else
+    local start_i=$(( hist_cnt - max_msgs ))
+    (( start_i >= 0 )) || start_i=0
+    local hi
+    for (( hi = start_i; hi < hist_cnt; hi++ )); do
+      local f_type="${H_TYPE[$hi]}"
+      rfc3339_to_hhmm "${H_TS[$hi]}"
+      local prefix="  ${REPLY}  ${H_FROM[$hi]} ──${f_type}──▶ ${H_TO[$hi]}  "
+      clean_msg_preview "$f_type" "${H_BODY[$hi]}"
+      local preview="$REPLY"
+      local avail=$(( columns - ${#prefix} ))
+      (( avail >= 1 )) || avail=1
+      trunc_str "$preview" "$avail"
+      h_frame+="${prefix}${REPLY}"$'\n'
+    done
+  fi
+  h_frame+="${rule_line}"$'\n'
+  local ftr="Esc or h returns"
+  trunc_str "$ftr" "$columns"
+  if [[ -n "$dim" ]]; then
+    h_frame+="${dim}${REPLY}${reset}"$'\n'
+  else
+    h_frame+="${REPLY}"$'\n'
+  fi
+  FRAME_TPL[0]="$h_frame"
+  FRAME_TPL[1]="$h_frame"
+  FRAME_TPL[2]="$h_frame"
+  FRAME_TPL[3]="$h_frame"
+}
+
+build_list_frame() {
+  local columns="$1" lines="$2" rule_line="$3"
+  ensure_pad_len "$columns"
+
+  LIST_WORKER_ORDER=()
+
+  local mgrs=("${MANAGERS_LIST[@]}")
+  (( ${#mgrs[@]} > 0 )) || mgrs=("$MANAGER_ID")
+  local nm="${#mgrs[@]}"
+  (( all_managers == 1 )) || nm=1
+
+  local frame=""
+  local mi
+  for (( mi = 0; mi < nm; mi++ )); do
+    local mgr="${mgrs[$mi]}"
+
+    local m_workers=() wi
+    for (( wi = 0; wi < TOTAL_WORKERS; wi++ )); do
+      if (( all_managers == 0 )) || [[ "${W_MGR[$wi]}" == "$mgr" ]]; then
+        m_workers[${#m_workers[@]}]="$wi"
+      fi
+    done
+
+    # Size model column to the longest short model shown (max 16)
+    local list_model_col_w=0
+    for wi in ${m_workers[@]+"${m_workers[@]}"}; do
+      list_short_model "${W_MODEL[$wi]}"
+      local m_len=${#REPLY}
+      (( m_len <= 16 )) || m_len=16
+      if (( m_len > list_model_col_w )); then
+        list_model_col_w=$m_len
+      fi
+    done
+    (( list_model_col_w <= 16 )) || list_model_col_w=16
+    (( list_model_col_w >= 1 )) || list_model_col_w=12
+
+    local m_run=0 m_done=0 m_fail=0
+    for wi in ${m_workers[@]+"${m_workers[@]}"}; do
+      case "${W_STATE[$wi]}" in
+        running)   m_run=$(( m_run + 1 )) ;;
+        completed) m_done=$(( m_done + 1 )) ;;
+        failed|lost) m_fail=$(( m_fail + 1 )) ;;
+      esac
+    done
+
+    local left="squad · ${mgr} · ${WS_NAME}"
+    local right_plain="" right_disp=""
+    if (( m_run > 0 )); then
+      local r_seg="● ${m_run} running"
+      right_plain="$r_seg"
+      if (( use_color == 1 )); then
+        right_disp="${c_running}${r_seg}${reset}"
+      else
+        right_disp="$r_seg"
+      fi
+    fi
+    if (( m_done > 0 )); then
+      local d_seg="✓ ${m_done} done"
+      if [[ -n "$right_plain" ]]; then
+        right_plain="${right_plain}   ${d_seg}"
+        if (( use_color == 1 )); then
+          right_disp="${right_disp}   ${c_completed}${d_seg}${reset}"
+        else
+          right_disp="${right_disp}   ${d_seg}"
+        fi
+      else
+        right_plain="$d_seg"
+        if (( use_color == 1 )); then
+          right_disp="${c_completed}${d_seg}${reset}"
+        else
+          right_disp="$d_seg"
+        fi
+      fi
+    fi
+    if (( m_fail > 0 )); then
+      local f_seg="✗ ${m_fail} failed"
+      if [[ -n "$right_plain" ]]; then
+        right_plain="${right_plain}   ${f_seg}"
+        if (( use_color == 1 )); then
+          right_disp="${right_disp}   ${c_failed}${f_seg}${reset}"
+        else
+          right_disp="${right_disp}   ${f_seg}"
+        fi
+      else
+        right_plain="$f_seg"
+        if (( use_color == 1 )); then
+          right_disp="${c_failed}${f_seg}${reset}"
+        else
+          right_disp="$f_seg"
+        fi
+      fi
+    fi
+
+    local hdr_gap=$(( columns - ${#left} - ${#right_plain} ))
+    if (( hdr_gap < 1 )); then
+      left="squad · ${mgr}"
+      hdr_gap=$(( columns - ${#left} - ${#right_plain} ))
+    fi
+    if (( hdr_gap < 1 )); then
+      trunc_str "${left} ${right_plain}" "$columns"
+      frame+="${REPLY}"$'\n'
+    else
+      frame+="${left}${SPACES_PAD:0:$hdr_gap}${right_disp}"$'\n'
+    fi
+    frame+="${rule_line}"$'\n'
+
+    if (( ${#m_workers[@]} == 0 )); then
+      trunc_str "No worker runs in this session yet." "$columns"
+      frame+="${REPLY}"$'\n'
+      continue
+    fi
+
+    local rendered_plans=0
+    local p_rank
+    for (( p_rank = 0; p_rank < ${#P_ORDER[@]}; p_rank++ )); do
+      local pi="${P_ORDER[$p_rank]}"
+      local pname="${P_NAME[$pi]}"
+
+      local pw=()
+      for wi in "${m_workers[@]}"; do
+        if [[ "${W_PLAN_NAME[$wi]}" == "$pname" ]]; then
+          pw[${#pw[@]}]="$wi"
+        fi
+      done
+      (( ${#pw[@]} > 0 )) || continue
+
+      local p_run=0 p_ask=0 p_done=0 p_fail=0 p_merged_cnt=0
+      for wi in "${pw[@]}"; do
+        if [[ "${W_STATE[$wi]}" == "running" ]]; then
+          p_run=$(( p_run + 1 ))
+          (( W_ASKING[wi] == 1 )) && p_ask=$(( p_ask + 1 ))
+        elif [[ "${W_STATE[$wi]}" == "completed" ]]; then
+          p_done=$(( p_done + 1 ))
+          if [[ -n "${W_MERGED[$wi]}" || "${W_MERGE_STATE[$wi]}" == "merged" ]]; then
+            p_merged_cnt=$(( p_merged_cnt + 1 ))
+          fi
+        elif [[ "${W_STATE[$wi]}" == "failed" || "${W_STATE[$wi]}" == "lost" ]]; then
+          p_fail=$(( p_fail + 1 ))
+        fi
+      done
+
+      local p_all_merged=0
+      if (( p_done > 0 && p_merged_cnt == p_done && p_run == 0 && p_fail == 0 )); then
+        p_all_merged=1
+      fi
+
+      if (( rendered_plans > 0 )); then
+        frame+=""$'\n'
+      fi
+      rendered_plans=$(( rendered_plans + 1 ))
+
+      if (( p_run == 0 && p_ask == 0 && expand_earlier == 0 )); then
+        local p_title="$pname"
+        local pr_plain="" pr_disp=""
+        if (( p_done > 0 )); then
+          pr_plain="✓ ${p_done} done"
+          if (( use_color == 1 )); then
+            pr_disp="${c_completed}✓ ${p_done} done${reset}"
+          else
+            pr_disp="$pr_plain"
+          fi
+        fi
+        if (( p_fail > 0 )); then
+          local pf_seg="✗ ${p_fail} failed"
+          if [[ -n "$pr_plain" ]]; then
+            pr_plain="${pr_plain}   ${pf_seg}"
+            if (( use_color == 1 )); then
+              pr_disp="${pr_disp}   ${c_failed}${pf_seg}${reset}"
+            else
+              pr_disp="${pr_disp}   ${pf_seg}"
+            fi
+          else
+            pr_plain="$pf_seg"
+            if (( use_color == 1 )); then
+              pr_disp="${c_failed}${pf_seg}${reset}"
+            else
+              pr_disp="$pf_seg"
+            fi
+          fi
+        fi
+        if (( p_all_merged == 1 )); then
+          pr_plain="${pr_plain:+${pr_plain} }· merged"
+          pr_disp="${pr_disp:+${pr_disp} }· merged"
+        fi
+
+        local p_gap=$(( columns - ${#p_title} - ${#pr_plain} ))
+        if (( p_gap < 1 )); then
+          trunc_str "${p_title} ${pr_plain}" "$columns"
+          frame+="${REPLY}"$'\n'
+        else
+          frame+="${p_title}${SPACES_PAD:0:$p_gap}${pr_disp}"$'\n'
+        fi
+      else
+        local p_title_disp="$pname"
+        if (( use_color == 1 )); then
+          p_title_disp="${bold}${pname}${reset}"
+        fi
+        trunc_str "$pname" "$columns"
+        frame+="${p_title_disp}"$'\n'
+
+        local sorted_pw=()
+        for wi in "${pw[@]}"; do
+          if [[ "${W_STATE[$wi]}" == "running" ]] && (( W_ASKING[wi] == 1 )); then
+            sorted_pw[${#sorted_pw[@]}]="$wi"
+          fi
+        done
+        for wi in "${pw[@]}"; do
+          if ! { [[ "${W_STATE[$wi]}" == "running" ]] && (( W_ASKING[wi] == 1 )); }; then
+            sorted_pw[${#sorted_pw[@]}]="$wi"
+          fi
+        done
+
+        for wi in "${sorted_pw[@]}"; do
+          LIST_WORKER_ORDER[${#LIST_WORKER_ORDER[@]}]="$wi"
+          render_list_worker_rows "$wi" "$columns" "$list_model_col_w"
+          frame+="${LIST_ROW1}"$'\n'
+          frame+="${LIST_ROW2}"$'\n'
+        done
+      fi
+    done
+
+    if (( all_managers == 1 && mi + 1 < nm )); then
+      frame+=""$'\n'
+    fi
+  done
+
+  frame+="${rule_line}"$'\n'
+  local ftr_text=""
+  if (( AUTO_CLOSE_PINNED == 1 )); then
+    ftr_text="pinned · q quit"
+  elif (( AUTO_CLOSE_COUNTING == 1 )); then
+    if (( columns >= 80 )); then
+      if (( TOTAL_WORKERS == 0 )); then
+        ftr_text="Nothing running · closing in ${AUTO_CLOSE_REMAINING}s · p keep open · Enter close now"
+      else
+        ftr_text="All done · closing in ${AUTO_CLOSE_REMAINING}s · p keep open · Enter close now"
+      fi
+    else
+      ftr_text="closing in ${AUTO_CLOSE_REMAINING}s · p keep · ⏎ close"
+    fi
+  else
+    ftr_text="j/k select · i details · h history · g graph · q quit"
+  fi
+  trunc_str "$ftr_text" "$columns"
+  if [[ -n "$dim" ]]; then
+    frame+="${dim}${REPLY}${reset}"$'\n'
+  else
+    frame+="${REPLY}"$'\n'
+  fi
+
+  FRAME_TPL[0]="$frame"
+  FRAME_TPL[1]="$frame"
+  FRAME_TPL[2]="$frame"
+  FRAME_TPL[3]="$frame"
+  return 0
+}
+
 build_base_frame_templates() {
   FRAME_TPL=("" "" "" "")
   DIAG_T0=""
@@ -4170,6 +5028,12 @@ build_base_frame_templates() {
   local rule_line="${DASHES_PAD:0:$columns}"
   if [[ -n "$dim" ]]; then
     rule_line="${dim}${rule_line}${reset}"
+  fi
+
+  # Default list layout: Apple-style minimal view
+  if [[ "$layout" == "list" ]]; then
+    build_list_frame "$columns" "$lines" "$rule_line"
+    return 0
   fi
 
   # Default graph layout: lifecycle flow chart (narrow panes and --root zoom keep the legacy views).
@@ -4600,17 +5464,38 @@ panel_key() {
   case "$key" in
     j|k)
       step=1; [[ "$key" != k ]] || step=-1
-      i=$(( selected_index + step ))
-      while (( i >= 0 && i < TOTAL_WORKERS )); do
-        if [[ -z "$zoom_target" || "${W_PARENT[$i]}" == "$zoom_target" || "${W_NAME[$i]}" == "$zoom_target" ]]; then
-          selected_id="${W_NAME[$i]}"; break
-        fi
-        i=$(( i + step ))
-      done
+      if [[ "$layout" == "list" && ${#LIST_WORKER_ORDER[@]} -gt 0 ]]; then
+        local cur_pos=-1 oi
+        for (( oi=0; oi<${#LIST_WORKER_ORDER[@]}; oi++ )); do
+          if [[ "${W_NAME[${LIST_WORKER_ORDER[$oi]}]}" == "$selected_id" ]]; then
+            cur_pos=$oi; break
+          fi
+        done
+        local new_pos=$(( cur_pos + step ))
+        if (( new_pos < 0 )); then new_pos=0; fi
+        if (( new_pos >= ${#LIST_WORKER_ORDER[@]} )); then new_pos=$(( ${#LIST_WORKER_ORDER[@]} - 1 )); fi
+        selected_id="${W_NAME[${LIST_WORKER_ORDER[$new_pos]}]}"
+      else
+        i=$(( selected_index + step ))
+        while (( i >= 0 && i < TOTAL_WORKERS )); do
+          if [[ -z "$zoom_target" || "${W_PARENT[$i]}" == "$zoom_target" || "${W_NAME[$i]}" == "$zoom_target" ]]; then
+            selected_id="${W_NAME[$i]}"; break
+          fi
+          i=$(( i + step ))
+        done
+      fi
       ;;
     i) details_open=$(( 1 - details_open )) ;;
+    h)
+      if [[ "$layout" == "list" ]]; then
+        history_open=$(( 1 - history_open ))
+      else
+        history_expanded=$(( 1 - history_expanded ))
+      fi
+      ;;
     esc)
       if (( details_open == 1 )); then details_open=0
+      elif (( history_open == 1 )); then history_open=0
       elif [[ -z "$locked_root" ]]; then zoom_target=""; fi
       ;;
     d|r|s|m)
@@ -4639,12 +5524,24 @@ panel_key() {
 build_frame_templates() {
   selection_sync
   notify_questions
+  if (( history_open == 1 )); then
+    terminal_columns; local columns="$REPLY"
+    ensure_pad_len "$columns"
+    local rule_line="${DASHES_PAD:0:$columns}"
+    if [[ -n "$dim" ]]; then
+      rule_line="${dim}${rule_line}${reset}"
+    fi
+    build_history_screen "$columns" "$rule_line"
+    return 0
+  fi
   build_base_frame_templates
   local columns footer text key n detail_budget detail_height
   terminal_columns; columns="$REPLY"
   footer=""
-  text="$(printf "> %s · j/k select · i details" "${selected_id:-no worker}" | LC_ALL=C tr -d '[:cntrl:]')"
-  trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+  if [[ "$layout" != "list" ]]; then
+    text="$(printf "> %s · j/k select · i details" "${selected_id:-no worker}" | LC_ALL=C tr -d '[:cntrl:]')"
+    trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+  fi
   if (( details_open == 1 && selected_index >= 0 )); then
     footer=""
     terminal_lines; detail_height="$REPLY"; detail_budget=$(( detail_height - 1 ))
@@ -4688,7 +5585,7 @@ if (( once == 1 )) || { [[ ! -t 1 ]] && [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" != 1
   if [[ -n "${SQUAD_ORCHESTRATION_SWITCH_LAYOUT:-}" ]]; then
     for next_step in ${SQUAD_ORCHESTRATION_SWITCH_LAYOUT//,/ }; do
       case "$next_step" in
-        graph|cards|pipeline|tree)
+        list|graph|cards|pipeline|tree)
           layout="$next_step"
           ;;
         v|filter) cycle_flow_filter ;;
@@ -5035,16 +5932,22 @@ while true; do
           subframe=0
           ;;
         h|H)
-          history_expanded=$(( 1 - history_expanded ))
+          if [[ "$layout" == "list" ]]; then
+            history_open=$(( 1 - history_open ))
+          else
+            history_expanded=$(( 1 - history_expanded ))
+          fi
           build_frame_templates
           subframe=0
           ;;
         $'\t'|l|L)
           case "$layout" in
+            list)     layout="graph" ;;
             graph)    layout="cards" ;;
-            cards)    layout="pipeline" ;;
+            cards)    layout="tree" ;;
             pipeline) layout="tree" ;;
-            tree)     layout="graph" ;;
+            tree)     layout="list" ;;
+            *)        layout="list" ;;
           esac
           build_frame_templates
           subframe=0
