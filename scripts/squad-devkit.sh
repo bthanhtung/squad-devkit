@@ -15,6 +15,7 @@ script_dir="$(cd "$(dirname "$source_file")" && pwd)"
 source "$script_dir/lib/squad-tmux-launcher-helpers.sh"
 source "$script_dir/lib/squad-devkit-agents.sh"
 source "$script_dir/lib/squad-panes.sh"
+source "$script_dir/lib/squad-jq.sh"
 
 devkit_version="1.0.2"
 
@@ -465,7 +466,23 @@ run_doctor() {
 
   printf 'Core Tools:\n'
   for tool in squad git jq curl tmux; do
-    if path="$(command -v "$tool" 2>/dev/null)"; then
+    if [[ "$tool" == jq ]]; then
+      if [[ "${SQUAD_DEVKIT_NO_SYSTEM_JQ:-0}" != 1 ]] && command -v jq >/dev/null 2>&1; then
+        path="$(command -v jq)"
+        ver="$(get_tool_version jq)"
+        if [[ -n "$ver" ]]; then
+          printf '  [OK]      %-8s %s (%s)\n' "$tool" "$path" "$ver"
+        else
+          printf '  [OK]      %-8s %s\n' "$tool" "$path"
+        fi
+      elif squad_has_jq; then
+        path="$(squad_bin)"
+        printf '  [OK]      %-8s %s (squad jq)\n' "$tool" "$path"
+      else
+        printf '  [MISSING] %-8s (required)\n' "$tool"
+        status=1
+      fi
+    elif path="$(command -v "$tool" 2>/dev/null)"; then
       ver="$(get_tool_version "$tool")"
       if [[ -n "$ver" ]]; then
         printf '  [OK]      %-8s %s (%s)\n' "$tool" "$path" "$ver"
@@ -473,7 +490,11 @@ run_doctor() {
         printf '  [OK]      %-8s %s\n' "$tool" "$path"
       fi
     else
-      if [[ "$tool" == squad || "$tool" == git || "$tool" == jq ]]; then
+      local is_required=0
+      if [[ "$tool" == squad || "$tool" == git ]]; then
+        is_required=1
+      fi
+      if (( is_required == 1 )); then
         printf '  [MISSING] %-8s (required)\n' "$tool"
         status=1
       else
@@ -585,7 +606,7 @@ run_doctor() {
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     pane_support="tmux split-pane"
   elif [[ -n "$(squad_panes_orca_manager "$PWD")" ]] &&
-    command -v "$(squad_panes_orca_cli)" >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    command -v "$(squad_panes_orca_cli)" >/dev/null 2>&1 && squad_has_jq; then
     pane_support="Orca split-pane (explicit manager terminal)"
   elif [[ "$(squad_panes_herdr_kind)" == herdr_app ]]; then
     if [[ -n "$(squad_panes_herdr_app_manager)" ]]; then
@@ -806,7 +827,7 @@ build_manager_prompt() {
     worker_catalog="$(source "$script_dir/lib/squad-worker-model.sh"; squad_worker_model_catalog "${worker_engines[@]}")" || return $?
     while IFS= read -r missing_mapping; do
       [[ -z "$missing_mapping" ]] || printf 'Worker models: %s; run squad config workers, then squad-worker --models.\n' "$missing_mapping" >&2
-    done < <(printf '%s' "$worker_catalog" | jq -r '.[] | select(.installed and .tier != "" and .source == "unresolved" and .engine != "ccr") | "\(.engine) \(.tier): set SQUAD_WORKER_\(.engine | ascii_upcase)_MODEL_\(.tier | ascii_upcase)"')
+    done < <(printf '%s' "$worker_catalog" | squad_jq -r '.[] | select(.installed and .tier != "" and .source == "unresolved" and .engine != "ccr") | "\(.engine) \(.tier): set SQUAD_WORKER_\(.engine | ascii_upcase)_MODEL_\(.tier | ascii_upcase)"')
     worker_order_line="Installed worker engines, most trusted first: ${worker_engines[*]}"
     if [[ "$setup_mode" == custom && "$workers_from_flag" == 0 && -n "$workers_opt" ]]; then
       worker_order_line="Installed worker engines, in the order the human chose (prefer earlier ones): ${worker_engines[*]}"
@@ -815,7 +836,7 @@ build_manager_prompt() {
 Always pass --manager {{MANAGER_ID}} on every worker launch; do not rely on inherited environment variables.
 $worker_order_line
 Mapped worker models (local configuration; provider availability unverified; use only these):
-$(printf '%s' "$worker_catalog" | jq -r '
+$(printf '%s' "$worker_catalog" | squad_jq -r '
   (reduce .[].engine as $engine ([]; if index($engine) then . else . + [$engine] end)) as $order
   | . as $rows
   | $order[] as $engine

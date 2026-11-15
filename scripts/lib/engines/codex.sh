@@ -5,7 +5,10 @@
 
 engine_codex_check_deps() {
   require_command codex
-  require_command jq
+  if ! squad_has_jq; then
+    echo "Missing command: jq" >&2
+    exit 1
+  fi
 }
 
 # Codex silently drops an MCP server whose bearer-token variable is unset, and
@@ -13,7 +16,7 @@ engine_codex_check_deps() {
 missing_mcp_tokens() {
   local mcp_json="$1" server variable
   for server in ${keep_mcp[@]+"${keep_mcp[@]}"}; do
-    variable="$(printf '%s' "$mcp_json" | jq -r --arg name "$server" \
+    variable="$(printf '%s' "$mcp_json" | squad_jq -r --arg name "$server" \
       '.[] | select(.name == $name) | .transport.bearer_token_env_var // empty' 2>/dev/null || true)"
     if [[ -n "$variable" && -z "${!variable:-}" ]]; then
       printf '%s (needs %s)\n' "$server" "$variable"
@@ -25,12 +28,12 @@ missing_mcp_tokens() {
 engine_codex_build_command() {
   local result=0 mcp_json missing="" configured_servers server transport
   mcp_json="$(codex mcp list --json 2>>"$log_file")" || result=3
-  if ! printf '%s\n' "$mcp_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  if ! printf '%s\n' "$mcp_json" | squad_jq -e 'type == "array"' >/dev/null 2>&1; then
     echo "Could not list Codex MCP servers; refusing an unfiltered worker launch." | tee -a "$log_file" >&2
     result=3
     mcp_json='[]'
   fi
-  if command -v jq >/dev/null 2>&1; then
+  if squad_has_jq; then
     missing="$(missing_mcp_tokens "$mcp_json")"
   fi
   if [[ -n "$missing" ]]; then
@@ -43,7 +46,7 @@ engine_codex_build_command() {
   fi
   local mcp_arguments=()
   if (( all_mcp == 0 )); then
-    configured_servers="$(printf '%s\n' "$mcp_json" | jq -r '
+    configured_servers="$(printf '%s\n' "$mcp_json" | squad_jq -r '
       .[] | select(.enabled != false) | [.name, .transport.type // ""] | @tsv' 2>/dev/null || true)"
     while IFS=$'\t' read -r server transport; do
       [[ -n "$server" ]] || continue

@@ -28,6 +28,7 @@ source "$script_dir/lib/squad-engine.sh"
 source "$script_dir/lib/squad-log-summary.sh"
 # shellcheck source=lib/squad-notify.sh
 source "$script_dir/lib/squad-notify.sh"
+source "$script_dir/lib/squad-jq.sh"
 
 launch_directory="$PWD"
 original_arguments=("$@")
@@ -1656,7 +1657,7 @@ output_age() {
 write_live() {
   local summary metrics activity input cached output tmp
   case "$engine" in codex|claude|ccr|agy|opencode) ;; *) return 0 ;; esac
-  command -v jq >/dev/null 2>&1 || return 0
+  squad_has_jq || return 0
   summary="$(summarise_log "$log_file" "$engine" 1)" || return 0
   # Preserve empty tab-separated token fields as zero.
   metrics="$(printf '%s\n' "$summary" | head -n 1 | awk -F '\t' '{print ($4 == "" ? 0 : $4), ($5 == "" ? 0 : $5), ($6 == "" ? 0 : $6)}')"
@@ -1748,8 +1749,8 @@ fi
 
 # Token usage, summed from the engine's JSON events, for the monitor and the
 # savings summary.
-if command -v jq >/dev/null 2>&1 && [[ -s "$log_file" ]]; then
-  usage_line="$(jq -R -r -s '
+if squad_has_jq && [[ -s "$log_file" ]]; then
+  usage_line="$(squad_jq -R -r -s '
     [split("\n")[] | fromjson? | select(type == "object")
      | (select(.type == "turn.completed") | .usage), (select(.type == "result") | .usage // empty),
        (select(.type == "step_finish") | .part.tokens // empty)]

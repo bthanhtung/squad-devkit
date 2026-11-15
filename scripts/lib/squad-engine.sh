@@ -8,6 +8,7 @@
 # Adapters read squad-worker's globals (prompt, model, yolo, sandbox_mode, ...)
 # and helpers (require_command); they are sourced only from this directory.
 squad_engine_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/engines"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/squad-jq.sh"
 squad_engine_loaded=""
 
 # Loads one adapter: squad_engine_load <engine>. The name is checked against a
@@ -43,12 +44,12 @@ squad_engine() {
 
 # Claude-shaped stream-json logs end with {type:result,result:<report>}.
 squad_engine_stream_report() {
-  jq -R -r 'fromjson? | select(.type == "result") | .result // empty' "$absolute_log" >"$absolute_report"
+  squad_jq -R -r 'fromjson? | select(.type == "result") | .result // empty' "$absolute_log" >"$absolute_report"
 }
 
 # Engines that read the report from the stream need jq; the failure goes to the log.
 squad_engine_require_jq() {
-  command -v jq >/dev/null 2>&1 && return 0
+  squad_has_jq && return 0
   echo "jq is required for the $squad_engine_loaded engine" | tee -a "$log_file" >&2
   return 1
 }

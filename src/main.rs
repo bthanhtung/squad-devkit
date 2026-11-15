@@ -4,6 +4,8 @@ use fs2::FileExt;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+mod jq;
+
 const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 3_600;
 
 #[derive(Default)]
@@ -23,6 +25,7 @@ fn main() -> Result<()> {
     let command = args.next().unwrap_or_else(|| "help".to_string());
 
     match command.as_str() {
+        "jq" => jq::command(args.collect()),
         "run" => squad::runs::command(&args.collect::<Vec<_>>(), find_workspace),
         "guard" => squad::guard::command(&args.collect::<Vec<_>>()),
         "plan" => {

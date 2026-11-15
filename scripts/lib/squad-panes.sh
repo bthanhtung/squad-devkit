@@ -12,6 +12,7 @@
 # dashboard window.
 
 squad_panes_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$squad_panes_lib/squad-jq.sh"
 
 # Serialise splits so parallel workers stack instead of splitting the same pane.
 squad_panes_lock() {
@@ -49,9 +50,9 @@ squad_panes_orca_manager() {
   fi
   [[ -n "${ORCA_PANE_KEY:-}" ]] || return 0
   cli="$(squad_panes_orca_cli)"
-  command -v "$cli" >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 0
+  command -v "$cli" >/dev/null 2>&1 && squad_has_jq || return 0
   "$cli" terminal list --worktree "path:$workspace" --json 2>/dev/null |
-    jq -er --arg key "$ORCA_PANE_KEY" '
+    squad_jq -er --arg key "$ORCA_PANE_KEY" '
       select(.ok == true) | [.result.terminals[] |
         select((.tabId + ":" + .leafId) == $key) | .handle] |
       select(length == 1) | .[0] | select(type == "string" and length > 0)' 2>/dev/null || true
@@ -68,9 +69,9 @@ squad_panes_herdr_kind() {
 
 squad_panes_herdr_app_manager() {
   [[ "$(squad_panes_herdr_kind)" == herdr_app ]] || return 0
-  command -v herdr-app >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 0
+  command -v herdr-app >/dev/null 2>&1 && squad_has_jq || return 0
   herdr-app ls 2>/dev/null |
-    jq -er --arg term "$HC_TERMINAL_ID" '
+    squad_jq -er --arg term "$HC_TERMINAL_ID" '
       [
         .spaces[]? as $space |
         $space.tabs[]? as $tab |
@@ -91,12 +92,12 @@ squad_panes_herdr_app_manager() {
 
 squad_panes_herdr_manager() {
   [[ "$(squad_panes_herdr_kind)" == herdr ]] || return 0
-  command -v herdr >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 0
+  command -v herdr >/dev/null 2>&1 && squad_has_jq || return 0
   if [[ -n "${HERDR_PANE_ID:-}" ]]; then
     printf '%s\n' "$HERDR_PANE_ID"
   else
     herdr pane current --current 2>/dev/null |
-      jq -er '.result.pane.pane_id | select(type == "string" and length > 0)' 2>/dev/null || true
+      squad_jq -er '.result.pane.pane_id | select(type == "string" and length > 0)' 2>/dev/null || true
   fi
 }
 
@@ -112,7 +113,7 @@ squad_open_monitor() {
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     backend=tmux; manager="$TMUX_PANE"
   elif [[ -n "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]] &&
-    command -v "$(squad_panes_orca_cli)" >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    command -v "$(squad_panes_orca_cli)" >/dev/null 2>&1 && squad_has_jq; then
     backend=orca; manager="$SQUAD_DEVKIT_ORCA_TERMINAL"
   elif [[ "$(squad_panes_herdr_kind)" == herdr_app ]]; then
     manager="$(squad_panes_herdr_app_manager)"
@@ -181,7 +182,7 @@ squad_panes_tmux() {
 # Print a bounded failure stage and cause (JSON error fields, else a short sanitized snippet) to stderr.
 squad_panes_orca_fail() {
   local stage="$1" status="$2" output="$3" cause
-  cause="$(printf '%s' "$output" | jq -r 'select(type == "object") | .error | select(type == "object") | [.code, .message, .data.leafId] | map(select(type == "string")) | join(" ")' 2>/dev/null | head -c 200)" || cause=""
+  cause="$(printf '%s' "$output" | squad_jq -r 'select(type == "object") | .error | select(type == "object") | [.code, .message, .data.leafId] | map(select(type == "string")) | join(" ")' 2>/dev/null | head -c 200)" || cause=""
   [[ -n "$cause" ]] || cause="$(printf '%s' "$output" | head -c 120 | tr -c '[:print:]' ' ')"
   printf 'orca %s failed (exit %s): %s\n' "$stage" "$status" "${cause:-no output}" >&2
 }
@@ -192,11 +193,11 @@ squad_panes_orca() {
   cli="$(squad_panes_orca_cli)"
   local rc=0
   output="$("$cli" terminal show --terminal "$manager" --json)" || rc=$?
-  manager_tab="$(printf '%s' "$output" | jq -er 'select(.ok == true) | .result.terminal.tabId | select(type == "string" and length > 0)' 2>/dev/null)" || manager_tab=""
+  manager_tab="$(printf '%s' "$output" | squad_jq -er 'select(.ok == true) | .result.terminal.tabId | select(type == "string" and length > 0)' 2>/dev/null)" || manager_tab=""
   if [[ "$rc" != 0 || -z "$manager_tab" ]]; then squad_panes_orca_fail "manager show ($manager)" "$rc" "$output"; return 1; fi
   if [[ -n "$previous" ]]; then
     output="$("$cli" terminal show --terminal "$previous" --json)" || output=""
-    previous_tab="$(printf '%s' "$output" | jq -er 'select(.ok == true and .result.terminal.connected == true and .result.terminal.writable == true and .result.terminal.orphaned != true) | .result.terminal.tabId' 2>/dev/null)" || previous_tab=""
+    previous_tab="$(printf '%s' "$output" | squad_jq -er 'select(.ok == true and .result.terminal.connected == true and .result.terminal.writable == true and .result.terminal.orphaned != true) | .result.terminal.tabId' 2>/dev/null)" || previous_tab=""
     if [[ "$previous_tab" == "$manager_tab" ]]; then
       target="$previous"; direction=horizontal
     fi
@@ -209,7 +210,7 @@ squad_panes_orca() {
   output="$("$cli" terminal split --terminal "$target" --direction "$direction" --command "$command_text" --json)" || split_status=$?
   if [[ "$split_status" != 0 ]]; then
     # A timeout may already have created the pane: replay once with its leafId instead of splitting again.
-    leaf="$(printf '%s' "$output" | jq -er 'select(type == "object" and .ok == false) | .error | select(type == "object" and (.code == "timeout" or .code == "runtime_error")) | .data.leafId | select(type == "string" and test("^[A-Za-z0-9_.:-]+$"))' 2>/dev/null)" || leaf=""
+    leaf="$(printf '%s' "$output" | squad_jq -er 'select(type == "object" and .ok == false) | .error | select(type == "object" and (.code == "timeout" or .code == "runtime_error")) | .data.leafId | select(type == "string" and test("^[A-Za-z0-9_.:-]+$"))' 2>/dev/null)" || leaf=""
     if [[ -n "$leaf" ]]; then
       stage="split replay ($target, $direction)"; split_status=0
       output="$("$cli" terminal split --terminal "$target" --direction "$direction" --command "$command_text" --retry-split "$leaf" --json)" || split_status=$?
@@ -217,7 +218,7 @@ squad_panes_orca() {
   fi
   "$cli" terminal focus --terminal "$manager" --json >/dev/null 2>&1 || true
   if [[ "$split_status" != 0 ]]; then squad_panes_orca_fail "$stage" "$split_status" "$output"; return 1; fi
-  created="$(printf '%s' "$output" | jq -er 'select(.ok == true) | .result.split.handle | select(type == "string" and length > 0)' 2>/dev/null)" || created=""
+  created="$(printf '%s' "$output" | squad_jq -er 'select(.ok == true) | .result.split.handle | select(type == "string" and length > 0)' 2>/dev/null)" || created=""
   if [[ -z "$created" || "$created" == *[[:space:]]* ]]; then squad_panes_orca_fail "$stage response" 0 "$output"; return 1; fi
   "$cli" terminal set-pane-title --terminal "$created" --title "$title" --json >/dev/null 2>&1 || true
   printf '%s\n' "$created"
@@ -227,7 +228,7 @@ squad_panes_herdr_app() {
   local manager="$1" previous="$2" command_script="$3" workspace="$5"
   local target="$1" direction=right inventory manager_tab argv_json output created_pane created_terminal
   inventory="$(herdr-app ls)" || return 1
-  manager_tab="$(printf '%s' "$inventory" | jq -er --arg term "${HC_TERMINAL_ID:-}" --arg mgr "$manager" '
+  manager_tab="$(printf '%s' "$inventory" | squad_jq -er --arg term "${HC_TERMINAL_ID:-}" --arg mgr "$manager" '
     [
       .spaces[]? as $space |
       $space.tabs[]? as $tab |
@@ -246,7 +247,7 @@ squad_panes_herdr_app() {
     .tab')" || return 1
   [[ "$manager_tab" != *[[:space:]]* ]] || return 1
   if [[ -n "$previous" && "$previous" != "$manager" ]]; then
-    if printf '%s' "$inventory" | jq -e --arg tab "$manager_tab" --arg prev "$previous" '
+    if printf '%s' "$inventory" | squad_jq -e --arg tab "$manager_tab" --arg prev "$previous" '
       [
         .spaces[]? |
         select(.machine == null or .machine == "") |
@@ -258,19 +259,19 @@ squad_panes_herdr_app() {
       target="$previous"; direction=down
     fi
   fi
-  argv_json="$(jq -cn --arg cwd "$workspace" --arg script "$command_script" \
+  argv_json="$(squad_jq -cn --arg cwd "$workspace" --arg script "$command_script" \
     '["/bin/sh","-c","cd \"$1\" && exec \"$2\"","sh",$cwd,$script]')" || return 1
   local split_status=0
   output="$(herdr-app "do" pane.split --direction "$direction" --pane "$target" --argv "$argv_json")" || split_status=$?
   herdr-app "do" pane.focus --pane "$manager" >/dev/null 2>&1 || true
   # No fresh retry, even on malformed output or a transport timeout.
   [[ "$split_status" == 0 ]] || return 1
-  created_pane="$(printf '%s' "$output" | jq -er 'select(type == "object" and (.error == null)) | .pane | select(type == "string" and length > 0)')" || return 1
-  created_terminal="$(printf '%s' "$output" | jq -er 'select(type == "object" and (.error == null)) | .terminal | select(type == "string" and length > 0)')" || return 1
+  created_pane="$(printf '%s' "$output" | squad_jq -er 'select(type == "object" and (.error == null)) | .pane | select(type == "string" and length > 0)')" || return 1
+  created_terminal="$(printf '%s' "$output" | squad_jq -er 'select(type == "object" and (.error == null)) | .terminal | select(type == "string" and length > 0)')" || return 1
   [[ "$created_pane" != *[[:space:]]* && "$created_terminal" != *[[:space:]]* ]] || return 1
   [[ "$created_pane" != "$manager" && "$created_pane" != "$previous" ]] || return 1
   inventory="$(herdr-app ls)" || return 1
-  printf '%s' "$inventory" | jq -e --arg tab "$manager_tab" --arg mgr "$manager" \
+  printf '%s' "$inventory" | squad_jq -e --arg tab "$manager_tab" --arg mgr "$manager" \
     --arg pane "$created_pane" --arg term "$created_terminal" '
     [
       .spaces[]? |
@@ -290,13 +291,13 @@ squad_panes_herdr_reap_stale() {
   local manager_pane="${1:-}"
   SQUAD_PANES_REAPED=0
   [[ -n "$manager_pane" ]] || return 0
-  command -v herdr >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 0
+  command -v herdr >/dev/null 2>&1 && squad_has_jq || return 0
 
   local list_json="" candidate_panes=""
   list_json="$(herdr pane list 2>/dev/null || true)"
   [[ -n "$list_json" ]] || return 0
 
-  candidate_panes="$(printf '%s\n' "$list_json" | jq -r --arg mgr "$manager_pane" '
+  candidate_panes="$(printf '%s\n' "$list_json" | squad_jq -r --arg mgr "$manager_pane" '
     (.result.panes // []) as $panes |
     ([$panes[]? | select(.pane_id == $mgr) | .tab_id | select(type == "string" and length > 0)][0]) as $tab |
     select($tab != null) |
@@ -314,7 +315,7 @@ squad_panes_herdr_reap_stale() {
     [[ -n "$pane_id" ]] || continue
     pinfo="$(herdr pane process-info --pane "$pane_id" 2>/dev/null || true)"
     [[ -n "$pinfo" ]] || continue
-    if printf '%s\n' "$pinfo" | jq -e '
+    if printf '%s\n' "$pinfo" | squad_jq -e '
       .result.process_info as $pi |
       ($pi.foreground_processes | type == "array" and length == 1) and
       ($pi.foreground_processes[0] as $fg |
@@ -341,7 +342,7 @@ squad_panes_herdr() {
   if [[ "$output" != *'"pane_id"'* ]]; then
     output="$(herdr pane split "$manager" --direction right --cwd "$workspace" --no-focus)" || return 1
   fi
-  created="$(printf '%s' "$output" | jq -er '.result.pane.pane_id | select(type == "string" and length > 0)')" || return 1
+  created="$(printf '%s' "$output" | squad_jq -er '.result.pane.pane_id | select(type == "string" and length > 0)')" || return 1
   [[ -n "$created" ]] || return 1
   herdr pane rename "$created" "$title" >/dev/null 2>&1 || true
   herdr pane run "$created" "exec $(printf '%q' "$command_script")" >/dev/null 2>&1 || return 1

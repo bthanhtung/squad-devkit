@@ -20,7 +20,7 @@ engine_agy_build_command() {
       rules+=("read_file($candidate_plan)")
     fi
     local settings
-    settings="$(jq -cn --args '{permissions:{allow:$ARGS.positional}}' "${rules[@]}")" || return 1
+    settings="$(squad_jq -cn --args '{permissions:{allow:$ARGS.positional}}' "${rules[@]}")" || return 1
     engine_command+=(--sandbox --settings "$settings")
   fi
   [[ -z "$model_effort" ]] || engine_command+=(--effort "$model_effort")
@@ -33,7 +33,7 @@ engine_agy_build_command() {
 # non-object JSON is never plaintext.
 agy_extract_report() {
   local verdict
-  verdict="$(jq -R -s -r '
+  verdict="$(squad_jq -R -s -r '
     [split("\n")[] | select(test("\\S")) | sub("^\\s+";"") | sub("\\s+$";"") | . as $s | (try {v: fromjson} catch null) as $p
      | if $p == null then (if $s | test("^[{\\[]") then {bad: true} elif $s | test("^root agent idle; waiting for ") then {} else {text: true} end)
        elif ($p.v | type) == "object" then {o: $p.v} else {bad: true} end] as $l

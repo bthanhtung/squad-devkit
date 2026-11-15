@@ -13,6 +13,7 @@ while [[ -L "$source_file" ]]; do
 done
 script_dir="$(cd "$(dirname "$source_file")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
+source "$script_dir/lib/squad-jq.sh"
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -49,7 +50,7 @@ for required_var in \
   fi
 done
 
-command -v jq >/dev/null 2>&1 || fail_early "missing required command: jq"
+squad_has_jq || fail_early "missing required command: jq"
 [[ -f "$SQUAD_SM_PROMPT_FILE" && -r "$SQUAD_SM_PROMPT_FILE" ]] || fail_early "prompt file not readable: $SQUAD_SM_PROMPT_FILE"
 [[ -d "$SQUAD_SM_DIR" ]] || fail_early "sub-manager worktree directory does not exist: $SQUAD_SM_DIR"
 [[ -d "$SQUAD_SM_WORKSPACE" ]] || fail_early "workspace directory does not exist: $SQUAD_SM_WORKSPACE"
@@ -96,7 +97,7 @@ child_meta() {
   local cid="$1" field="$2" mfile
   mfile="$(child_meta_file "$cid")"
   [[ -f "$mfile" ]] || return 0
-  jq -r --arg f "$field" '.[$f] // empty' "$mfile" 2>/dev/null || true
+  squad_jq -r --arg f "$field" '.[$f] // empty' "$mfile" 2>/dev/null || true
 }
 
 child_state_file() {
@@ -130,7 +131,7 @@ child_state() {
 sm_turn_tokens() {
   [[ -s "$SQUAD_SM_LOG" ]] || { printf '0'; return 0; }
   local count
-  count="$(jq -R -r -s '
+  count="$(squad_jq -R -r -s '
     [split("\n")[] | fromjson? | select(type == "object")
      | if .event == "result" then (.result.usage // .usage // empty)
        elif .type == "result" or .type == "turn.completed" then (.usage // empty)
@@ -335,7 +336,7 @@ extract_last_json() {
       }
       if (depth > 0) buf = buf " "
     }
-  ' "$file" | jq -R -s -c '
+  ' "$file" | squad_jq -R -s -c '
     [split("\n")[] | select(length > 0) | fromjson? | select(type == "object")]
     | if length == 0 then empty else .[-1] end' 2>/dev/null
 }
@@ -375,7 +376,7 @@ validate_plan_json() {
   fi
   local allow_claude="${SQUAD_SM_ALLOW_CLAUDE:-0}"
   local jq_errors
-  jq_errors="$(printf '%s\n' "$json" | jq -r \
+  jq_errors="$(printf '%s\n' "$json" | squad_jq -r \
     --argjson max_children "$SQUAD_SM_MAX_CHILDREN" \
     --argjson allow_claude "$([[ "$allow_claude" == 1 ]] && echo true || echo false)" '
     def errs:
@@ -438,9 +439,9 @@ validate_plan_json() {
   local all_owns=()
   local errors=()
 
-  count="$(printf '%s\n' "$json" | jq -r '.children | length')"
+  count="$(printf '%s\n' "$json" | squad_jq -r '.children | length')"
   for ((i = 0; i < count; i++)); do
-    cid1="$(printf '%s\n' "$json" | jq -r ".children[$i].id")"
+    cid1="$(printf '%s\n' "$json" | squad_jq -r ".children[$i].id")"
     while IFS= read -r p1; do
       [[ -n "$p1" ]] || continue
       if [[ -n "$root_owned" ]] && ! path_in_root_owned "$p1" "$root_owned"; then
@@ -455,7 +456,7 @@ validate_plan_json() {
       done
       all_Child_ids+=("$cid1")
       all_owns+=("$p1")
-    done < <(printf '%s\n' "$json" | jq -r ".children[$i].owns[]")
+    done < <(printf '%s\n' "$json" | squad_jq -r ".children[$i].owns[]")
   done
 
   if (( ${#errors[@]} > 0 )); then
@@ -531,17 +532,17 @@ if [[ -z "$plan_json" ]]; then
 fi
 
 # Normalize defaults in plan_json and store per-child metadata.
-plan_json="$(printf '%s\n' "$plan_json" | jq -c '
+plan_json="$(printf '%s\n' "$plan_json" | squad_jq -c '
   .children |= map(
     .engine = (.engine // "agy") |
     .model = (.model // "gemini-3.8-flash-medium")
   )')"
 
-children_count="$(printf '%s\n' "$plan_json" | jq -r '.children | length')"
+children_count="$(printf '%s\n' "$plan_json" | squad_jq -r '.children | length')"
 for ((i = 0; i < children_count; i++)); do
-  cid="$(printf '%s\n' "$plan_json" | jq -r ".children[$i].id")"
+  cid="$(printf '%s\n' "$plan_json" | squad_jq -r ".children[$i].id")"
   child_ids+=("$cid")
-  printf '%s\n' "$plan_json" | jq -c ".children[$i]" >"$(child_meta_file "$cid")"
+  printf '%s\n' "$plan_json" | squad_jq -c ".children[$i]" >"$(child_meta_file "$cid")"
   printf 'pending' >"$(child_state_file "$cid")"
 done
 
@@ -587,7 +588,7 @@ run_children_batch() {
     while IFS= read -r own_path; do
       [[ -n "$own_path" ]] || continue
       cmd+=(--own "$own_path")
-    done < <(jq -r '.owns[]' "$(child_meta_file "$cid")")
+    done < <(squad_jq -r '.owns[]' "$(child_meta_file "$cid")")
     cmd+=(--brief-file "$brief_file")
 
     "${cmd[@]}" >"$tmp_dir/worker-$cid-$mode.out" 2>"$tmp_dir/worker-$cid-$mode.err" &
@@ -657,7 +658,7 @@ EOF
 validate_review_json() {
   local json="$1"
   [[ -n "$json" ]] || return 1
-  printf '%s\n' "$json" | jq -e '
+  printf '%s\n' "$json" | squad_jq -e '
     type == "object" and
     (.verdict == "pass" or .verdict == "fix") and
     (if .verdict == "fix" then
@@ -679,16 +680,16 @@ if ! validate_review_json "$review_json"; then
   exit 1
 fi
 
-verdict="$(printf '%s\n' "$review_json" | jq -r '.verdict')"
-summary="$(printf '%s\n' "$review_json" | jq -r '.summary // ""')"
+verdict="$(printf '%s\n' "$review_json" | squad_jq -r '.verdict')"
+summary="$(printf '%s\n' "$review_json" | squad_jq -r '.summary // ""')"
 
 # Step 4: At most one fix round when verdict == fix.
 if [[ "$verdict" == "fix" ]]; then
   fix_ids=()
-  fix_count="$(printf '%s\n' "$review_json" | jq -r '.fixes | length')"
+  fix_count="$(printf '%s\n' "$review_json" | squad_jq -r '.fixes | length')"
   for ((i = 0; i < fix_count; i++)); do
-    fid="$(printf '%s\n' "$review_json" | jq -r ".fixes[$i].id")"
-    fbrief="$(printf '%s\n' "$review_json" | jq -r ".fixes[$i].brief")"
+    fid="$(printf '%s\n' "$review_json" | squad_jq -r ".fixes[$i].id")"
+    fbrief="$(printf '%s\n' "$review_json" | squad_jq -r ".fixes[$i].brief")"
     if [[ ! -f "$(child_meta_file "$fid")" ]]; then
       write_final_report "failed" "review requested fix for unknown child $fid" "unknown child $fid in fixes"
       exit 1
@@ -714,11 +715,11 @@ if [[ "$verdict" == "fix" ]]; then
     write_final_report "failed" "invalid second review verdict JSON" "second review turn returned invalid JSON"
     exit 1
   fi
-  verdict="$(printf '%s\n' "$review_json_2" | jq -r '.verdict')"
-  summary="$(printf '%s\n' "$review_json_2" | jq -r '.summary // ""')"
+  verdict="$(printf '%s\n' "$review_json_2" | squad_jq -r '.verdict')"
+  summary="$(printf '%s\n' "$review_json_2" | squad_jq -r '.summary // ""')"
 
   if [[ "$verdict" == "fix" ]]; then
-    open_fixes="$(printf '%s\n' "$review_json_2" | jq -r '[.fixes[] | "\(.id): \(.brief)"] | join("; ")')"
+    open_fixes="$(printf '%s\n' "$review_json_2" | squad_jq -r '[.fixes[] | "\(.id): \(.brief)"] | join("; ")')"
     write_final_report "needs root attention" \
       "${summary:-children still need fixes after one fix round}" \
       "${open_fixes:-needs root attention}"

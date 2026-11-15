@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/squad-jq.sh"
 # Find project-local selections first, then the orchestration workspace.
 # JSON is parsed as data only; never eval/source a saved selection.
 squad_worker_saved_selection() {
@@ -10,8 +11,8 @@ squad_worker_saved_selection() {
     while :; do
       file="$directory/.squad/worker-models.json"
       if [[ -e "$file" ]]; then
-        command -v jq >/dev/null 2>&1 || { echo 'Missing command: jq' >&2; return 2; }
-        jq -r --arg engine "$engine" --arg tier "$model_tier" '
+        squad_has_jq || { echo 'Missing command: jq' >&2; return 2; }
+        squad_jq -r --arg engine "$engine" --arg tier "$model_tier" '
           def model: type == "string" and length > 0 and length <= 256
             and (startswith("-") | not) and (test("[\\s\\p{Cc}]") | not);
           def effort: type == "string" and test("^(none|minimal|low|medium|high|xhigh|max)$");
@@ -105,9 +106,9 @@ squad_worker_reported_models() {
 # Models named in a Claude-shaped stream-json log (claude, ccr, agy).
 squad_worker_stream_models() {
   local log="$1"
-  [[ -s "$log" ]] && command -v jq >/dev/null 2>&1 || return 0
+  [[ -s "$log" ]] && squad_has_jq || return 0
   # Only documented structured Claude fields, never prompt text or router config.
-  jq -Rrs '
+  squad_jq -Rrs '
     [split("\n")[] | fromjson? | select(type == "object")
       | (select(.type == "assistant") | .message.model),
         (select(.type == "result") | (.modelUsage // {} | keys[]))
@@ -118,8 +119,8 @@ squad_worker_stream_models() {
 
 squad_worker_agy_configured_model() {
   local log="$1"
-  [[ -s "$log" ]] && command -v jq >/dev/null 2>&1 || return 0
-  jq -Rrs '[split("\n")[] | fromjson? | select(type == "object" and .event == "init" and (.init | type) == "object")
+  [[ -s "$log" ]] && squad_has_jq || return 0
+  squad_jq -Rrs '[split("\n")[] | fromjson? | select(type == "object" and .event == "init" and (.init | type) == "object")
     | .init.model | select(type == "string" and length > 0 and length <= 256)
     | select(test("[\\s\\p{Cc}]") | not)] | first // empty' "$log" 2>/dev/null || true
 }
@@ -147,7 +148,7 @@ squad_worker_model_label() {
 # Local candidates only: never invokes a provider or inspects credentials.
 squad_worker_model_catalog() {
   local engine model model_source model_tier model_effort installed error candidate key value
-  command -v jq >/dev/null 2>&1 || { echo 'Missing command: jq' >&2; return 1; }
+  squad_has_jq || { echo 'Missing command: jq' >&2; return 1; }
   for engine in "$@"; do
     case "$engine" in
       claude|codex|opencode|grok|agy|ccr) ;;
@@ -174,11 +175,11 @@ squad_worker_model_catalog() {
       else
         candidate=''; model_source=unresolved
       fi
-      jq -cn --arg engine "$engine" --arg tier "$model_tier" --arg candidate "$candidate" \
+      squad_jq -cn --arg engine "$engine" --arg tier "$model_tier" --arg candidate "$candidate" \
         --arg effort "${model_effort:-}" --arg source "$model_source" --arg error "$error" --argjson installed "$installed" \
         '{engine:$engine,installed:$installed,tier:$tier,candidate:($candidate|if . == "" then null else . end),source:$source,effort:($effort|if . == "" then null else . end),provider_availability:"unverified",error:($error|if . == "" then null else . end)}'
     done
-  done | jq -s '.'
+  done | squad_jq -s '.'
 }
 
 # Resolve in a subshell so an explicit model cannot mask a missing higher mapping.

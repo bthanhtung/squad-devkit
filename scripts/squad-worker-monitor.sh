@@ -53,6 +53,7 @@ while [[ -L "$source_file" ]]; do
   if [[ "$link_target" == /* ]]; then source_file="$link_target"
   else source_file="$source_directory/$link_target"; fi
 done
+source "$(cd "$(dirname "$source_file")" && pwd)/lib/squad-jq.sh"
 source "$(cd "$(dirname "$source_file")" && pwd)/lib/squad-worker-model.sh"
 # shellcheck source=lib/squad-plan.sh
 source "$(cd "$(dirname "$source_file")" && pwd)/lib/squad-plan.sh"
@@ -304,7 +305,7 @@ watch_run() {
 # A failed supported query is visible, then the legacy view remains available.
 indexed_runs() {
   local directory="$1" workspace
-  command -v jq >/dev/null 2>&1 && squad_supports run || return 1
+  squad_has_jq && squad_supports run || return 1
   [[ -d "$directory" ]] || return 1
   directory="$(cd "$directory" && pwd -P)" || return 1
   workspace="$(dirname "$(dirname "$directory")")"
@@ -334,7 +335,7 @@ render_indexed() {
     activity="$(printf '%s\n' "$summary" | tail -n +2 | tail -n 3 | cut -c1-$(( columns - 2 )))"
     [[ -z "$activity" ]] || frame+="$activity"$'\n'
     found=1
-  done < <(printf '%s' "$rows" | jq -r '.[] | [ .worker_id, .engine, .details.role, .state,
+  done < <(printf '%s' "$rows" | squad_jq -r '.[] | [ .worker_id, .engine, .details.role, .state,
     .details.started, .details.finished, .details.pid,
     (if (.metrics.tokens_in // .tokens_in) == null and (.metrics.tokens_out // .tokens_out) == null then "null" else ((.metrics.tokens_in // .tokens_in // 0) + (.metrics.tokens_out // .tokens_out // 0) | tostring) end),
     .details.title, .details.profile, (.details.requested_model // .details.model), .details.model_source, .details.actual_model, .details.model_tier, (.metrics.calls // 0), .details.configured_model, .details.configured_model_source, .details.log ]
@@ -404,7 +405,7 @@ print_savings() {
         offloaded=$(( offloaded + indexed_fresh ))
         offloaded_cache=$(( offloaded_cache + indexed_cache ))
       fi
-    done < <(printf '%s' "$rows" | jq -r --argjson since "$since" '.[] | select((.details.started // "0" | if . == "" then "0" else . end | tonumber) >= $since)
+    done < <(printf '%s' "$rows" | squad_jq -r --argjson since "$since" '.[] | select((.details.started // "0" | if . == "" then "0" else . end | tonumber) >= $since)
       | [.state, .details.pid, .engine, ((.tokens_in // 0) - (.tokens_cached // 0) + (.tokens_out // 0)), (.tokens_cached // 0)]
       | map((. // "") | tostring | gsub("[|\\r\\n]"; " ")) | join("|")')
   else

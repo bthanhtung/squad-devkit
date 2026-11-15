@@ -15,6 +15,7 @@ set -o pipefail
 lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=squad-plan.sh
 source "$lib_dir/squad-plan.sh"
+source "$lib_dir/squad-jq.sh"
 
 if squad_supports guard; then
   exec squad guard pre-tool-use "$@"
@@ -25,13 +26,13 @@ allow_on_error() {
   exit 0
 }
 
-command -v jq >/dev/null 2>&1 || allow_on_error "jq is missing"
+squad_has_jq || allow_on_error "jq is missing"
 project_dir="${1:-}"
 [[ -d "$project_dir" ]] || allow_on_error "project directory not found"
 project_dir="$(cd "$project_dir" && pwd -P)"
 
 input="$(cat)"
-fields="$(jq -r '[.tool_name // "", .cwd // "", .tool_input.file_path // .tool_input.notebook_path // "",
+fields="$(squad_jq -r '[.tool_name // "", .cwd // "", .tool_input.file_path // .tool_input.notebook_path // "",
   (.tool_input.command // "" | gsub("\n"; "\u001e"))] | join("\u001f")' <<<"$input" 2>/dev/null)" ||
   allow_on_error "could not parse the hook input"
 IFS=$'\037' read -r tool_name cwd file_path command <<<"$fields"
@@ -39,7 +40,7 @@ command="${command//$'\036'/$'\n'}"
 [[ -n "$cwd" && -d "$cwd" ]] || cwd="$project_dir"
 
 deny() {
-  jq -nc --arg reason "$1" \
+  squad_jq -nc --arg reason "$1" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
   exit 0
 }

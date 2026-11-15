@@ -15,7 +15,7 @@ engine_opencode_build_command() {
 
 engine_opencode_run_and_extract_report() {
   "${engine_command[@]}" </dev/null >"$absolute_log" 2>&1 || return $?
-  jq -R -r -s '[split("\n")[] | fromjson? | select(type=="object" and .type=="text") | .part] as $t
+  squad_jq -R -r -s '[split("\n")[] | fromjson? | select(type=="object" and .type=="text") | .part] as $t
     | if ($t|length)==0 then "" else ($t|last|.messageID) as $m | [$t[] | select(.messageID==$m) | .text] | join("\n") end' \
     "$absolute_log" >"$absolute_report"
 }

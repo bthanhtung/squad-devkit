@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib/squad-jq.sh"
+
 usage() {
   cat <<'EOF'
 Usage: squad-route "<redacted task digest>"
@@ -38,7 +41,7 @@ if [[ -z "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then
   echo '{"configured":false}'
   exit 0
 fi
-command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || {
+command -v curl >/dev/null 2>&1 && squad_has_jq || {
   echo '{"configured":true,"error":"curl and jq are required"}'
   exit 0
 }
@@ -46,7 +49,7 @@ key_variable="${SQUAD_DEVKIT_ROUTER_KEY_ENV:-SQUAD_DEVKIT_ROUTER_KEY}"
 key="${!key_variable:-}"
 minimum="${SQUAD_DEVKIT_ROUTER_MIN_CONFIDENCE:-0.85}"
 
-request="$(jq -n --arg model "${SQUAD_DEVKIT_ROUTER_MODEL:-}" --arg message "$digest" '{
+request="$(squad_jq -n --arg model "${SQUAD_DEVKIT_ROUTER_MODEL:-}" --arg message "$digest" '{
   model: $model,
   state: {message: $message},
   questions: {
@@ -71,12 +74,12 @@ headers=(-H 'Content-Type: application/json')
 [[ -n "$key" ]] && headers+=(-H "Authorization: Bearer $key")
 if ! response="$(curl -sS --fail --max-time "${SQUAD_DEVKIT_ROUTER_TIMEOUT:-20}" \
   "${headers[@]}" -d "$request" "$SQUAD_DEVKIT_ROUTER_URL" 2>&1)"; then
-  jq -nc --arg error "$response" '{configured: true, error: ($error | .[0:200])}'
+  squad_jq -nc --arg error "$response" '{configured: true, error: ($error | .[0:200])}'
   exit 0
 fi
 
 # A score's label is the criterion nearest to the expected position.
-jq -c --argjson minimum "$minimum" '
+squad_jq -c --argjson minimum "$minimum" '
   def score_label($answer): ($answer.legend // {}) as $legend
     | ($answer.score // 0 | round | tostring) as $index | $legend[$index] // null;
   .answers as $a

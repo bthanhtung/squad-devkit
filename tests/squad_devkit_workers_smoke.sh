@@ -26,6 +26,7 @@ for cli in squad jq tmux claude codex agy ccr grok; do
 #!/usr/bin/env bash
 if [[ "\$*" == *"--version"* ]]; then echo "$cli version 1.0.0"; fi
 if [[ "$cli \$1" == "squad help" ]]; then echo "--client <claude|codex|gemini|opencode|grok|agy|ccr>"; fi
+if [[ "$cli \$1" == "squad jq"* ]]; then exit 1; fi
 exit 0
 MOCK
   /bin/chmod +x "$tmpdir/bin/$cli"
@@ -116,6 +117,33 @@ for tool in squad git jq; do
   [[ "$status" == 1 ]] || fail "missing $tool returned $status"
   grep -q "\[MISSING\].*$tool.*(required)" <<<"$out" || fail "missing $tool diagnostic"
 done
+
+# With jq removed and fake squad that succeeds for jq -n 1 (prints 1), doctor shows jq OK with "(squad jq)"
+/bin/mv "$tmpdir/bin/jq" "$tmpdir/jq"
+cat << 'MOCK' > "$tmpdir/bin/squad"
+#!/usr/bin/env bash
+if [[ "$*" == *"--version"* ]]; then echo "squad version 1.0.0"; fi
+if [[ "$1" == "help" ]]; then echo "--client <claude|codex|gemini|opencode|grok|agy|ccr>"; fi
+if [[ "$1" == "jq" ]]; then
+  echo "1"
+  exit 0
+fi
+exit 0
+MOCK
+/bin/chmod +x "$tmpdir/bin/squad"
+status=0
+out=$("$DEVKIT" --doctor 2>&1) || status=$?
+/bin/mv "$tmpdir/jq" "$tmpdir/bin/jq"
+cat << 'MOCK' > "$tmpdir/bin/squad"
+#!/usr/bin/env bash
+if [[ "$*" == *"--version"* ]]; then echo "squad version 1.0.0"; fi
+if [[ "$1" == "help" ]]; then echo "--client <claude|codex|gemini|opencode|grok|agy|ccr>"; fi
+if [[ "$1" == "jq" ]]; then exit 1; fi
+exit 0
+MOCK
+/bin/chmod +x "$tmpdir/bin/squad"
+[[ "$status" == 0 ]] || fail "fake squad with jq returned $status"
+grep -q "\[OK\].*jq.*(squad jq)" <<<"$out" || fail "doctor missing (squad jq)"
 
 out=$("$DEVKIT" --doctor --disable-workers claude,codex,opencode,grok,agy,ccr)
 grep -q 'Manager will work without sub-workers' <<<"$out" || fail "all-disabled diagnostic"

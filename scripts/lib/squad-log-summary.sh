@@ -1,5 +1,7 @@
 # shellcheck shell=bash
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/squad-jq.sh"
+
 # Summarises a codex --json, claude stream-json, agy stream-json, or opencode
 # JSONL log as tab-separated metrics on the first line, then one activity line
 # per event: summarise_log <log> [engine]. Only the engine's own stream format
@@ -16,12 +18,12 @@ summarise_log() {
     grok) ;;
     *) codex=true claude=true agy=true opencode=true ;;
   esac
-  if [[ ! -s "$log" ]] || ! command -v jq >/dev/null 2>&1; then
+  if [[ ! -s "$log" ]] || ! squad_has_jq; then
     [[ "$strict" == 0 ]] || return 1
     printf '\t\t\t\t\t\t\n'
     return 0
   fi
-  jq -R -r -s --arg root "$root" --argjson codex "$codex" --argjson claude "$claude" --argjson agy "$agy" --argjson opencode "$opencode" '
+  squad_jq -R -r -s --arg root "$root" --argjson codex "$codex" --argjson claude "$claude" --argjson agy "$agy" --argjson opencode "$opencode" '
     def short: tostring | split($root) | join("") | gsub("[\u0000-\u001f\u007f-\u009f]+"; " ") | .[0:160];
     def cmd: tostring | sub("^/bin/(ba|z)?sh -l?c "; "") | short;
     def clean_out:
