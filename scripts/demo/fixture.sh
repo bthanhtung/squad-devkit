@@ -123,6 +123,7 @@ EOF
 
 cat > "$workers_dir/dev-1.status" <<EOF
 worker=dev-1
+manager=manager
 engine=agy
 model=gemini-3.8-flash-medium
 requested_model=gemini-3.8-flash-medium
@@ -151,6 +152,7 @@ EOF
 
 cat > "$workers_dir/dev-2-1.status" <<EOF
 worker=dev-2
+manager=manager
 engine=opencode
 model=deepseek-v4-pro
 requested_model=deepseek-v4-pro
@@ -177,6 +179,7 @@ EOF
 
 cat > "$workers_dir/dev-2-2.status" <<EOF
 worker=dev-2
+manager=manager
 engine=opencode
 model=deepseek-v4-pro
 requested_model=deepseek-v4-pro
@@ -203,6 +206,7 @@ EOF
 
 cat > "$workers_dir/test-1.status" <<EOF
 worker=test-1
+manager=manager
 engine=agy
 model=gemini-3.8-flash
 requested_model=gemini-3.8-flash
@@ -236,6 +240,7 @@ EOF
 
 cat > "$workers_dir/sm-api.status" <<EOF
 worker=sm-api
+manager=manager
 engine=agy
 model=gemini-4-argon-high
 requested_model=gemini-4-argon-high
@@ -267,6 +272,7 @@ EOF
 
 cat > "$workers_dir/api-1.status" <<EOF
 worker=api-1
+manager=sm-api
 engine=agy
 model=gemini-3.8-flash-medium
 requested_model=gemini-3.8-flash-medium
@@ -295,6 +301,7 @@ EOF
 
 cat > "$workers_dir/api-2.status" <<EOF
 worker=api-2
+manager=sm-api
 engine=agy
 model=gemini-3.8-flash-medium
 requested_model=gemini-3.8-flash-medium
@@ -324,6 +331,7 @@ EOF
 
 cat > "$workers_dir/rev-1.status" <<EOF
 worker=rev-1
+manager=manager
 engine=claude
 model=claude-haiku-4-5
 requested_model=haiku
@@ -344,6 +352,41 @@ plan=$plans_dir/payments-api.md
 EOF
 
 # ==============================================================================
+# Other sessions sharing this directory (must NOT show in the `manager` view):
+#   b-1 belongs to other-mgr; legacy-1 has no manager= key
+# ==============================================================================
+cat > "$workers_dir/b-1.status" <<EOF
+worker=b-1
+manager=other-mgr
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+title=Unrelated work from another manager
+state=completed
+pid=$done_pid
+started=$(( now - 80 ))
+finished=$(( now - 40 ))
+tokens_in=4000
+tokens_out=1000
+plan=$plans_dir/other-plan.md
+EOF
+
+cat > "$workers_dir/legacy-1.status" <<EOF
+worker=legacy-1
+engine=opencode
+model=deepseek-v4-pro
+role=dev
+title=Legacy status file without a manager key
+state=completed
+pid=$done_pid
+started=$(( now - 85 ))
+finished=$(( now - 45 ))
+tokens_in=3000
+tokens_out=500
+plan=$plans_dir/legacy-plan.md
+EOF
+
+# ==============================================================================
 # History file in `squad history` format
 # ==============================================================================
 cat > "$demo_dir/history.txt" <<'EOF'
@@ -358,6 +401,8 @@ cat > "$demo_dir/history.txt" <<'EOF'
   [2026-11-14T09:03:40Z] dev-2 -> manager: dev-2 (opencode) completed task 8b1d: round 2 retry backoff passing
   [2026-11-14T09:03:55Z] rev-1 -> manager: rev-1 (claude) failed: lint check exited with code 1
   [2026-11-14T09:04:10Z] test-1 -> manager: QUESTION from test-1: Should expired promo codes return 422 or 400?
+  [2026-11-14T09:04:20Z] other-mgr -> b-1: ## Goal Unrelated task from another manager
+  [2026-11-14T09:04:30Z] b-1 -> other-mgr: b-1 (opencode) completed task 1111: done
 EOF
 
 cat > "$demo_dir/manager-pane.sh" <<'EOF'

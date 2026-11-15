@@ -8,6 +8,7 @@ unset SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_DEVKIT_SESSION_START SQUAD_WORKER_V
 unset TMUX TMUX_PANE SQUAD_DEVKIT_GHOSTTY_TERMINAL HERDR_PANE_ID HERDR_ENV HERDR_SOCKET_PATH \
   WEZTERM_PANE KITTY_WINDOW_ID ITERM_SESSION_ID ZELLIJ ZELLIJ_SESSION_NAME DISPLAY WAYLAND_DISPLAY
 export TERM_PROGRAM=test-terminal
+export TEST_PID="$$"
 
 trap 'echo "Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
@@ -19,6 +20,7 @@ fail() {
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 temp_directory="$(mktemp -d /tmp/squad-worker-parent-test.XXXXXX)"
 cleanup() {
+  pkill -P $$ 2>/dev/null || true
   rm -rf "$temp_directory"
 }
 trap cleanup EXIT
@@ -68,7 +70,26 @@ fi
 echo '{"type":"result","result":"Done. Verification: ok."}'
 EOF
 
-chmod +x "$test_bin/squad" "$test_bin/grok" "$test_bin/agy"
+cat >"$test_bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -V) echo "tmux 3.4" ;;
+  split-window)
+    script="${@: -1}"
+    if [[ -f "$script" ]]; then
+      ready="$(sed -n 's/^export SQUAD_WORKER_MONITOR_READY=//p' "$script")"
+      if [[ -n "$ready" ]]; then
+        printf '%s\n' "${TEST_PID:-$PPID}" >"$ready"
+      fi
+    fi
+    echo "%1"
+    ;;
+  select-pane|select-layout) exit 0 ;;
+esac
+exit 0
+EOF
+
+chmod +x "$test_bin/squad" "$test_bin/grok" "$test_bin/agy" "$test_bin/tmux"
 
 cd "$project_directory"
 
@@ -93,6 +114,16 @@ child_fix_status="$(ls -t .squad/workers/child-dev-*.status | head -n 1)"
 [[ "$child_fix_status" != "$child_status" ]] || fail
 grep -qx 'parent=root-dev' "$child_fix_status"
 grep -qx 'depth=2' "$child_fix_status"
+
+# 2c. Manager metadata recorded in status file
+TMUX=fake TMUX_PANE=%1 "$worker" mgr-worker --engine grok --manager m-x --no-worktree --no-plan "manager test" --brief "Worker with manager m-x" >/dev/null
+mgr_status="$(ls -t .squad/workers/mgr-worker-*.status | head -n 1)"
+grep -qx 'manager=m-x' "$mgr_status"
+
+TMUX=fake TMUX_PANE=%1 "$worker" child-mgr --engine grok --manager sm-1 --parent sm-1 --no-worktree --no-plan "child test" --brief "Child with manager sm-1 and parent sm-1" >/dev/null
+child_mgr_status="$(ls -t .squad/workers/child-mgr-*.status | head -n 1)"
+grep -qx 'manager=sm-1' "$child_mgr_status"
+grep -qx 'parent=sm-1' "$child_mgr_status"
 
 # 3. Grandchild (parent depth 2) exits 2 with "hierarchy depth limit is 2"
 status=0

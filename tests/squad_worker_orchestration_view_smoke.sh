@@ -2,15 +2,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
-stub_pids="$tmp/stub-pids"
 cleanup() {
-  if [[ -f "$stub_pids" ]]; then
-    while IFS= read -r pid; do
-      [[ -n "$pid" ]] || continue
-      pkill -9 -P "$pid" 2>/dev/null || true
-      kill -9 "$pid" 2>/dev/null || true
-    done <"$stub_pids"
-  fi
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -21,16 +13,25 @@ unset TMUX TMUX_PANE SQUAD_DEVKIT_ORCA_TERMINAL ORCA_PANE_KEY ORCA_CLI_COMMAND O
 unset HERDR_ENV HERDR_PANE_ID HERDR_SOCKET_PATH HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE ZELLIJ ZELLIJ_SESSION_NAME
 unset WEZTERM_PANE KITTY_WINDOW_ID ITERM_SESSION_ID SQUAD_DEVKIT_GHOSTTY_TERMINAL DISPLAY WAYLAND_DISPLAY
 
+export TERM_PROGRAM=test-terminal
+export TEST_PID="$$"
+
 cp -R "$root/scripts" "$tmp/scripts"
 cp -R "$root/templates" "$tmp/templates"
+
 cat >"$tmp/scripts/squad-orchestration.sh" <<'STUB'
 #!/usr/bin/env bash
-if [[ -n "${SQUAD_WORKER_MONITOR_READY:-}" ]]; then
-  printf '%s\n' "$$" >"$SQUAD_WORKER_MONITOR_READY"
-fi
-sleep 60
+exit 0
 STUB
 chmod +x "$tmp/scripts/squad-orchestration.sh"
+
+cat >"$tmp/scripts/squad-submanager.sh" <<'SMEOF'
+#!/usr/bin/env bash
+printf '{"type":"result","usage":{"input_tokens":400,"output_tokens":100}}\n' >>"$SQUAD_SM_LOG"
+printf 'stub report\n' >"$SQUAD_SM_REPORT"
+exit 0
+SMEOF
+chmod +x "$tmp/scripts/squad-submanager.sh"
 
 mkdir -p "$tmp/bin" "$tmp/home/.config/squad-devkit" "$tmp/project/.squad"
 export HOME="$tmp/home"
@@ -62,15 +63,20 @@ case "${1:-}" in
   split-window)
     printf '%s\n' "$*" >>"$TEST_SPLITS"
     script="${@: -1}"
-    "$script" </dev/null >/dev/null 2>&1 &
-    bg_pid=$!
-    printf '%s\n' "$bg_pid" >>"$TEST_STUB_PIDS"
-    printf '%%%s\n' "$(wc -l <"$TEST_SPLITS" | tr -d ' ')"
+    if [[ -f "$script" ]]; then
+      ready="$(sed -n 's/^export SQUAD_WORKER_MONITOR_READY=//p' "$script")"
+      if [[ -n "$ready" ]]; then
+        printf '%s\n' "${TEST_PID:-$PPID}" >"$ready"
+      fi
+    fi
+    echo "%1"
     ;;
-  select-pane)
-    printf '%s\n' "$*" >>"$TEST_TITLES"
+  select-pane|select-layout)
+    [[ "${1:-}" == select-pane ]] && printf '%s\n' "$*" >>"$TEST_TITLES"
+    exit 0
     ;;
 esac
+exit 0
 FAKE
 for cli in claude codex agy gemini opencode ccr; do
   cat >"$tmp/bin/$cli" <<FAKE
@@ -82,93 +88,124 @@ chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$PATH"
 export TEST_SPLITS="$tmp/splits"
 export TEST_TITLES="$tmp/titles"
-export TEST_STUB_PIDS="$stub_pids"
 
 cd "$tmp/project"
 export TMUX=fake TMUX_PANE=%1
+
+# 1. SQUAD_MANAGER_ID unset, --manager m-a, 3 workers -> exactly 1 split-window call; status files have manager=m-a.
+unset SQUAD_MANAGER_ID SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_WORKER_VIEW
+: >"$TEST_SPLITS"
+: >"$TEST_TITLES"
+rm -rf "$tmp/project/.squad/workers"
+"$tmp/scripts/squad-worker.sh" ma-1 --engine grok --manager m-a --no-plan "test1" --no-worktree --brief "ma-1 task" >/dev/null
+"$tmp/scripts/squad-worker.sh" ma-2 --engine grok --manager m-a --no-plan "test1" --no-worktree --brief "ma-2 task" >/dev/null
+"$tmp/scripts/squad-worker.sh" ma-3 --engine grok --manager m-a --no-plan "test1" --no-worktree --brief "ma-3 task" >/dev/null
+
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+marker_ma="$tmp/project/.squad/workers/.orchestration-m-m-a.pid"
+[[ -f "$marker_ma" ]]
+[[ "$(cat "$marker_ma")" == "$TEST_PID" ]]
+grep -q 'squad · m-a' "$TEST_TITLES"
+ma1_status="$(ls -t "$tmp/project/.squad/workers"/ma-1-*.status | head -n 1)"
+ma2_status="$(ls -t "$tmp/project/.squad/workers"/ma-2-*.status | head -n 1)"
+ma3_status="$(ls -t "$tmp/project/.squad/workers"/ma-3-*.status | head -n 1)"
+grep -qx 'manager=m-a' "$ma1_status"
+grep -qx 'manager=m-a' "$ma2_status"
+grep -qx 'manager=m-a' "$ma3_status"
+
+# 2. Two managers m-a and m-b in the same workspace -> 2 split calls total, two distinct markers and launchers.
+# m-a already launched workers above (1 split, marker .orchestration-m-m-a.pid).
+# Now m-b launches workers in the same workspace:
+"$tmp/scripts/squad-worker.sh" mb-1 --engine grok --manager m-b --no-plan "test2" --no-worktree --brief "mb-1 task" >/dev/null
+marker_mb="$tmp/project/.squad/workers/.orchestration-m-m-b.pid"
+[[ -f "$marker_mb" ]]
+[[ "$marker_ma" != "$marker_mb" ]]
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 2 ]]
+grep -q 'squad · m-b' "$TEST_TITLES"
+"$tmp/scripts/squad-worker.sh" mb-2 --engine grok --manager m-b --no-plan "test2" --no-worktree --brief "mb-2 task" >/dev/null
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 2 ]]
+
+# Distinct launcher files for m-a and m-b embedding their respective SQUAD_MANAGER_ID
+launcher_ma="$tmp/project/.squad/workers/orchestration-m-m-a.sh"
+launcher_mb="$tmp/project/.squad/workers/orchestration-m-m-b.sh"
+[[ -f "$launcher_ma" ]]
+[[ -f "$launcher_mb" ]]
+[[ "$launcher_ma" != "$launcher_mb" ]]
+grep -qE 'export SQUAD_MANAGER_ID=['"'"'"]?m-a['"'"'"]?' "$launcher_ma"
+grep -qE 'export SQUAD_MANAGER_ID=['"'"'"]?m-b['"'"'"]?' "$launcher_mb"
+
+# 3. SQUAD_WORKER_VIEW=orchestration-branches with a parent sub-manager and a child -> still 1 split per manager.
+rm -rf "$tmp/project/.squad/workers"
+: >"$TEST_SPLITS"
+: >"$TEST_TITLES"
+export SQUAD_WORKER_VIEW=orchestration-branches
+"$tmp/scripts/squad-worker.sh" sm-1 --engine agy --role sub-manager --manager m-a --no-plan "test3" --no-worktree --brief "sub-manager task" >/dev/null
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+[[ -f "$tmp/project/.squad/workers/.orchestration-m-m-a.pid" ]]
+[[ -f "$tmp/project/.squad/workers/orchestration-m-m-a.sh" ]]
+
+# Child of sub-manager reuses m-a's live marker without a new split:
+"$tmp/scripts/squad-worker.sh" child-1 --engine grok --manager sm-1 --parent sm-1 --no-plan "test3 child" --no-worktree --brief "child task" >/dev/null
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+# Confirm no .orchestration-branch-* marker was created
+[[ -z "$(ls "$tmp/project/.squad/workers"/.orchestration-branch-* 2>/dev/null)" ]]
+
+# Child launched when manager marker is not live -> launcher exports SQUAD_MANAGER_ID=m-a
+rm -f "$tmp/project/.squad/workers/.orchestration-m-m-a.pid"
+rm -f "$tmp/project/.squad/workers/orchestration-m-m-a.sh"
+unset SQUAD_MANAGER_ID
+"$tmp/scripts/squad-worker.sh" child-2 --engine grok --manager sm-1 --parent sm-1 --no-plan "test3 child2" --no-worktree --brief "child2 task" >/dev/null
+[[ -f "$tmp/project/.squad/workers/orchestration-m-m-a.sh" ]]
+grep -qE 'export SQUAD_MANAGER_ID=['"'"'"]?m-a['"'"'"]?' "$tmp/project/.squad/workers/orchestration-m-m-a.sh"
+
+# Child launched with SQUAD_MANAGER_ID=sm-1 in env -> still resolves and exports root manager m-a
+rm -f "$tmp/project/.squad/workers/.orchestration-m-m-a.pid"
+rm -f "$tmp/project/.squad/workers/orchestration-m-m-a.sh"
+SQUAD_MANAGER_ID=sm-1 "$tmp/scripts/squad-worker.sh" child-3 --engine grok --manager sm-1 --parent sm-1 --no-plan "test3 child3" --no-worktree --brief "child3 task" >/dev/null
+[[ -f "$tmp/project/.squad/workers/orchestration-m-m-a.sh" ]]
+grep -qE 'export SQUAD_MANAGER_ID=['"'"'"]?m-a['"'"'"]?' "$tmp/project/.squad/workers/orchestration-m-m-a.sh"
+
+# 4. SQUAD_WORKER_VIEW=panes -> one split per worker (unchanged).
+rm -rf "$tmp/project/.squad/workers"
+: >"$TEST_SPLITS"
+export SQUAD_WORKER_VIEW=panes
+export SQUAD_WORKER_PANE_HOLD=1
+"$tmp/scripts/squad-worker.sh" p1 --engine grok --manager m-a --no-plan "test4" --no-worktree --brief "p1 task" >/dev/null
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+"$tmp/scripts/squad-worker.sh" p2 --engine grok --manager m-a --no-plan "test4" --no-worktree --brief "p2 task" >/dev/null
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 2 ]]
+"$tmp/scripts/squad-worker.sh" p3 --engine grok --manager m-a --no-plan "test4" --no-worktree --brief "p3 task" >/dev/null
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 3 ]]
+
+# 5. SQUAD_DEVKIT_MANAGER_WRAPPER_PID set -> marker is .orchestration-<wrapper pid>.pid
+rm -rf "$tmp/project/.squad/workers"
+: >"$TEST_SPLITS"
+: >"$TEST_TITLES"
+unset SQUAD_WORKER_VIEW
 export SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$"
 export SQUAD_DEVKIT_SESSION_START=1700000000
-
-# (a) SQUAD_WORKER_VIEW=orchestration: two worker runs with the same wrapper PID
-# open exactly one split and marker holds a live PID.
-: >"$TEST_SPLITS"
-: >"$TEST_TITLES"
-SQUAD_WORKER_VIEW=orchestration "$tmp/scripts/squad-worker.sh" orch-1 \
-  --engine grok --manager boss --no-plan "orchestration smoke" --no-worktree --brief "first task" >"$tmp/out1" 2>&1
-marker="$tmp/project/.squad/workers/.orchestration-$$.pid"
-[[ -f "$marker" ]]
-marker_pid="$(cat "$marker")"
-[[ "$marker_pid" =~ ^[1-9][0-9]*$ ]]
-kill -0 "$marker_pid" 2>/dev/null
-printf '%s\n' "$marker_pid" >>"$TEST_STUB_PIDS"
+"$tmp/scripts/squad-worker.sh" orch-w1 --engine grok --manager boss --no-plan "wrapper test" --no-worktree --brief "w1 task" >/dev/null
+marker_wrapper="$tmp/project/.squad/workers/.orchestration-$$.pid"
+[[ -f "$marker_wrapper" ]]
 [[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
-grep -q 'squad orchestration' "$TEST_TITLES"
-grep -q 'export SQUAD_DEVKIT_MANAGER_WRAPPER_PID=' "$tmp/project/.squad/workers/orchestration.sh"
-grep -q 'export SQUAD_DEVKIT_SESSION_START=' "$tmp/project/.squad/workers/orchestration.sh"
-grep -q 'export SQUAD_MANAGER_ID=' "$tmp/project/.squad/workers/orchestration.sh"
-! grep -q 'SQUAD_WORKER_PANE_HOLD' "$tmp/project/.squad/workers/orchestration.sh"
+grep -q 'squad · boss' "$TEST_TITLES"
+grep -q 'export SQUAD_DEVKIT_MANAGER_WRAPPER_PID=' "$tmp/project/.squad/workers/orchestration-$$.sh"
+grep -q 'export SQUAD_DEVKIT_SESSION_START=' "$tmp/project/.squad/workers/orchestration-$$.sh"
+grep -q 'export SQUAD_MANAGER_ID=' "$tmp/project/.squad/workers/orchestration-$$.sh"
+! grep -q 'SQUAD_WORKER_PANE_HOLD' "$tmp/project/.squad/workers/orchestration-$$.sh"
 
-SQUAD_WORKER_VIEW=orchestration "$tmp/scripts/squad-worker.sh" orch-2 \
-  --engine grok --manager boss --no-plan "orchestration smoke" --no-worktree --brief "second task" >"$tmp/out2" 2>&1
+"$tmp/scripts/squad-worker.sh" orch-w2 --engine grok --manager boss --no-plan "wrapper test" --no-worktree --brief "w2 task" >/dev/null
 [[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
-[[ "$(cat "$marker")" == "$marker_pid" ]]
-kill -0 "$marker_pid" 2>/dev/null
+unset SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_DEVKIT_SESSION_START
 
-# (b) SQUAD_WORKER_VIEW=orchestration-branches: root + one extra split per parent even with 2 children;
-# plain orchestration opens 1 split even when children have --parent.
-rm -f "$marker" "$tmp/project/.squad/workers/.orchestration-branch-"*
-: >"$TEST_SPLITS"
-: >"$TEST_TITLES"
-cat >"$tmp/project/.squad/workers/sm-api-20261114-100000.status" <<'EOF'
-worker=sm-api
-engine=agy
-model=gemini-4-argon-high
-role=sub-manager
-state=running
-started=1700000001
-parent=
-depth=1
-budget_tokens=600000
-max_children=3
-EOF
-SQUAD_WORKER_VIEW=orchestration-branches "$tmp/scripts/squad-worker.sh" child-1 \
-  --engine grok --manager sm-api --parent sm-api --no-plan "branch smoke" --no-worktree --brief "child one" >"$tmp/out-b1" 2>&1
-SQUAD_WORKER_VIEW=orchestration-branches "$tmp/scripts/squad-worker.sh" child-2 \
-  --engine grok --manager sm-api --parent sm-api --no-plan "branch smoke" --no-worktree --brief "child two" >"$tmp/out-b2" 2>&1
-[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 2 ]]
-branch_marker="$tmp/project/.squad/workers/.orchestration-branch-sm-api.pid"
-[[ -f "$branch_marker" ]]
-branch_pid="$(cat "$branch_marker")"
-[[ "$branch_pid" =~ ^[1-9][0-9]*$ ]]
-kill -0 "$branch_pid" 2>/dev/null
-printf '%s\n' "$branch_pid" >>"$TEST_STUB_PIDS"
-grep -q -- '--root sm-api' "$tmp/project/.squad/workers/orchestration-branch-sm-api.sh"
-
-# Plain orchestration with --parent opens 1 split (no branch pane).
-rm -f "$marker" "$branch_marker"
-: >"$TEST_SPLITS"
-SQUAD_WORKER_VIEW=orchestration "$tmp/scripts/squad-worker.sh" child-3 \
-  --engine grok --manager sm-api --parent sm-api --no-plan "plain orch parent" --no-worktree --brief "child three" >"$tmp/out-b3" 2>&1
-[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
-[[ ! -f "$branch_marker" ]]
-
-# (b2) SQUAD_WORKER_VIEW=panes: one split per run.
-: >"$TEST_SPLITS"
-export SQUAD_WORKER_PANE_HOLD=1
-SQUAD_WORKER_VIEW=panes "$tmp/scripts/squad-worker.sh" pane-1 \
-  --engine grok --manager boss --no-plan "panes smoke" --no-worktree --brief "pane one" >"$tmp/out3" 2>&1
-SQUAD_WORKER_VIEW=panes "$tmp/scripts/squad-worker.sh" pane-2 \
-  --engine grok --manager boss --no-plan "panes smoke" --no-worktree --brief "pane two" >"$tmp/out4" 2>&1
-[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 2 ]]
-
-# (c) SQUAD_WORKER_VIEW=bogus: exit 2 with the validation message.
+# 6. SQUAD_WORKER_VIEW=bogus: exit 2 with the validation message.
 status=0
 SQUAD_WORKER_VIEW=bogus "$tmp/scripts/squad-worker.sh" bogus-1 \
   --engine grok --manager boss --no-plan "bogus smoke" --no-worktree --brief "bad view" >"$tmp/bogus-out" 2>&1 || status=$?
 [[ "$status" == 2 ]]
 grep -q 'SQUAD_WORKER_VIEW must be orchestration or panes' "$tmp/bogus-out"
 
-# (d) squad-devkit.sh --dry-run --view panes works, --view bogus exits 2, and --doctor reports view & source.
+# 7. squad-devkit.sh --dry-run and --doctor report view & source.
 "$tmp/scripts/squad-devkit.sh" "$tmp/project" --dry-run --manager grok --view panes >"$tmp/devkit-ok" 2>&1
 grep '^manager:' "$tmp/devkit-ok" | grep -q 'SQUAD_WORKER_VIEW=panes'
 "$tmp/scripts/squad-devkit.sh" "$tmp/project" --dry-run --manager grok >"$tmp/devkit-default" 2>&1
@@ -190,7 +227,7 @@ doctor_cfg="$("$tmp/scripts/squad-devkit.sh" --doctor)"
 grep -q '  View: panes (config)' <<<"$doctor_cfg"
 rm -f "$SQUAD_DEVKIT_CONFIG"
 
-# Dashboard fallback in orchestration mode opens orchestration.sh instead of dashboard.sh.
+# 8. Dashboard fallback in orchestration mode opens orchestration-m-manager.sh instead of dashboard.sh.
 cat >"$tmp/bin/osascript" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$TEST_OSASCRIPT"
@@ -198,67 +235,77 @@ FAKE
 chmod +x "$tmp/bin/osascript"
 export TEST_OSASCRIPT="$tmp/osascript"
 unset TMUX TMUX_PANE SQUAD_MANAGER_ID
-rm -f "$marker" "$tmp/project/.squad/workers/.dashboard-"* "$tmp/project/.squad/workers/".*.last
+rm -rf "$tmp/project/.squad/workers"
 TERM_PROGRAM=Apple_Terminal SQUAD_DEVKIT_OSASCRIPT="$tmp/bin/osascript" SQUAD_WORKER_VIEW=orchestration \
   "$tmp/scripts/squad-worker.sh" dash-1 --engine grok --no-plan "dash smoke" --no-worktree --brief "dash task" >"$tmp/out-dash" 2>&1
-grep -q 'orchestration\.sh' "$TEST_OSASCRIPT"
+grep -q 'orchestration-m-manager\.sh' "$TEST_OSASCRIPT"
 ! grep -q 'dashboard\.sh' "$TEST_OSASCRIPT"
 
-# (e) View resolution fallback:
-# 1. SQUAD_WORKER_VIEW unset, SQUAD_MANAGER_ID set, temp config without view -> orchestration behaviour
+# 9. View resolution fallbacks:
+# (a) SQUAD_WORKER_VIEW unset, SQUAD_MANAGER_ID set, temp config without view -> orchestration
 export TMUX=fake TMUX_PANE=%1
 export SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$"
 export SQUAD_MANAGER_ID="boss"
 unset SQUAD_WORKER_VIEW
 rm -f "$SQUAD_DEVKIT_CONFIG"
-rm -f "$marker"
+rm -rf "$tmp/project/.squad/workers"
 : >"$TEST_SPLITS"
 : >"$TEST_TITLES"
 "$tmp/scripts/squad-worker.sh" fb-orch-1 \
   --engine grok --manager boss --no-plan "fallback orch smoke" --no-worktree --brief "fb orch" >"$tmp/out-fb-orch" 2>&1
-[[ -f "$marker" ]]
-fb_marker_pid="$(cat "$marker")"
-printf '%s\n' "$fb_marker_pid" >>"$TEST_STUB_PIDS"
-kill -0 "$fb_marker_pid" 2>/dev/null
-kill "$fb_marker_pid" 2>/dev/null || true
-rm -f "$marker"
+[[ -f "$marker_wrapper" ]]
 [[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
-grep -q 'squad orchestration' "$TEST_TITLES"
+grep -q 'squad · boss' "$TEST_TITLES"
 
-# 2. Config view=panes with SQUAD_WORKER_VIEW unset -> panes
+# (b) Config view=panes with SQUAD_WORKER_VIEW unset -> panes
 printf 'view=panes\n' >"$SQUAD_DEVKIT_CONFIG"
 : >"$TEST_SPLITS"
 : >"$TEST_TITLES"
+rm -rf "$tmp/project/.squad/workers"
 export SQUAD_WORKER_PANE_HOLD=1
 "$tmp/scripts/squad-worker.sh" fb-pane-1 \
   --engine grok --manager boss --no-plan "fallback pane smoke" --no-worktree --brief "fb pane" >"$tmp/out-fb-pane" 2>&1
-[[ ! -f "$marker" ]]
+[[ ! -f "$marker_wrapper" ]]
 [[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
-! grep -q 'squad orchestration' "$TEST_TITLES"
+! grep -q 'squad · ' "$TEST_TITLES"
 
-# 3. Env overrides config:
-# (a) Config view=panes, env SQUAD_WORKER_VIEW=orchestration -> orchestration
+# (c) Env overrides config:
+# Config view=panes, env SQUAD_WORKER_VIEW=orchestration -> orchestration
 : >"$TEST_SPLITS"
 : >"$TEST_TITLES"
+rm -rf "$tmp/project/.squad/workers"
 SQUAD_WORKER_VIEW=orchestration "$tmp/scripts/squad-worker.sh" fb-env-orch \
   --engine grok --manager boss --no-plan "env override smoke" --no-worktree --brief "env orch" >"$tmp/out-fb-env-orch" 2>&1
-[[ -f "$marker" ]]
-fb_override_pid="$(cat "$marker")"
-printf '%s\n' "$fb_override_pid" >>"$TEST_STUB_PIDS"
-kill -0 "$fb_override_pid" 2>/dev/null
-kill "$fb_override_pid" 2>/dev/null || true
-rm -f "$marker"
+[[ -f "$marker_wrapper" ]]
 [[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
-grep -q 'squad orchestration' "$TEST_TITLES"
+grep -q 'squad · boss' "$TEST_TITLES"
 
-# (b) Config view=orchestration, env SQUAD_WORKER_VIEW=panes -> panes
+# Config view=orchestration, env SQUAD_WORKER_VIEW=panes -> panes
 printf 'view=orchestration\n' >"$SQUAD_DEVKIT_CONFIG"
 : >"$TEST_SPLITS"
 : >"$TEST_TITLES"
+rm -rf "$tmp/project/.squad/workers"
 SQUAD_WORKER_VIEW=panes "$tmp/scripts/squad-worker.sh" fb-env-pane \
   --engine grok --manager boss --no-plan "env override pane" --no-worktree --brief "env pane" >"$tmp/out-fb-env-pane" 2>&1
-[[ ! -f "$marker" ]]
+[[ ! -f "$marker_wrapper" ]]
 [[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
-! grep -q 'squad orchestration' "$TEST_TITLES"
+! grep -q 'squad · ' "$TEST_TITLES"
 rm -f "$SQUAD_DEVKIT_CONFIG"
 
+# (d) --parent without SQUAD_MANAGER_ID defaults to orchestration
+unset SQUAD_MANAGER_ID SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_WORKER_VIEW
+rm -rf "$tmp/project/.squad/workers"
+: >"$TEST_SPLITS"
+: >"$TEST_TITLES"
+"$tmp/scripts/squad-worker.sh" root-w --engine grok --no-plan "t" --no-worktree --brief "root task" >/dev/null
+# root-w without manager or parent gets panes:
+[[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
+! grep -q 'squad · ' "$TEST_TITLES"
+
+# child with --parent defaults to orchestration:
+"$tmp/scripts/squad-worker.sh" child-w --engine grok --parent root-w --no-plan "t" --no-worktree --brief "child task" >/dev/null
+grep -q 'squad · manager' "$TEST_TITLES"
+[[ -f "$tmp/project/.squad/workers/.orchestration-m-manager.pid" ]]
+[[ -f "$tmp/project/.squad/workers/orchestration-m-manager.sh" ]]
+
+echo "PASS: squad_worker_orchestration_view_smoke"

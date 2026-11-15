@@ -60,7 +60,7 @@ work and stop when they are done, so idle agents cost nothing.
 
 ![Setup wizard](./assets/demo/setup-wizard.gif)
 
-**Orchestration view** — live graph, pipeline, and tree views switched with keys `g`, `p`, and `t`:
+**Orchestration view** — live graph, pipeline, and tree views switched with keys `g`, `p`, and `t` (and `a` / `--all-managers` to show every manager in the workspace):
 
 ![Orchestration view graph/pipeline/tree](./assets/demo/orchestration-graph.gif)
 
