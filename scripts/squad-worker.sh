@@ -26,6 +26,11 @@ source "$script_dir/lib/squad-plan.sh"
 source "$script_dir/lib/squad-engine.sh"
 # shellcheck source=lib/squad-log-summary.sh
 source "$script_dir/lib/squad-log-summary.sh"
+# shellcheck source=lib/squad-notify.sh
+source "$script_dir/lib/squad-notify.sh"
+
+launch_directory="$PWD"
+original_arguments=("$@")
 
 usage() {
   cat <<'EOF'
@@ -69,6 +74,8 @@ Options:
   --models           Print local model candidates as JSON; optional --engine/--project filters
   --model-tier TIER  fast|balanced|strong; requires a mapping (Claude aliases available)
   --tier-reason REASON  Allow a high-risk plan below strong tier; record why
+  --retry-escalate   Retry a failed verification once at the next mapped tier
+  --merge-if-green   Merge verified, in-scope changes on a low-risk plan
   --verify COMMAND   Run acceptance command after a completed worker
   --model NAME       Model override (except CCR; router selects its model)
   --mcp NAME         codex only: keep this MCP server enabled (repeatable);
@@ -139,6 +146,8 @@ model=""
 model_source=""
 model_tier=""
 tier_reason=""
+retry_escalate=0
+merge_if_green=0
 verify_command=""
 verify=""
 verify_exit=""
@@ -248,6 +257,8 @@ while (( $# > 0 )); do
         shift
       fi
       ;;
+    --retry-escalate) retry_escalate=1 ;;
+    --merge-if-green) merge_if_green=1 ;;
     --all-mcp)
       # shellcheck disable=SC2034 # read by lib/engines/*.sh
       all_mcp=1 ;;
@@ -275,6 +286,10 @@ while (( $# > 0 )); do
   shift
 done
 
+if (( merge_if_green == 1 )) && [[ "$action" != run ]]; then
+  echo '--merge-if-green only applies to worker runs' >&2
+  exit 2
+fi
 if (( task_mode == 1 )); then
   if (( brief_source_set == 1 )); then
     echo "--task and --brief/--brief-file are mutually exclusive" >&2
@@ -1048,6 +1063,10 @@ if [[ -n "$plan_argument" ]]; then
   fi
   plan_line="Plan: $plan_path"
 fi
+if (( merge_if_green == 1 )) && { [[ "$action" != run || "$plan_path" == none || -z "$verify_command" ]] || [[ "$(plan_field "$plan_path" risk)" != low ]]; }; then
+  echo '--merge-if-green requires a low-risk --plan and --verify on a worker run' >&2
+  exit 2
+fi
 if (( task_mode == 1 )); then
   task_id="${task_id:-$worker_id}"
   if [[ ! "$task_id" =~ $id_pattern ]] || ! brief="$(plan_task "$plan_path" "$task_id")"; then
@@ -1182,7 +1201,7 @@ engine_pid=""
 verify_pid=""
 stop_reason=""
 finish_run() {
-  local exit_status=$?
+  local exit_status="$1"
   if [[ -n "$engine_pid" ]] && kill -0 "$engine_pid" 2>/dev/null; then
     pkill -TERM -P "$engine_pid" 2>/dev/null || true
     kill -TERM "$engine_pid" 2>/dev/null || true
@@ -1193,8 +1212,11 @@ finish_run() {
   fi
   [[ -z "$prompt_file" ]] || rm -f "$prompt_file"
   squad leave "$worker_id" >/dev/null 2>&1 || true
+  if [[ -n "$status_file" ]]; then
+    squad_notify "Worker $worker_id" "${verify:+Verify: $verify. }Run finished (exit $exit_status)." || true
+  fi
 }
-trap finish_run EXIT
+trap 'finish_run "$?"' EXIT
 # --stop sends TERM: stop the engine, record it, and tell the manager.
 on_stop() {
   stop_reason="stopped by request"
@@ -1872,3 +1894,43 @@ squad send --task-id "$task_id" "$worker_id" "$manager_id" \
 printf '[%s · %s · task %s] report: %s\n%s\n%s\n' \
   "$worker_id" "$engine" "$task_id" "$workspace_root/$report_file" "${worktree_note:+$worktree_note
 }" "$report" | cap_report_lines "$report_lines" "$workspace_root/$report_file"
+
+# Complete and release this run before another launcher joins with the same ID.
+if (( retry_escalate == 1 )) && [[ "$verify" == fail ]]; then
+  if next_tier="$(squad_worker_next_tier)"; then
+    repair_brief="$brief
+
+Repair the failed acceptance command: $verify_command
+$(tail -n 20 "$verify_log" | bounded_lines 200)"
+    retry_arguments=()
+    skip_value=0
+    skip_task_id=0
+    for argument in "${original_arguments[@]}"; do
+      if (( skip_value == 1 )); then skip_value=0; continue; fi
+      if (( skip_task_id == 1 )); then
+        skip_task_id=0
+        [[ "$argument" == -* ]] || continue
+      fi
+      case "$argument" in
+        --retry-escalate) continue ;;
+        --model|--model-tier|--brief|--brief-file) skip_value=1; continue ;;
+        --task) skip_task_id=1; continue ;;
+      esac
+      retry_arguments+=("$argument")
+    done
+    echo "squad-worker: verification failed; retrying once at $next_tier tier." >&2
+    finish_run 0
+    trap - EXIT
+    cd "$launch_directory"
+    exec "$script_dir/squad-worker.sh" "${retry_arguments[@]}" --model-tier "$next_tier" --brief "$repair_brief"
+  else
+    echo 'squad-worker: verification failed; no higher configured tier available, retaining evidence.' >&2
+  fi
+fi
+if (( merge_if_green == 1 )); then
+  if [[ "$verify" != pass || -n "$scope_violation" || -z "$worktree_path" ]]; then
+    echo 'squad-worker: automatic merge blocked by verification or ownership; retaining evidence.' >&2
+    exit 3
+  fi
+  "$script_dir/squad-worker.sh" --merge "$worker_id" --project "$project_directory"
+fi

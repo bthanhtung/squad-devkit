@@ -180,3 +180,15 @@ squad_worker_model_catalog() {
     done
   done | jq -s '.'
 }
+
+# Resolve in a subshell so an explicit model cannot mask a missing higher mapping.
+squad_worker_next_tier() (
+  case "${model_tier:-}" in
+    fast) model_tier=balanced ;;
+    balanced) model_tier=strong ;;
+    *) return 1 ;;
+  esac
+  model=""
+  squad_worker_select_model || return 1
+  printf '%s\n' "$model_tier"
+)
