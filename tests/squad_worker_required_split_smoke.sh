@@ -186,6 +186,8 @@ TMUX_PANE="$(tmux display-message -p '#{pane_id}')"
 export TMUX_PANE
 manager_pane="$TMUX_PANE"
 export SQUAD_WORKER_PANE_HOLD=20
+# This section checks the per-worker pane view; --manager would default to orchestration.
+export SQUAD_WORKER_VIEW=panes
 "$root/scripts/squad-worker.sh" visible --engine grok --manager boss --no-plan "split smoke" --no-worktree --brief 'Visible task' >"$tmp/out" 2>&1
 [[ -s "$TEST_ENGINE" ]]
 grep -q RUNNING "$TEST_FRAME_AT_ENGINE"
