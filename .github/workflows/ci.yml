@@ -1,10 +1,8 @@
 name: CI
 
+# Manual only: start it from the Actions tab or with `gh workflow run CI`.
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
