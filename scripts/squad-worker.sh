@@ -29,7 +29,7 @@ source "$script_dir/lib/squad-log-summary.sh"
 
 usage() {
   cat <<'EOF'
-Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FILE)
+Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FILE | --task [ID])
                     [--role ROLE] [--title TITLE] [--project DIR]
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
                     [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
@@ -62,6 +62,7 @@ Engines, most trusted first:
 Options:
   --role ROLE        Role prompt from .squad/roles/ROLE.md (default: dev)
   --title TITLE      Task title (default: first line of the brief)
+  --task [ID]       Use exact plan task ID (default: worker ID) plus Acceptance; requires --plan
   --brief-file -     Read the brief from stdin
   --project DIR      Directory the worker works in (default: the squad workspace)
   --profile NAME     codex profile (default: CLI configuration)
@@ -130,6 +131,9 @@ role="dev"
 title=""
 brief=""
 brief_file=""
+brief_source_set=0
+task_mode=0
+task_id=""
 profile="${SQUAD_WORKER_CODEX_PROFILE:-}"
 model=""
 model_source=""
@@ -211,6 +215,7 @@ while (( $# > 0 )); do
         echo "Missing value for $1" >&2
         exit 2
       fi
+      case "$1" in --brief|--brief-file) brief_source_set=1 ;; esac
       case "$1" in
         --engine) engine="$2" ;;
         --role) role="$2" ;;
@@ -241,6 +246,14 @@ while (( $# > 0 )); do
       esac
       shift
       ;;
+    --task)
+      task_mode=1
+      if (( $# > 1 )) && [[ "$2" != -* ]]; then
+        [[ -n "$2" ]] || { echo "--task needs a nonempty ID" >&2; exit 2; }
+        task_id="$2"
+        shift
+      fi
+      ;;
     --all-mcp)
       # shellcheck disable=SC2034 # read by lib/engines/*.sh
       all_mcp=1 ;;
@@ -267,6 +280,17 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+if (( task_mode == 1 )); then
+  if (( brief_source_set == 1 )); then
+    echo "--task and --brief/--brief-file are mutually exclusive" >&2
+    exit 2
+  fi
+  if [[ -z "$plan_argument" ]]; then
+    echo "--task requires --plan" >&2
+    exit 2
+  fi
+fi
 
 if [[ -n "$override_review" && "$action" != merge ]]; then
   echo "--override-review only applies to --merge" >&2
@@ -1021,6 +1045,17 @@ if [[ -n "$plan_argument" ]]; then
     exit 2
   fi
   plan_line="Plan: $plan_path"
+fi
+if (( task_mode == 1 )); then
+  task_id="${task_id:-$worker_id}"
+  if [[ ! "$task_id" =~ $id_pattern ]] || ! brief="$(plan_task "$plan_path" "$task_id")"; then
+    echo "Plan task ID must match exactly one nonempty entry: $task_id" >&2
+    exit 2
+  fi
+  brief="$brief
+
+## Acceptance
+$(plan_section "$plan_path" Acceptance)"
 fi
 plan_context=""
 if [[ "$plan_path" != none ]] && (( no_plan_context == 0 )); then

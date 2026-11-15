@@ -57,6 +57,12 @@ pub fn validate(path: &Path) -> Result<bool> {
     let text = fs::read_to_string(path)?;
     let mut valid = true;
     for name in ["Triage", "Goal", "Perspectives", "Tasks", "Acceptance"] {
+        if name == "Perspectives"
+            && level(&text, "Risk") == "low"
+            && level(&text, "Complexity") == "low"
+        {
+            continue;
+        }
         if section(&text, name).is_none() {
             println!("missing section: ## {name}");
             valid = false;

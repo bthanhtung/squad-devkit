@@ -18,6 +18,21 @@ for file in "$root"/.squad/plans/*.md "$root"/templates/devkit/plan.md.example; 
 done
 
 
+# Quick plans relax only the missing Perspectives section, in both validators.
+for spec in 'low low 0' 'moderate high 1' 'low moderate 1' 'low low 1'; do
+  read -r risk complexity expected <<<"$spec"
+  printf '## Triage\n- Risk: %s\n- Complexity: %s\n- squad-route: dev\n## Goal\nShip\n## Tasks\n- dev: implement\n## Acceptance\n- Works\n' "$risk" "$complexity" >"$tmp/quick.md"
+  if [[ "$spec" == 'low low 1' ]]; then
+    printf '## Perspectives\n- End user: works\n' >>"$tmp/quick.md"
+  fi
+  old_status=0 new_status=0
+  SQUAD_RUST_DISABLE=1 plan_validate "$tmp/quick.md" >"$tmp/old" || old_status=$?
+  plan_validate "$tmp/quick.md" >"$tmp/new" || new_status=$?
+  diff -u "$tmp/old" "$tmp/new"
+  [[ "$old_status" == "$expected" && "$new_status" == "$expected" ]]
+done
+
+
 cat >"$tmp/p.md" <<'PLAN'
 ## Goal
 

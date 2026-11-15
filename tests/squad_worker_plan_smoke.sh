@@ -232,6 +232,39 @@ SQUAD_MANAGER_ID=manager SQUAD_WORKER_REQUIRE_PLAN=0 "$worker" g-8 --engine agy 
   { cat "$tmp/out" >&2; fail "REQUIRE_PLAN=0 run failed"; }
 grep -q '^Plan: none' "$tmp/out" || fail "no-plan report header"
 
+# --task extracts only an exact task and appends Acceptance.
+write_plan .squad/plans/tasks.md
+sed 's/^1\. Do it\./- task-1 (agy, dev): SELECTED-TASK\n  continuation\n- task-10 (agy, dev): OTHER-TASK\n### heading-task\nHEADING-BODY\n### empty-task\n### duplicate\nfirst\n### duplicate\nsecond/' .squad/plans/tasks.md >.squad/plans/tasks.new
+mv .squad/plans/tasks.new .squad/plans/tasks.md
+for args in default explicit heading; do
+  : >"$WORKER_TEST_LOG"
+  case "$args" in
+    default) "$worker" task-1 --engine agy --no-worktree --plan .squad/plans/tasks.md --task >/dev/null ;;
+    explicit) "$worker" task-other --engine agy --no-worktree --plan .squad/plans/tasks.md --task task-1 >/dev/null ;;
+    heading) "$worker" task-heading --engine agy --no-worktree --plan .squad/plans/tasks.md --task heading-task >/dev/null ;;
+  esac
+  grep -q 'It works.' "$WORKER_TEST_LOG" || fail 'Acceptance missing'
+  if [[ "$args" == heading ]]; then
+    grep -q HEADING-BODY "$WORKER_TEST_LOG" || fail 'heading task missing'
+  else
+    grep -q 'SELECTED-TASK.*continuation' "$WORKER_TEST_LOG" || fail 'task body missing'
+  fi
+  ! grep -q OTHER-TASK "$WORKER_TEST_LOG" || fail 'other task leaked'
+done
+: >"$WORKER_TEST_LOG"
+: >"$WORKER_HERDR_LOG"
+for id in missing task empty-task duplicate; do
+  expect_exit 2 'exactly one nonempty entry' "$worker" rejected --engine agy --worktree --plan .squad/plans/tasks.md --task "$id"
+done
+expect_exit 2 'requires --plan' "$worker" rejected --engine agy --worktree --task
+expect_exit 2 'file not found' "$worker" rejected --engine agy --worktree --plan .squad/plans/missing.md --task
+for source in --brief --brief-file; do
+  expect_exit 2 'mutually exclusive' "$worker" rejected --engine agy --worktree --plan .squad/plans/tasks.md --task task-1 "$source" x
+  expect_exit 2 'Missing value' "$worker" rejected --engine agy --worktree --plan .squad/plans/tasks.md --task task-1 "$source" ''
+done
+[[ ! -s "$WORKER_TEST_LOG" && ! -s "$WORKER_HERDR_LOG" ]] || fail 'invalid task launched engine/pane'
+[[ ! -d .squad/worktrees/rejected ]] || fail 'invalid task created worktree'
+
 # --- 3. status, report and brief record the plan -----------------------------------------------------
 last_status() { ls -t .squad/workers/"$1"-*.status | head -n 1; }
 SQUAD_MANAGER_ID=manager "$worker" p-1 --engine agy --no-worktree --plan .squad/plans/ok.md --brief 'Plan run' >"$tmp/out"

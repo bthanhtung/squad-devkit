@@ -23,3 +23,24 @@ fn plan_validation_and_context() {
         .success()
         .stdout("### Plan Goal\nhello\n\n### Plan Findings\nworld\n\n");
 }
+
+#[test]
+fn quick_plan_perspectives() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("quick.md");
+    for (risk, complexity, perspectives, valid) in [
+        ("low", "low", "", true),
+        ("moderate", "high", "", false),
+        ("low", "moderate", "", false),
+        ("low", "low", "## Perspectives\n- End user: works.\n", false),
+    ] {
+        fs::write(&file, format!("## Triage\n- Risk: {risk}\n- Complexity: {complexity}\n- squad-route: dev\n## Goal\nShip\n{perspectives}## Tasks\n- dev: implement\n## Acceptance\n- Works\n")).unwrap();
+        let mut cmd = Command::cargo_bin("squad").unwrap();
+        let assertion = cmd.args(["plan", "validate"]).arg(&file).assert();
+        if valid {
+            assertion.success();
+        } else {
+            assertion.failure();
+        }
+    }
+}

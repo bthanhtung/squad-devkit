@@ -13,6 +13,7 @@
 ## Findings
 - `<path>:<line>` — <what it does, what to follow or avoid>
 
+<!-- Optional only when both Risk and Complexity are low; if supplied, keep all five labels. -->
 ## Perspectives
 - Principal engineer: <what this perspective changed>
 - Engineering manager: <what this perspective changed>
@@ -24,6 +25,9 @@
 - <decision> — <why>
 
 ## Tasks
+<!-- --task [ID] selects an exact ID (default: worker ID) and adds Acceptance.
+     Use top-level `- ID (engine, role): task` bullets with indented continuation
+     lines, or `### ID` headings followed by the task body. Keep IDs unique. -->
 - <worker-id> (<engine>, <role>): <task>. Files: <owned files>. Depends on: <none|worker-id>.
 
 ## Acceptance
