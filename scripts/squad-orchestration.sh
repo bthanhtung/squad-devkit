@@ -4640,25 +4640,36 @@ build_frame_templates() {
   selection_sync
   notify_questions
   build_base_frame_templates
-  local columns footer text key n
+  local columns footer text key n detail_budget detail_height
   terminal_columns; columns="$REPLY"
   footer=""
   text="$(printf "> %s · j/k select · i details" "${selected_id:-no worker}" | LC_ALL=C tr -d '[:cntrl:]')"
   trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
   if (( details_open == 1 && selected_index >= 0 )); then
     footer=""
+    terminal_lines; detail_height="$REPLY"; detail_budget=$(( detail_height - 1 ))
+    [[ -z "$stop_pending" && -z "$action_message" ]] || detail_budget=$(( detail_budget - 1 ))
     for key in worker model model_tier attempt tier_override plan worktree log report verify verify_exit merged discarded scope_violation; do
+      (( detail_budget > 0 )) || break
       selected_field "$key"
       text="$(printf '%s: %s' "$key" "${REPLY:-—}" | LC_ALL=C tr -d '[:cntrl:]')"
       trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+      detail_budget=$(( detail_budget - 1 ))
     done
-    text="round: ${W_ROUND[$selected_index]} ${W_ROUND_REASON[$selected_index]:-} · merge: ${W_MERGE_STATE[$selected_index]:-—}"
-    trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
-    text="activity: ${W_ACTIVITY[$selected_index]:-—} · tokens: ${W_TOK[$selected_index]:-0}"
-    text="$(printf '%s' "$text" | LC_ALL=C tr -d '[:cntrl:]')"
-    trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
-    text="d diff · r report · s stop · m monitor · Esc back"
-    trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+    if (( detail_budget > 0 )); then
+      text="round: ${W_ROUND[$selected_index]} ${W_ROUND_REASON[$selected_index]:-} · merge: ${W_MERGE_STATE[$selected_index]:-—}"
+      trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+      detail_budget=$(( detail_budget - 1 ))
+    fi
+    if (( detail_budget > 0 )); then
+      text="activity: ${W_ACTIVITY[$selected_index]:-—} · tokens: ${W_TOK[$selected_index]:-0}"
+      text="$(printf '%s' "$text" | LC_ALL=C tr -d '[:cntrl:]')"
+      trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+    fi
+    if (( detail_height > 1 )) || [[ -z "$stop_pending" && -z "$action_message" ]]; then
+      text="d diff · r report · s stop · m monitor · Esc back"
+      trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
+    fi
     FRAME_TPL=("" "" "" "")
   fi
   text="$action_message"

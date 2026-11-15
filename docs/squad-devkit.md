@@ -560,6 +560,8 @@ In cards, tree and pipeline, Flow wraps message text and pins unanswered questio
 
 Use `j`/`k` or the arrow keys to select a worker and `i` to toggle details; `Esc` closes details or exits zoom. `d` pages its diff, `r` its report, `s` requests a stop (confirm with `y`), and `m` opens a monitor split. These actions are disabled in `--once`. Worker completion notifications use macOS or Linux desktop notifications when available; set `SQUAD_DEVKIT_NOTIFY=0` to disable them.
 
+`PAGER` must be a single executable name or path; embedded arguments such as `PAGER='less -R'` are unsupported.
+
 When all workers in scope finish (or when no workers are running in scope), the orchestration pane automatically counts down and closes itself after `SQUAD_ORCHESTRATION_HOLD` seconds (falls back to `SQUAD_WORKER_PANE_HOLD`, default 60s; `0` disables auto-close). During countdown, the footer shows the remaining time (`closing in 42s · p keep · ⏎ close` or `Nothing running · closing in ...` when empty). Press `p` to pin the pane and stop auto-close (`pinned · q quit`), or press Enter to close immediately. If a worker starts running again, the countdown resets automatically.
 
 To open one live monitor pane per worker instead (the first worker to the manager's right, later workers stacked below the previous one), pass `squad-devkit --view panes`, set `SQUAD_WORKER_VIEW=panes`, or add `view=panes` to `~/.config/squad-devkit/config`. Standalone `squad-worker` runs default to `panes`. `squad-devkit --doctor` reports the active view and its source (`flag`, `env`, `config`, or `default`).

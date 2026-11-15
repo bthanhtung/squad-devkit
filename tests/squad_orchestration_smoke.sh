@@ -1916,6 +1916,20 @@ selection_sync
 zoom_target=""
 selection_sync
 panel_key i
+for height in 8 14 24; do
+  for stop_pending in '' "$selected_id"; do
+    LINES="$height" COLUMNS=80
+    build_frame_templates
+    render_cached_frame 0
+    [[ "$(printf '%s' "$REPLY" | wc -l | tr -d ' ')" -le "$height" ]]
+    [[ "$REPLY" == *"worker: $selected_id"* && "$REPLY" == *'Esc back'* ]]
+    [[ -z "$stop_pending" || "$REPLY" == *"Stop $selected_id? y/n"* ]]
+    [[ "$REPLY" != *$'\033'* ]]
+    while IFS= read -r line; do (( ${#line} <= 80 )); done <<<"$REPLY"
+  done
+done
+stop_pending=""
+unset LINES
 for width in 80 60 18; do
   COLUMNS="$width"
   build_frame_templates
