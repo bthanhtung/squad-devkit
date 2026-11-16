@@ -602,10 +602,11 @@ run_doctor() {
   printf '  TERM_PROGRAM: %s\n' "$term_prog"
   local osascript_cmd="${SQUAD_DEVKIT_OSASCRIPT:-osascript}"
   local pane_support="dashboard window (fallback)"
+  local SQUAD_DEVKIT_ORCA_TERMINAL="${SQUAD_DEVKIT_ORCA_TERMINAL:-}"
 
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     pane_support="tmux split-pane"
-  elif [[ -n "$(squad_panes_orca_manager "$PWD")" ]] &&
+  elif SQUAD_DEVKIT_ORCA_TERMINAL="$(squad_panes_orca_manager "$PWD")" && [[ -n "$SQUAD_DEVKIT_ORCA_TERMINAL" ]] &&
     command -v "$(squad_panes_orca_cli)" >/dev/null 2>&1 && squad_has_jq; then
     pane_support="Orca split-pane (explicit manager terminal)"
   elif [[ "$(squad_panes_herdr_kind)" == herdr_app ]]; then
