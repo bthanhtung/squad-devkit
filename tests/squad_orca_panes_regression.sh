@@ -11,6 +11,7 @@ cat >"$cli" <<'FAKE'
 printf '%s\n' "$*" >>"$FAKE_LOG"
 [[ -z "${FAKE_WARN:-}" ]] || echo CLI-warning >&2
 case "$2" in
+  list) printf '{"ok":true,"result":{"terminals":[{"tabId":"tab","leafId":"leaf","handle":"mgr"}]}}\n' ;;
   show)
     if [[ "$4" == "${FAKE_BAD_SHOW:-}" ]]; then printf '{"ok":false,"error":{"code":"terminal_handle_stale","message":"stale"}}\n'; exit 1; fi
     if [[ "$4" == prev1 ]]; then printf '{"ok":true,"result":{"terminal":{%s"tabId":"tab1"}}}\n' "${FAKE_PREV_FLAGS-\"connected\":true,\"writable\":true,\"orphaned\":false,}"; exit 0; fi
@@ -114,4 +115,9 @@ done
 : >"$FAKE_LOG"; printf 'prev1\n' >"$temp/state/.orca-mgr.last"
 FAKE_PREV_FLAGS='"connected":true,"writable":true,' squad_open_monitor /bin/true t /ws "$temp/state" /bin/true required >/dev/null 2>&1 || fail "absent orphaned"
 grep -q 'split --terminal prev1 --direction horizontal' "$FAKE_LOG" || fail "absent orphaned reuses previous"
+# Doctor must use the same resolved manager for its actual split test.
+: >"$FAKE_LOG"
+doctor="$(env -u SQUAD_DEVKIT_ORCA_TERMINAL -u HC_TERMINAL_ID -u HERDR_ENV ORCA_PANE_KEY=tab:leaf "$repo/scripts/squad-devkit.sh" --doctor --split-test 2>&1)" || fail "doctor split test: $doctor"
+[[ "$doctor" == *'[OK]      split test opened'* ]] || fail "doctor split test: $doctor"
+grep -q 'split --terminal mgr --direction vertical' "$FAKE_LOG" || fail "doctor resolved manager"
 echo "squad orca panes regression ok"
