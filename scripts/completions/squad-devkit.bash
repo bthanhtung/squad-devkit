@@ -32,7 +32,7 @@ _squad_devkit() {
       return 0
       ;;
     --workers|--disable-workers)
-      local engines="claude codex opencode grok agy ccr"
+      local engines="claude codex opencode grok ccr"
       # shellcheck disable=SC2207
       COMPREPLY=( $(compgen -W "$engines" -- "$cur") )
       return 0
@@ -70,7 +70,7 @@ _squad_worker() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --tier-reason --verify --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review --own --no-plan-context --parent --budget-tokens --max-children --tree --json -h --help"
-  local engines="claude codex opencode grok agy ccr"
+  local engines="claude codex opencode grok ccr"
   local roles="dev tester reviewer researcher ui-ux security manager-devkit sub-manager"
   local profiles="high medium max"
 

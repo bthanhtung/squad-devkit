@@ -20,9 +20,9 @@ pub const CONFIG_FILE: &str = "worker-models.json";
 pub const CACHE_FILE: &str = "worker-model-cache.json";
 pub const TIERS: [&str; 3] = ["fast", "balanced", "strong"];
 /// Engines whose saved tiers the worker launcher reads (CCR uses its router).
-pub const CONFIG_ENGINES: [&str; 5] = ["claude", "codex", "opencode", "grok", "agy"];
+pub const CONFIG_ENGINES: [&str; 4] = ["claude", "codex", "opencode", "grok"];
 /// Engines with a model-list command and a CLI-supported effort setting.
-pub const DISCOVERY_ENGINES: [&str; 2] = ["codex", "agy"];
+pub const DISCOVERY_ENGINES: [&str; 1] = ["codex"];
 pub const DEFAULT_TIMEOUT_SECS: u64 = 20;
 const STALE_AFTER_DAYS: i64 = 7;
 const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
@@ -272,10 +272,6 @@ fn store_cache(workspace: &Path, lists: &BTreeMap<String, ModelList>) -> Result<
 
 // --- Discovery ---
 
-fn now() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
-}
-
 fn parse_time(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
@@ -299,54 +295,6 @@ fn display_name(name: &str, id: &str) -> String {
 fn push_unique(models: &mut Vec<ModelChoice>, choice: ModelChoice) {
     if validate_model_id(&choice.id).is_ok() && !models.iter().any(|m| m.id == choice.id) {
         models.push(choice);
-    }
-}
-
-/// `agy models` prints `id<TAB>friendly name` lines; anything else is skipped.
-pub fn parse_agy_models(text: &str) -> Result<Vec<ModelChoice>> {
-    let mut models = Vec::new();
-    for line in text.lines() {
-        let Some((id, name)) = line.split_once('\t') else {
-            continue;
-        };
-        let id = id.trim();
-        push_unique(
-            &mut models,
-            ModelChoice {
-                id: id.to_string(),
-                name: display_name(name, id),
-                efforts: Vec::new(),
-            },
-        );
-    }
-    if models.is_empty() {
-        bail!("no models in `agy models` output");
-    }
-    Ok(models)
-}
-
-/// Effort values documented by `agy --help`, e.g. `--effort ... (low|high)`.
-pub fn parse_agy_efforts(help: &str) -> Vec<String> {
-    let Some(line) = help
-        .lines()
-        .find(|line| line.trim_start().starts_with("--effort"))
-    else {
-        return Vec::new();
-    };
-    let (Some(start), Some(end)) = (line.rfind('('), line.rfind(')')) else {
-        return Vec::new();
-    };
-    if end <= start {
-        return Vec::new();
-    }
-    let values: Vec<String> = line[start + 1..end]
-        .split('|')
-        .map(|value| value.trim().to_string())
-        .collect();
-    if values.iter().all(|value| validate_effort(value).is_ok()) {
-        values
-    } else {
-        Vec::new()
     }
 }
 
@@ -524,31 +472,9 @@ fn discover_codex(timeout: Duration) -> Result<ModelList> {
     })
 }
 
-fn discover_agy(timeout: Duration) -> Result<ModelList> {
-    let (ok, out, _err) = run_bounded("agy", &["models"], timeout)?;
-    if !ok {
-        bail!("`agy models` failed; check the CLI login or retry");
-    }
-    let mut models = parse_agy_models(&out)?;
-    // Go-style help goes to stderr; its exit status is not meaningful.
-    let efforts = run_bounded("agy", &["--help"], timeout)
-        .map(|(_, out, err)| parse_agy_efforts(&format!("{out}\n{err}")))
-        .unwrap_or_default();
-    for model in &mut models {
-        model.efforts = efforts.clone();
-    }
-    Ok(ModelList {
-        source: "live: agy models".to_string(),
-        fetched_at: Some(now()),
-        live: true,
-        models,
-    })
-}
-
 pub fn discover(engine: &str, timeout: Duration) -> Result<ModelList> {
     match engine {
         "codex" => discover_codex(timeout),
-        "agy" => discover_agy(timeout),
         _ => bail!("live model discovery is not supported for {engine}"),
     }
 }
@@ -843,7 +769,7 @@ pub fn run_setup(
     if engines.is_empty() {
         writeln!(
             out,
-            "No engine with a model list command (codex, agy) is installed; nothing to set up."
+            "Codex, the only engine with a model list command, is not installed; nothing to set up."
         )?;
         return Ok(Outcome::Unchanged);
     }

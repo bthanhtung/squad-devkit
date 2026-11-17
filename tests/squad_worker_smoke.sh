@@ -90,20 +90,8 @@ if [[ -n "${FAKE_PLAIN_BEATS:-}" ]]; then
   for _ in $(seq "$FAKE_PLAIN_BEATS"); do echo 'progress'; sleep 1; done
 fi
 if [[ -n "${FAKE_PLAIN_SLEEP:-}" ]]; then sleep "$FAKE_PLAIN_SLEEP"; fi
-if [[ -n "${FAKE_AGY_JSON:-}" ]]; then
-  if [[ -n "${FAKE_AGY_INIT:-}" ]]; then
-    printf '{"event":"init","init":{"model":"%s"}}\n' "$FAKE_AGY_INIT"
-    echo '{"event":"step_update"}'
-    echo '{"event":"result","result":{"status":"SUCCESS","response":"Done. Verification: ok."}}'
-  else
-    echo '{"type":"assistant","message":{"model":"agy-reported"}}'
-    echo '{"type":"result","result":"Done. Verification: ok."}'
-  fi
-else
-  echo 'Done. Files: none. Verification: ok.'
-fi
+echo 'Done. Files: none. Verification: ok.'
 EOF
-sed 's/^printf .grok:/printf '"'"'agy:/' "$test_bin/grok" >"$test_bin/agy"
 sed 's/^printf .grok:/printf '"'"'gemini:/' "$test_bin/grok" >"$test_bin/gemini"
 cat >"$test_bin/opencode" <<'EOF'
 #!/usr/bin/env bash
@@ -130,7 +118,7 @@ squad join manager --role manager-devkit --client claude --protocol-version 2 >/
 worker="$repo_root/scripts/squad-worker.sh"
 
 # Model selection crosses the CLI boundary, not just the status display.
-for engine in codex claude opencode grok agy; do
+for engine in codex claude opencode grok; do
   key="SQUAD_WORKER_$(printf '%s' "$engine" | tr '[:lower:]' '[:upper:]')_MODEL"
   for selection in override environment default; do
     expected=env-choice
@@ -151,23 +139,15 @@ for engine in codex claude opencode grok agy; do
     else [[ "$call" != *'--model '* ]] || fail; fi
     actual=unknown; [[ "$engine" != claude ]] || actual=observed-model
     grep -qx "actual_model=$actual" "$sf"
-    if [[ "$engine" == agy ]]; then
-      grep -qx 'configured_model=unknown' "$sf"
-      grep -qx 'configured_model_source=unknown' "$sf"
-    fi
   done
 done
 # Saved effort is forwarded only when that selection wins.
 cat > .squad/worker-models.json <<'JSON'
-{"version":1,"engines":{"codex":{"strong":{"model":"saved-code","effort":"high"}},"agy":{"strong":{"model":"saved-agy","effort":"low"}}}}
+{"version":1,"engines":{"codex":{"strong":{"model":"saved-code","effort":"high"}}}}
 JSON
 "$worker" saved-code --engine codex --model-tier strong --no-worktree --brief check >/dev/null
 [[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--model saved-code -c model_reasoning_effort="high"'* ]] || fail
 [[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" != *'--profile '* ]] || fail
-"$worker" saved-agy --engine agy --model-tier strong --no-worktree --brief check >/dev/null
-[[ "$(grep '^agy:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--effort low --model saved-agy'* ]] || fail
-grep -qx 'configured_model=unknown' .squad/workers/saved-agy-*.status
-grep -qx 'configured_model_source=unknown' .squad/workers/saved-agy-*.status
 SQUAD_WORKER_CODEX_PROFILE=custom "$worker" saved-profile --engine codex --model-tier strong --no-worktree --brief check >/dev/null
 [[ "$(grep '^codex:' "$WORKER_TEST_LOG" | tail -n 1)" == *'--profile custom'* ]] || fail
 "$worker" flag-profile --engine codex --profile chosen --model explicit --model-tier strong --no-worktree --brief check >/dev/null
@@ -177,14 +157,6 @@ rm .squad/worker-models.json
 SQUAD_WORKER_CODEX_MODEL_STRONG=tier-choice "$worker" tier-codex --engine codex --model-tier strong --no-worktree --brief '--models' >/dev/null
 grep -qx 'model_tier=strong' .squad/workers/tier-codex-*.status
 grep -qx 'requested_model=tier-choice' .squad/workers/tier-codex-*.status
-FAKE_AGY_JSON=1 "$worker" model-agy-json --engine agy --no-worktree --brief 'AGY JSON' >/dev/null
-grep -qx 'actual_model=agy-reported' .squad/workers/model-agy-json-*.status
-grep -qx 'configured_model=unknown' .squad/workers/model-agy-json-*.status
-grep -qx 'configured_model_source=unknown' .squad/workers/model-agy-json-*.status
-FAKE_AGY_JSON=1 FAKE_AGY_INIT=agy-native-model "$worker" model-agy-init --engine agy --no-worktree --brief 'AGY init' >/dev/null
-grep -qx 'actual_model=unknown' .squad/workers/model-agy-init-*.status
-grep -qx 'configured_model=agy-native-model' .squad/workers/model-agy-init-*.status
-grep -qx 'configured_model_source=agy-init' .squad/workers/model-agy-init-*.status
 if "$worker" model-ccr --engine ccr --model explicit --brief check >/dev/null 2>"$temp_directory/model-stderr"; then fail; fi
 grep -q 'router' "$temp_directory/model-stderr"
 if SQUAD_WORKER_CCR_MODEL=env "$worker" model-ccr-env --engine ccr --brief check >/dev/null 2>&1; then fail; fi
@@ -697,7 +669,7 @@ visible="$(LC_ALL=C sed -e "s/$(printf '\033')\\[[0-9;?]*[A-Za-z]//g" "$flicker/
 probe_workspace="$temp_directory/client-probe"
 mkdir -p "$probe_workspace"
 (cd "$probe_workspace" && squad init >/dev/null)
-for engine in grok agy ccr claude codex opencode; do
+for engine in grok ccr claude codex opencode; do
   expected="$engine"
   if ! (cd "$probe_workspace" && squad join "probe-$engine" --client "$engine" >/dev/null 2>&1); then
     case "$engine" in
@@ -710,9 +682,14 @@ for engine in grok agy ccr claude codex opencode; do
 done
 [[ "$("$worker" w --engine gemini --brief x 2>&1 || true)" == *'Unknown engine'* ]] || fail
 [[ "$("$worker" w --engine bogus --brief x 2>&1 || true)" == *'Unknown engine'* ]] || fail
+# agy was removed as a worker engine (it stays a manager).
+agy_status=0
+agy_output="$("$worker" w --engine agy --brief x 2>&1)" || agy_status=$?
+[[ "$agy_status" == 2 && "$agy_output" == *'agy can no longer run as a worker'* ]] || fail
 
 # The stall watchdog also covers engines that print the report on stdout.
-for engine in grok agy; do
+# shellcheck disable=SC2043 # one engine today; the loop body is per-engine.
+for engine in grok; do
   status=0
   FAKE_PLAIN_SLEEP=31 SQUAD_WORKER_STALL_SECONDS=2 "$worker" "stall-$engine" --engine "$engine" --no-worktree \
     --brief 'Silent' >/dev/null 2>"$temp_directory/error" || status=$?
@@ -723,7 +700,7 @@ for engine in grok agy; do
   ! kill -0 "$(cat "$WORKER_TEST_LOG.pid")" 2>/dev/null || fail
 done
 # Steady output keeps a non-streaming engine alive past the stall limit.
-FAKE_PLAIN_BEATS=5 SQUAD_WORKER_STALL_SECONDS=3 "$worker" beat-1 --engine agy --no-worktree \
+FAKE_PLAIN_BEATS=5 SQUAD_WORKER_STALL_SECONDS=3 "$worker" beat-1 --engine grok --no-worktree \
   --brief 'Chatty' >/dev/null 2>&1
 grep -qx 'state=completed' .squad/workers/beat-1-*.status
 # SQUAD_WORKER_STALL_SECONDS=0 disables the watchdog.
@@ -737,7 +714,7 @@ FAKE_PLAIN_SLEEP=30 SQUAD_WORKER_TIMEOUT_SECONDS=2 "$worker" to-1 --engine grok 
 [[ "$status" == 124 ]] || fail
 grep -q 'to-1 (grok) timed out' "$temp_directory/error"
 # Only fake engines run with bypass flags; inheritance and standalone opt-in agree.
-for engine in claude codex agy; do
+for engine in claude codex; do
   for opt_in in flag inherited; do
     : >"$WORKER_TEST_LOG"
     if [[ "$opt_in" == flag ]]; then
@@ -749,7 +726,6 @@ for engine in claude codex agy; do
     case "$engine" in
       codex) [[ "$call" == *'--dangerously-bypass-approvals-and-sandbox'* && "$call" != *'--sandbox '* ]] || fail ;;
       claude) [[ "$call" == *'--dangerously-skip-permissions'* && "$call" == *'"enabled":false'* && "$call" != *'--permission-mode '* ]] || fail ;;
-      agy) [[ "$call" == *'--dangerously-skip-permissions'* && "$call" != *'--sandbox '* ]] || fail ;;
     esac
   done
 done
@@ -763,7 +739,5 @@ if SQUAD_WORKER_SANDBOX=1 "$worker" yolo-conflict --engine claude --yolo --brief
 for engine in grok opencode ccr; do
   if "$worker" yolo-unsupported --engine "$engine" --yolo --brief test >/dev/null 2>&1; then fail; fi
 done
-
-bash "$repo_root/tests/squad_worker_agy_lifecycle_smoke.sh"
 
 echo 'PASS: squad-worker engines, worktrees, panes in every terminal, flicker-free monitor, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'

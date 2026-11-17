@@ -17,22 +17,16 @@ export HOME="$tmp/home"
 export GIT_CONFIG_NOSYSTEM=1
 export PATH="$tmp/bin:$PATH"
 
-# Fake agy CLI: reads prompt after -p, tracks plan/review call counts in $FAKE_STATE_DIR,
-# and emits native AGY stream-json with usage tokens.
-cat >"$tmp/bin/agy" <<'EOF'
+# Fake claude CLI: takes the prompt as its last argument, tracks plan/review call counts in
+# $FAKE_STATE_DIR, and emits stream-json with usage tokens.
+cat >"$tmp/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-prompt=""
-while (( $# > 0 )); do
-  case "$1" in
-    -p) prompt="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
+prompt="${*: -1}"
 
 state_dir="${FAKE_STATE_DIR:?}"
-in_tok="${FAKE_AGY_IN_TOKENS:-100}"
-out_tok="${FAKE_AGY_OUT_TOKENS:-50}"
+in_tok="${FAKE_ENGINE_IN_TOKENS:-100}"
+out_tok="${FAKE_ENGINE_OUT_TOKENS:-50}"
 
 if [[ "$prompt" == *"## Phase: plan"* ]]; then
   n=0
@@ -66,9 +60,9 @@ else
 fi
 
 jq -cn --arg resp "$resp" --argjson in_t "$in_tok" --argjson out_t "$out_tok" \
-  '{event:"result",result:{status:"SUCCESS",response:$resp,usage:{input_tokens:$in_t,output_tokens:$out_t}}}'
+  '{type:"result",result:$resp,usage:{input_tokens:$in_t,output_tokens:$out_t}}'
 EOF
-chmod +x "$tmp/bin/agy"
+chmod +x "$tmp/bin/claude"
 
 # Fake squad-worker: records arguments, writes a child report and status file,
 # optionally edits a file in the project directory, and exits with configured status.
@@ -90,7 +84,7 @@ printf '%s' "$n" >"$state_dir/worker_count_$cid"
 
 project_dir=""
 brief_file=""
-engine="agy"
+engine="opencode"
 while (( $# > 0 )); do
   case "$1" in
     --project) project_dir="$2"; shift 2 ;;
@@ -166,15 +160,15 @@ PROMPT
   export SQUAD_SM_PROMPT_FILE="$case_dir/prompt.md"
   export SQUAD_SM_LOG="$case_dir/workspace/.squad/workers/sm-api.log"
   export SQUAD_SM_REPORT="$case_dir/workspace/.squad/workers/sm-api.md"
-  export SQUAD_SM_ENGINE="agy"
-  export SQUAD_SM_MODEL="gemini-4-argon-high"
+  export SQUAD_SM_ENGINE="claude"
+  export SQUAD_SM_MODEL="sonnet"
   export SQUAD_SM_PLAN="none"
   export SQUAD_SM_BUDGET="600000"
   export SQUAD_SM_MAX_CHILDREN="3"
   export SQUAD_SM_WORKER="$fake_worker"
   unset FAKE_PLAN_RESPONSE FAKE_PLAN_RESPONSE_1 FAKE_PLAN_RESPONSE_2 \
         FAKE_REVIEW_RESPONSE FAKE_REVIEW_RESPONSE_1 FAKE_REVIEW_RESPONSE_2 \
-        FAKE_AGY_IN_TOKENS FAKE_AGY_OUT_TOKENS \
+        FAKE_ENGINE_IN_TOKENS FAKE_ENGINE_OUT_TOKENS \
         FAKE_WORKER_IN_TOKENS FAKE_WORKER_OUT_TOKENS FAKE_WORKER_FAIL_ID || true
 }
 
@@ -184,8 +178,8 @@ export FAKE_PLAN_RESPONSE='Reasoning before JSON.
 ```json
 {
   "children": [
-    {"id":"api-1","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/handler.ts"],"brief":"Implement handler"},
-    {"id":"api-2","role":"tester","engine":"agy","model":"gemini-3.8-flash-medium","owns":["tests/api/handler.test.ts"],"brief":"Test handler"}
+    {"id":"api-1","role":"dev","engine":"opencode","owns":["src/api/handler.ts"],"brief":"Implement handler"},
+    {"id":"api-2","role":"tester","engine":"opencode","owns":["tests/api/handler.test.ts"],"brief":"Test handler"}
   ],
   "notes": "split into dev and tester"
 }
@@ -196,21 +190,21 @@ export FAKE_REVIEW_RESPONSE='{"verdict":"pass","fixes":[],"summary":"Both childr
 [[ -s "$SQUAD_SM_REPORT" ]] || fail "missing final report"
 (( $(wc -l <"$SQUAD_SM_REPORT") <= 25 )) || fail "report exceeds 25 lines"
 grep -q '^Verdict: pass$' "$SQUAD_SM_REPORT" || fail "expected Verdict: pass"
-grep -q '| api-1 | agy | completed | 300 |' "$SQUAD_SM_REPORT" || fail "missing api-1 row"
-grep -q '| api-2 | agy | completed | 300 |' "$SQUAD_SM_REPORT" || fail "missing api-2 row"
+grep -q '| api-1 | opencode | completed | 300 |' "$SQUAD_SM_REPORT" || fail "missing api-1 row"
+grep -q '| api-2 | opencode | completed | 300 |' "$SQUAD_SM_REPORT" || fail "missing api-2 row"
 grep -q '^Budget: 900/600000 tokens$' "$SQUAD_SM_REPORT" || fail "unexpected budget total"
 grep -q 'tracked.txt' "$SQUAD_SM_REPORT" || fail "expected diff --stat with tracked.txt"
 # Worker calls have --parent, --no-worktree, --project SQUAD_SM_DIR, and never --merge.
-grep -q '^api-1 .*--manager sm-api --parent sm-api --engine agy --model gemini-3.8-flash-medium --role dev --no-worktree --project '"$SQUAD_SM_DIR"' --no-plan sub-manager child --own src/api/handler.ts --brief-file ' "$FAKE_STATE_DIR/worker_calls.log" || fail "unexpected worker args for api-1"
-grep -q '^api-2 .*--manager sm-api --parent sm-api --engine agy --model gemini-3.8-flash-medium --role tester --no-worktree --project '"$SQUAD_SM_DIR"' --no-plan sub-manager child --own tests/api/handler.test.ts --brief-file ' "$FAKE_STATE_DIR/worker_calls.log" || fail "unexpected worker args for api-2"
+grep -q '^api-1 .*--manager sm-api --parent sm-api --engine opencode --role dev --no-worktree --project '"$SQUAD_SM_DIR"' --no-plan sub-manager child --own src/api/handler.ts --brief-file ' "$FAKE_STATE_DIR/worker_calls.log" || fail "unexpected worker args for api-1"
+grep -q '^api-2 .*--manager sm-api --parent sm-api --engine opencode --role tester --no-worktree --project '"$SQUAD_SM_DIR"' --no-plan sub-manager child --own tests/api/handler.test.ts --brief-file ' "$FAKE_STATE_DIR/worker_calls.log" || fail "unexpected worker args for api-2"
 ! grep -q -- '--merge' "$FAKE_STATE_DIR/worker_calls.log" || fail "driver must never pass --merge"
 [[ "$(git -C "$SQUAD_SM_DIR" rev-list --count HEAD)" == 1 ]] || fail "driver must never git commit"
 
 # 2. Fix path: first review returns fix for api-1, rerun api-1 once, second review returns pass.
 setup_case fix_path
 export FAKE_PLAN_RESPONSE='{"children":[
-  {"id":"api-1","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/a.ts"],"brief":"Original brief A"},
-  {"id":"api-2","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["tests/api/b.ts"],"brief":"Original brief B"}
+  {"id":"api-1","role":"dev","engine":"opencode","owns":["src/api/a.ts"],"brief":"Original brief A"},
+  {"id":"api-2","role":"dev","engine":"opencode","owns":["tests/api/b.ts"],"brief":"Original brief B"}
 ],"notes":"ok"}'
 export FAKE_REVIEW_RESPONSE_1='{"verdict":"fix","fixes":[{"id":"api-1","brief":"Handle empty input"}],"summary":"api-1 missed edge case"}'
 export FAKE_REVIEW_RESPONSE_2='{"verdict":"pass","fixes":[],"summary":"Fixed on rerun"}'
@@ -226,7 +220,7 @@ grep -q 'Handle empty input' "$FAKE_STATE_DIR/brief_api-1_2.md" || fail "rerun b
 # 2b. Second fix round is not rerun; reported as "needs root attention", exit 1.
 setup_case fix_twice
 export FAKE_PLAN_RESPONSE='{"children":[
-  {"id":"api-1","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/a.ts"],"brief":"Original brief A"}
+  {"id":"api-1","role":"dev","engine":"opencode","owns":["src/api/a.ts"],"brief":"Original brief A"}
 ],"notes":"ok"}'
 export FAKE_REVIEW_RESPONSE_1='{"verdict":"fix","fixes":[{"id":"api-1","brief":"Fix 1"}],"summary":"still broken"}'
 export FAKE_REVIEW_RESPONSE_2='{"verdict":"fix","fixes":[{"id":"api-1","brief":"Fix 2"}],"summary":"still broken after fix"}'
@@ -249,7 +243,7 @@ grep -q '## Validation Errors' "$FAKE_STATE_DIR/plan_prompt_2.txt" || fail "retr
 # 4. Ownership outside root's owned paths -> rejected.
 setup_case outside_ownership
 export FAKE_PLAN_RESPONSE='{"children":[
-  {"id":"api-1","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/other/secret.ts"],"brief":"Touch outside scope"}
+  {"id":"api-1","role":"dev","engine":"opencode","owns":["src/other/secret.ts"],"brief":"Touch outside scope"}
 ],"notes":"bad scope"}'
 
 if "$driver" >/dev/null 2>&1; then fail "expected exit 1 on ownership violation"; fi
@@ -261,9 +255,9 @@ grep -q 'outside root owned paths' "$SQUAD_SM_REPORT" || fail "expected outside 
 setup_case too_many_children
 export SQUAD_SM_MAX_CHILDREN="2"
 export FAKE_PLAN_RESPONSE='{"children":[
-  {"id":"c1","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/1.ts"],"brief":"1"},
-  {"id":"c2","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/2.ts"],"brief":"2"},
-  {"id":"c3","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/3.ts"],"brief":"3"}
+  {"id":"c1","role":"dev","engine":"opencode","owns":["src/api/1.ts"],"brief":"1"},
+  {"id":"c2","role":"dev","engine":"opencode","owns":["src/api/2.ts"],"brief":"2"},
+  {"id":"c3","role":"dev","engine":"opencode","owns":["src/api/3.ts"],"brief":"3"}
 ],"notes":"too many"}'
 
 if "$driver" >/dev/null 2>&1; then fail "expected exit 1 on too many children"; fi
@@ -273,12 +267,12 @@ grep -q 'too many children' "$SQUAD_SM_REPORT" || fail "expected too many childr
 # 6. Budget small -> "budget reached", exit 1.
 setup_case small_budget
 export SQUAD_SM_BUDGET="500"
-export FAKE_AGY_IN_TOKENS="200"
-export FAKE_AGY_OUT_TOKENS="100"
+export FAKE_ENGINE_IN_TOKENS="200"
+export FAKE_ENGINE_OUT_TOKENS="100"
 export FAKE_WORKER_IN_TOKENS="150"
 export FAKE_WORKER_OUT_TOKENS="100"
 export FAKE_PLAN_RESPONSE='{"children":[
-  {"id":"api-1","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/1.ts"],"brief":"work"}
+  {"id":"api-1","role":"dev","engine":"opencode","owns":["src/api/1.ts"],"brief":"work"}
 ],"notes":"ok"}'
 export FAKE_REVIEW_RESPONSE='{"verdict":"pass","fixes":[],"summary":"ok"}'
 
@@ -298,7 +292,7 @@ grep -q 'SQUAD_SM_TASK' "$SQUAD_SM_REPORT" || fail "expected missing variable na
 setup_case retry_plan_succeeds
 export FAKE_PLAN_RESPONSE_1='{"children":[]}'
 export FAKE_PLAN_RESPONSE_2='{"children":[
-  {"id":"api-1","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/ok.ts"],"brief":"Implement ok"}
+  {"id":"api-1","role":"dev","engine":"opencode","owns":["src/api/ok.ts"],"brief":"Implement ok"}
 ],"notes":"fixed on retry"}'
 export FAKE_REVIEW_RESPONSE='{"verdict":"pass","fixes":[],"summary":"ok"}'
 "$driver" >/dev/null
@@ -308,8 +302,8 @@ grep -q '^Verdict: pass$' "$SQUAD_SM_REPORT" || fail "expected pass after plan r
 # 9. Overlapping ownership, path traversal (..), and disallowed engine (claude without SQUAD_SM_ALLOW_CLAUDE=1) -> rejected.
 setup_case bad_schema_cases
 export FAKE_PLAN_RESPONSE_1='{"children":[
-  {"id":"c1","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api"],"brief":"dir"},
-  {"id":"c2","role":"dev","engine":"agy","model":"gemini-3.8-flash-medium","owns":["src/api/sub.ts"],"brief":"sub"}
+  {"id":"c1","role":"dev","engine":"opencode","owns":["src/api"],"brief":"dir"},
+  {"id":"c2","role":"dev","engine":"opencode","owns":["src/api/sub.ts"],"brief":"sub"}
 ],"notes":"overlapping"}'
 export FAKE_PLAN_RESPONSE_2='{"children":[
   {"id":"c1","role":"dev","engine":"claude","model":"haiku","owns":["src/api/../escape.ts"],"brief":"escape"}
@@ -319,5 +313,28 @@ grep -q 'overlapping ownership' "$FAKE_STATE_DIR/plan_prompt_2.txt" || fail "exp
 grep -q 'plan rejected' "$SQUAD_SM_REPORT" || fail "expected plan rejected"
 grep -q 'disallowed engine claude' "$SQUAD_SM_REPORT" || fail "expected disallowed engine claude error"
 grep -q 'must not contain \.\.' "$SQUAD_SM_REPORT" || fail "expected .. path error"
+
+# 10. agy is no longer an allowed child engine; omitted engine/model default to opencode with no --model.
+setup_case agy_child_rejected
+export FAKE_PLAN_RESPONSE='{"children":[
+  {"id":"c1","role":"dev","engine":"agy","owns":["src/api/1.ts"],"brief":"agy child"}
+],"notes":"agy"}'
+if "$driver" >/dev/null 2>&1; then fail "expected exit 1 for an agy child"; fi
+grep -q 'disallowed engine agy' "$SQUAD_SM_REPORT" || fail "expected disallowed engine agy error"
+
+setup_case child_defaults
+export FAKE_PLAN_RESPONSE='{"children":[
+  {"id":"d1","role":"dev","owns":["src/api/1.ts"],"brief":"defaults"}
+],"notes":"defaults"}'
+export FAKE_REVIEW_RESPONSE='{"verdict":"pass","fixes":[],"summary":"ok"}'
+"$driver" >/dev/null || fail "driver failed for a child with defaults"
+grep -q '^d1 .*--engine opencode --role dev ' "$FAKE_STATE_DIR/worker_calls.log" || fail "child did not default to opencode"
+if grep -q -- '--model' "$FAKE_STATE_DIR/worker_calls.log"; then fail "default child must not pass a hard-coded --model"; fi
+
+# 11. agy is not a sub-manager engine either.
+setup_case agy_engine_rejected
+export SQUAD_SM_ENGINE="agy"
+if "$driver" >/dev/null 2>"$case_dir/stderr.txt"; then fail "expected agy sub-manager engine to be rejected"; fi
+grep -q 'unsupported SQUAD_SM_ENGINE: agy' "$case_dir/stderr.txt" || grep -q 'unsupported SQUAD_SM_ENGINE: agy' "$SQUAD_SM_REPORT" 2>/dev/null || fail "missing unsupported engine message"
 
 echo "PASS: squad-submanager smoke tests"

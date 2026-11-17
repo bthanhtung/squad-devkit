@@ -78,7 +78,7 @@ case "${1:-}" in
 esac
 exit 0
 FAKE
-for cli in claude codex agy gemini opencode ccr; do
+for cli in claude codex gemini opencode ccr; do
   cat >"$tmp/bin/$cli" <<FAKE
 #!/usr/bin/env bash
 echo "$cli 1.0"
@@ -139,7 +139,7 @@ rm -rf "$tmp/project/.squad/workers"
 : >"$TEST_SPLITS"
 : >"$TEST_TITLES"
 export SQUAD_WORKER_VIEW=orchestration-branches
-"$tmp/scripts/squad-worker.sh" sm-1 --engine agy --role sub-manager --manager m-a --no-plan "test3" --no-worktree --brief "sub-manager task" >/dev/null
+"$tmp/scripts/squad-worker.sh" sm-1 --engine claude --role sub-manager --manager m-a --no-plan "test3" --no-worktree --brief "sub-manager task" >/dev/null
 [[ "$(wc -l <"$TEST_SPLITS" | tr -d ' ')" == 1 ]]
 [[ -f "$tmp/project/.squad/workers/.orchestration-m-m-a.pid" ]]
 [[ -f "$tmp/project/.squad/workers/orchestration-m-m-a.sh" ]]

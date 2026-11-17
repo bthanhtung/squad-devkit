@@ -34,7 +34,7 @@ demo_dir="$(cd "$demo_dir" && pwd -P)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/../.." && pwd -P)"
 
-# Create isolated fake CLIs (claude, opencode, agy, squad) + basic utilities in <dir>/bin
+# Create isolated fake CLIs (claude, opencode, grok, squad) + basic utilities in <dir>/bin
 # so `squad-devkit --setup` detects a deterministic set of engines.
 setup_fake_clis() {
   local bin_dir="$1"
@@ -47,7 +47,7 @@ setup_fake_clis() {
   done
 
   local cli
-  for cli in squad claude opencode agy; do
+  for cli in squad claude opencode grok; do
     cat > "$bin_dir/$cli" <<MOCK
 #!/usr/bin/env bash
 if [[ "\$*" == *"--version"* ]]; then
@@ -106,31 +106,29 @@ done_pid="${pids[0]}"
 
 # ==============================================================================
 # Plan 1: checkout-flow
-#   manager -> dev-1 (agy, gemini-3.8-flash-medium, running)
+#   manager -> dev-1 (claude, sonnet, running)
 #   manager -> dev-2 (opencode, deepseek-v4-pro, completed, round 2)
-#   manager -> test-1 (agy, flash, asking: latest message is a QUESTION)
+#   manager -> test-1 (claude, haiku, asking: latest message is a QUESTION)
 # ==============================================================================
 
 cat > "$workers_dir/dev-1.log" <<'EOF'
-{"event":"init","init":{"model":"gemini-3.8-flash-medium"}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"read_file","tool_info":{"parameters":{"Path":"src/checkout/cart.ts"}}}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"replace_file_content","tool_info":{"parameters":{"Path":"src/checkout/cart.ts"}}}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"write_to_file","tool_info":{"parameters":{"Path":"src/checkout/discount.ts"}}}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"run_command","tool_info":{"parameters":{"CommandLine":"npm test -- src/checkout/cart.test.ts"},"output":"PASS src/checkout/cart.test.ts (8 passed in 0.9s)"}}}
-{"event":"result","result":{"num_turns":3,"usage":{"input_tokens":18400,"cache_read_input_tokens":6200,"output_tokens":4100}}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE","tool_name":"run_command","tool_info":{"parameters":{"CommandLine":"npm run typecheck"}}}}
+{"type":"assistant","message":{"model":"sonnet","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/checkout/cart.ts"}}]}}
+{"type":"assistant","message":{"model":"sonnet","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"src/checkout/cart.ts"}}]}}
+{"type":"assistant","message":{"model":"sonnet","content":[{"type":"tool_use","id":"t3","name":"Write","input":{"file_path":"src/checkout/discount.ts"}}]}}
+{"type":"assistant","message":{"model":"sonnet","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"npm test -- src/checkout/cart.test.ts"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t4","content":"PASS src/checkout/cart.test.ts (8 passed in 0.9s)"}]}}
+{"type":"assistant","message":{"model":"sonnet","content":[{"type":"tool_use","id":"t5","name":"Bash","input":{"command":"npm run typecheck"}}]}}
+{"type":"result","num_turns":3,"usage":{"input_tokens":18400,"cache_read_input_tokens":6200,"output_tokens":4100}}
 EOF
 
 cat > "$workers_dir/dev-1.status" <<EOF
 worker=dev-1
 manager=manager
-engine=agy
-model=gemini-3.8-flash-medium
-requested_model=gemini-3.8-flash-medium
+engine=claude
+model=sonnet
+requested_model=sonnet
 model_source=flag
-actual_model=gemini-3.8-flash-medium
-configured_model=gemini-3.8-flash-medium
-configured_model_source=agy-init
+actual_model=sonnet
 role=dev
 title=Implement cart totals and discount validation
 state=running
@@ -199,21 +197,18 @@ plan=$plans_dir/checkout-flow.md
 EOF
 
 cat > "$workers_dir/test-1.log" <<'EOF'
-{"event":"init","init":{"model":"gemini-3.8-flash"}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"read_file","tool_info":{"parameters":{"Path":"tests/checkout.spec.ts"}}}}
-{"event":"result","result":{"num_turns":1,"usage":{"input_tokens":9200,"cache_read_input_tokens":3000,"output_tokens":2800}}}
+{"type":"assistant","message":{"model":"haiku","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"tests/checkout.spec.ts"}}]}}
+{"type":"result","num_turns":1,"usage":{"input_tokens":9200,"cache_read_input_tokens":3000,"output_tokens":2800}}
 EOF
 
 cat > "$workers_dir/test-1.status" <<EOF
 worker=test-1
 manager=manager
-engine=agy
-model=gemini-3.8-flash
-requested_model=gemini-3.8-flash
+engine=claude
+model=haiku
+requested_model=haiku
 model_source=flag
-actual_model=gemini-3.8-flash
-configured_model=gemini-3.8-flash
-configured_model_source=agy-init
+actual_model=haiku
 role=tester
 title=Integration tests for promo codes
 state=running
@@ -227,27 +222,24 @@ EOF
 
 # ==============================================================================
 # Plan 2: payments-api
-#   sub-manager sm-api (agy, gemini-4-argon-high, running, depth=1)
+#   sub-manager sm-api (claude, sonnet, running, depth=1)
 #   children api-1 (running, parent=sm-api, depth=2), api-2 (completed, parent=sm-api, depth=2)
 #   failed reviewer rev-1
 # ==============================================================================
 
 cat > "$workers_dir/sm-api.log" <<'EOF'
-{"event":"init","init":{"model":"gemini-4-argon-high"}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"read_file","tool_info":{"parameters":{"Path":"src/payments/index.ts"}}}}
-{"event":"result","result":{"num_turns":2,"usage":{"input_tokens":16000,"cache_read_input_tokens":5000,"output_tokens":6000}}}
+{"type":"assistant","message":{"model":"sonnet","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/payments/index.ts"}}]}}
+{"type":"result","num_turns":2,"usage":{"input_tokens":16000,"cache_read_input_tokens":5000,"output_tokens":6000}}
 EOF
 
 cat > "$workers_dir/sm-api.status" <<EOF
 worker=sm-api
 manager=manager
-engine=agy
-model=gemini-4-argon-high
-requested_model=gemini-4-argon-high
+engine=claude
+model=sonnet
+requested_model=sonnet
 model_source=flag
-actual_model=gemini-4-argon-high
-configured_model=gemini-4-argon-high
-configured_model_source=agy-init
+actual_model=sonnet
 role=sub-manager
 title=Coordinate payments API endpoints and webhook verification
 state=running
@@ -265,21 +257,18 @@ plan=$plans_dir/payments-api.md
 EOF
 
 cat > "$workers_dir/api-1.log" <<'EOF'
-{"event":"init","init":{"model":"gemini-3.8-flash-medium"}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"write_to_file","tool_info":{"parameters":{"Path":"src/payments/webhook.ts"}}}}
-{"event":"result","result":{"num_turns":2,"usage":{"input_tokens":14000,"cache_read_input_tokens":4000,"output_tokens":5500}}}
+{"type":"assistant","message":{"model":"haiku","content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"src/payments/webhook.ts"}}]}}
+{"type":"result","num_turns":2,"usage":{"input_tokens":14000,"cache_read_input_tokens":4000,"output_tokens":5500}}
 EOF
 
 cat > "$workers_dir/api-1.status" <<EOF
 worker=api-1
 manager=sm-api
-engine=agy
-model=gemini-3.8-flash-medium
-requested_model=gemini-3.8-flash-medium
+engine=claude
+model=haiku
+requested_model=haiku
 model_source=flag
-actual_model=gemini-3.8-flash-medium
-configured_model=gemini-3.8-flash-medium
-configured_model_source=agy-init
+actual_model=haiku
 role=dev
 title=Implement HMAC webhook signature verification
 state=running
@@ -294,21 +283,18 @@ plan=$plans_dir/payments-api.md
 EOF
 
 cat > "$workers_dir/api-2.log" <<'EOF'
-{"event":"init","init":{"model":"gemini-3.8-flash-medium"}}
-{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"replace_file_content","tool_info":{"parameters":{"Path":"src/payments/charges.ts"}}}}
-{"event":"result","result":{"num_turns":2,"usage":{"input_tokens":19000,"cache_read_input_tokens":6000,"output_tokens":7500}}}
+{"type":"assistant","message":{"model":"haiku","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"src/payments/charges.ts"}}]}}
+{"type":"result","num_turns":2,"usage":{"input_tokens":19000,"cache_read_input_tokens":6000,"output_tokens":7500}}
 EOF
 
 cat > "$workers_dir/api-2.status" <<EOF
 worker=api-2
 manager=sm-api
-engine=agy
-model=gemini-3.8-flash-medium
-requested_model=gemini-3.8-flash-medium
+engine=claude
+model=haiku
+requested_model=haiku
 model_source=flag
-actual_model=gemini-3.8-flash-medium
-configured_model=gemini-3.8-flash-medium
-configured_model_source=agy-init
+actual_model=haiku
 role=dev
 title=Add idempotency keys to POST /v1/charges
 state=completed
@@ -395,7 +381,7 @@ cat > "$demo_dir/history.txt" <<'EOF'
   [2026-11-14T09:01:40Z] manager -> dev-2: ## Goal Implement checkout session handler in /tmp/demo/ws
   [2026-11-14T09:02:05Z] dev-2 -> manager: QUESTION from dev-2: Retry on 502 from payment gateway?
   [2026-11-14T09:02:18Z] manager -> dev-2: ANSWER from manager: Yes, exponential backoff up to 3 attempts
-  [2026-11-14T09:02:45Z] api-2 -> sm-api: api-2 (agy) completed task 4a9c: idempotency keys verified
+  [2026-11-14T09:02:45Z] api-2 -> sm-api: api-2 (claude) completed task 4a9c: idempotency keys verified
   [2026-11-14T09:03:00Z] sm-api -> api-1: ## Goal Implement HMAC webhook signature verification
   [2026-11-14T09:03:15Z] manager -> dev-1: ## Goal Implement cart totals and discount validation in /tmp/demo/ws
   [2026-11-14T09:03:40Z] dev-2 -> manager: dev-2 (opencode) completed task 8b1d: round 2 retry backoff passing
@@ -412,8 +398,8 @@ printf '\033[2mPlan: .squad/plans/checkout-flow.md\033[0m\n'
 printf '\033[2m──────────────────────────────────────────────────────\033[0m\n\n'
 printf '\033[1muser>\033[0m Add cart discount validation and 502 retry.\n\n'
 printf '\033[1;35mmanager>\033[0m Triaged (moderate, 2 independent files).\n'
-printf '\033[1;35mmanager>\033[0m starting dev-1 (agy) and dev-2 (opencode)…\n\n'
-printf '  \033[33m●\033[0m dev-1  agy · gemini-3.8-flash-medium   running\n'
+printf '\033[1;35mmanager>\033[0m starting dev-1 (claude) and dev-2 (opencode)…\n\n'
+printf '  \033[33m●\033[0m dev-1  claude · sonnet   running\n'
 printf '  \033[32m✓\033[0m dev-2  opencode · deepseek-v4-pro      completed\n\n'
 printf '\033[1;35mmanager>\033[0m dev-2 round 2 passed 5/5 session tests.\n'
 printf '\033[1;35mmanager>\033[0m waiting on dev-1 typecheck before merge…\n'

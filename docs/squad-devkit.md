@@ -12,8 +12,9 @@ work should be delegated, it starts **on-demand workers** with
   another engine.
 - **Codex** (`codex exec`, sandboxed to the project) for implementation, tests,
   debugging, and anything that needs a shell or MCP servers.
-- **Grok** and **Antigravity** (`grok -p`, `agy -p`, experimental) for low-risk
-  work or a second opinion.
+- **OpenCode** and **Grok** (`opencode run`, `grok -p`, experimental) for low-risk
+  work or a second opinion. Antigravity (`agy`) can manage but not work:
+  it blocks CLI calls from other AI agents, so it is not a worker engine.
 - **CCR** (Claude Code through claude-code-router, on the cheap model configured
   in `~/.claude-code-router/config.json`) for docs and small exact edits. CCR
   workers have file tools only, with no shell.
@@ -89,8 +90,8 @@ The manager coordinates and does not write code. Its role
    technical lead, QA, end user) and write `.squad/plans/<name>.md` with the
    triage, goal, findings (`path:line`), decisions, tasks with disjoint file
    ownership, and acceptance checks.
-4. Pick each worker by trust and cost: `claude` > `codex` > `grok`, `agy` >
-   `ccr`, matching the task's risk and complexity.
+4. Pick each worker by trust and cost: `claude` > `codex` > `opencode`,
+   `grok` > `ccr`, matching the task's risk and complexity.
 5. Give each worker a complete brief: the goal, the files the worker owns, the
    exact changes, the steps, the acceptance criteria, the verification
    commands, and what is out of scope.
@@ -265,12 +266,12 @@ squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief 
 
 | Option | Meaning |
 |---|---|
-| `--engine claude\|codex\|grok\|agy\|ccr` | Worker engine (required) |
+| `--engine claude\|codex\|opencode\|grok\|ccr` | Worker engine (required) |
 | `--role ROLE` | Role prompt from `.squad/roles/ROLE.md` (default `dev`) |
 | `--brief TEXT`, `--brief-file FILE\|-` | Self-contained task description (required) |
 | `--title TITLE` | Task title (default: first line of the brief) |
 | `--profile NAME` | Codex profile (default: CLI configuration) |
-| `--model NAME` | Model for claude (default `haiku`; `sonnet`, `opus`), grok, or agy |
+| `--model NAME` | Model for claude (default `haiku`; `sonnet`, `opus`), opencode, or grok |
 | `--timeout MINUTES` | Stop the run after this long (default 45) |
 | `--mcp NAME`, `--all-mcp` | Codex: keep one or all MCP servers enabled |
 | `--project DIR` | Repository the worker works in (default: the manager's workspace) |
@@ -349,7 +350,7 @@ Housekeeping never removes runs whose worktree is still unmerged.
 When a task has high complexity and splits cleanly into two or more independent areas, the root manager can delegate each area to a sub-manager instead of planning and briefing every task directly:
 
 ```sh
-squad-worker sm-api --role sub-manager --engine agy --model gemini-4-argon-high \
+squad-worker sm-api --role sub-manager --engine claude --model sonnet \
   --own src/api/ --budget-tokens 600000 --max-children 3 \
   --plan .squad/plans/feature.md --brief-file - <<'BRIEF'
 Implement the v2 auth endpoints.
@@ -362,12 +363,13 @@ BRIEF
 - **When it saves tokens**: On large multi-area tasks, delegating keeps the root manager's context window lean while cost-effective models handle localized planning and review loops. On small or moderate tasks, brief workers directly to avoid the 2–3 turn sub-manager overhead.
 - **Flags and controls**:
   - `--role sub-manager`: uses the sub-manager driver (`scripts/squad-submanager.sh`) and role prompt (`templates/devkit/sub-manager.md`).
+  - Sub-manager engines are `claude` and `codex`. Its children run on `opencode` by default (omit `model` to use the tier mapping), or `claude` when `SQUAD_SM_ALLOW_CLAUDE=1`.
   - `--parent ID`: records parent-child hierarchy. Hierarchy depth is capped at 2 (sub-managers cannot start sub-managers).
   - `--budget-tokens N`: sets the token budget cap for the entire branch (sub-manager turns plus children; default 600,000). The driver stops before initiating a new turn or child when the branch total exceeds the budget.
   - `--max-children N`: limits the number of children the sub-manager may plan (1–6, default 3; prefer 1–3).
   - `squad-worker --tree [--json]`: displays the active worker hierarchy, states, models, and branch token usage totals in text or JSON.
 - **Root authority**: Authority to merge (`squad-worker --merge sm-<area>`), commit, and push remains strictly with the root manager. Sub-managers plan and review in their own worktree, but cannot merge worktrees or push code.
-- **Sandbox execution**: The driver orchestrates child workers directly in the sub-manager's worktree. Sandboxed AI engines (such as Antigravity `agy`) have no network access and cannot start child AI workers or write outside their worktree, so the outer driver handles child execution and passes results back to the sub-manager for review.
+- **Sandbox execution**: The driver orchestrates child workers directly in the sub-manager's worktree. Sandboxed AI engines have no network access and cannot start child AI workers or write outside their worktree, so the outer driver handles child execution and passes results back to the sub-manager for review.
 
 ## Plans and guardrails
 
@@ -468,7 +470,7 @@ commit or push that cannot be verified is denied; run it as plain
 
 ### Questions between workers
 
-Workers with a shell (claude, codex, grok, agy) can talk to the squad while they
+Workers with a shell (claude, codex, opencode, grok) can talk to the squad while they
 run, through `scripts/squad-ask.sh`, whose exact command is in their prompt:
 
 ```sh
@@ -610,8 +612,7 @@ manager's tab in a fresh `herdr-app ls` snapshot and restores manager focus via
 Process readiness proves the monitor script rendered, not that the pane is
 visually unobscured (for example if a pane is zoomed or covered by an overlay);
 local Herdr desktop 3-worker splits are verified via `herdr-app ls` and frame
-capture, while AGY workers have a known CLI lifecycle limitation where `agy`
-may exit `1` after emitting a successful result event.
+capture.
 
 For independent panes in macOS Terminal.app, launch `squad-devkit --tmux`.
 
@@ -673,8 +674,8 @@ lack the template line are kept as they are; replace them with the files in
 ### Opt-in YOLO sessions
 
 `squad-devkit --yolo --manager codex` starts a session with native engine
-permission bypass; workers started by that manager inherit it. Claude, Codex,
-and AGY are supported. `squad-worker dev-1 --engine claude --yolo --brief "Run the checks"`
+permission bypass; workers started by that manager inherit it. Claude and Codex
+workers are supported (AGY managers too, since you start them yourself). `squad-worker dev-1 --engine claude --yolo --brief "Run the checks"`
 opts in a single worker independently. Without opt-in, existing behavior is unchanged.
 
 The session boolean `SQUAD_DEVKIT_YOLO=1` carries opt-in through here, tmux,
@@ -689,8 +690,8 @@ not test. Codex and AGY managers have no guard hook. A YOLO manager cannot start
 workers on engines without YOLO support (opencode, grok, ccr) unless
 SQUAD_DEVKIT_YOLO=0.
 Claude uses `--dangerously-skip-permissions` with session sandboxing disabled,
-Codex uses `--dangerously-bypass-approvals-and-sandbox`, and AGY uses
-`--dangerously-skip-permissions` without `--sandbox`.
+Codex uses `--dangerously-bypass-approvals-and-sandbox`, and an AGY manager uses
+`--dangerously-skip-permissions`.
 
 Use only in an environment you trust: this bypasses engine permission checks
 and engine sandboxing, not OS/admin restrictions. Conversational instructions
@@ -700,7 +701,7 @@ An existing tmux session keeps its original mode; exit it before changing modes.
 ### Worker model selection
 
 `--model NAME` overrides `SQUAD_WORKER_<ENGINE>_MODEL` (uppercase engine:
-`CLAUDE`, `CODEX`, `OPENCODE`, `GROK`, `AGY`, `CCR`). Empty environment values
+`CLAUDE`, `CODEX`, `OPENCODE`, `GROK`, `CCR`). Empty environment values
 use the default: Claude uses `haiku`; other engines use their CLI default.
 Codex `--profile` selects a configuration profile, not a model; an explicit
 model overrides the profile's model. Model names come from the installed CLI
@@ -714,12 +715,11 @@ Startup stderr, `squad-worker --list`, individual monitors and the dashboard
 show requested selection, its source, and actual model evidence separately.
 Status retains `model` for compatibility and adds `requested_model`,
 `model_source` (`flag`, `tier-environment`, `environment`, `builtin`, `cli-default`, `router-default`),
-and `actual_model`. Claude/CCR/AGY structured assistant and result model-usage
+and `actual_model`. Claude/CCR structured assistant and result model-usage
 fields supply reported models (comma-separated when multiple); status refreshes
-while running and persists the evidence on completion or failure. Init selection aliases are excluded from actual evidence. AGY also displays `configured_model` and `configured_model_source` separately;
-the native init model has source `agy-init`, or both fields are `unknown` when absent.
+while running and persists the evidence on completion or failure. Init selection aliases are excluded from actual evidence.
 This configuration does not prove which model actually executed. A router's
-reported alias may not identify its upstream provider. AGY uses stream-json output (plain wrapper output remains compatible). Other engines currently
+reported alias may not identify its upstream provider. Other engines currently
 remain `actual=unknown`: requests, profiles and free-form text are not proof.
 Old status files display unknown provenance/actual model. No credentials or
 router configuration are inspected for model discovery.
@@ -736,7 +736,7 @@ effort independently. Terminal init offers setup; scripted init never fetches
 models or waits for input. Re-init preserves selections. Setup reviews changes
 before saving `.squad/worker-models.json`; `q` or EOF cancels without replacing it.
 
-Discovery uses installed `agy models` and `codex debug models`, with bounded
+Discovery uses installed `codex debug models`, with bounded
 child processes and no inference. Refresh, retry, or choose an explicitly labeled
 cached list with its source and timestamp (lists over seven days old say stale).
 Codex output is marked refresh unconfirmed unless its cache timestamp advances;
@@ -766,8 +766,7 @@ Catalog mode never creates tasks/worktrees or launches engines. Use
 `squad-worker --models --project DIR` to inspect an external project's mappings.
 Both launch and catalog search project ancestors first, then the squad workspace;
 the first worker-models.json found supplies the saved tiers. Saved effort applies
-only when that saved model wins: Codex gets `-c model_reasoning_effort="VALUE"`, AGY
-gets `--effort VALUE`. Environment/explicit model overrides use CLI effort defaults.
+only when that saved model wins: Codex gets `-c model_reasoning_effort="VALUE"`. Environment/explicit model overrides use CLI effort defaults.
 Codex uses its CLI configuration unless `--profile` or
 `SQUAD_WORKER_CODEX_PROFILE` explicitly selects a profile; tier is never effort.
 Devkit warns about missing supported tiers for selected, installed engines.

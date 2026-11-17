@@ -15,7 +15,7 @@ source "$root/scripts/lib/squad-engine.sh"
 require_command() { command -v "$1" >/dev/null 2>&1 || { echo "Missing command: $1" >&2; exit 1; }; }
 
 # Every adapter loads and defines the four protocol functions.
-for name in claude codex opencode grok agy ccr; do
+for name in claude codex opencode grok ccr; do
   squad_engine_load "$name" || fail
   [[ "$squad_engine_loaded" == "$name" ]] || fail
   for function in check_deps build_command run_and_extract_report reported_models; do
@@ -27,7 +27,7 @@ done
 printf 'touch %q\n' "$tmp/sourced" >"$tmp/evil.sh"
 for name in gemini '' "../../../../../../$tmp/evil" 'claude/../codex' 'CLAUDE'; do
   if squad_engine_load "$name" 2>"$tmp/error"; then fail; fi
-  grep -q '^Unknown engine: .* (use claude, codex, opencode, grok, agy, or ccr)$' "$tmp/error" || fail
+  grep -q '^Unknown engine: .* (use claude, codex, opencode, grok, or ccr)$' "$tmp/error" || fail
 done
 [[ ! -e "$tmp/sourced" ]] || fail
 if squad_engine eval true 2>/dev/null; then fail; fi
@@ -139,48 +139,9 @@ grep -q '"type":"tool_use"' "$absolute_log" || fail
 grep -q '"type":"step_finish"' "$absolute_log" || fail
 [[ -z "$(squad_engine reported_models "$absolute_log")" ]] || fail
 
-# AGY: report from the terminal SUCCESS; stream rejection is logged, not reported.
-cat >"$tmp/bin/agy" <<'EOF'
-#!/usr/bin/env bash
-echo '{"event":"step_update"}'
-printf '{"event":"result","result":{"status":"%s","response":"agy report"}}\n' "${AGY_STATUS:-SUCCESS}"
-EOF
-chmod +x "$tmp/bin/agy"
-squad_engine_load agy
-agy_settings() {
-  local i
-  for ((i = 0; i < ${#engine_command[@]}; i++)); do
-    if [[ "${engine_command[i]}" == "--settings" ]]; then
-      printf '%s' "${engine_command[i+1]}"
-      return 0
-    fi
-  done
-  return 1
-}
-unset plan_path || true
-model_effort=low squad_engine build_command || fail
-[[ "$(agy_settings | jq -c .)" == '{"permissions":{"allow":["command(*)"]}}' ]] || fail
-[[ "${engine_command[*]}" == "agy -p do the task --mode accept-edits --output-format stream-json --sandbox --settings {\"permissions\":{\"allow\":[\"command(*)\"]}} --effort low --model opus" ]] || fail
-plan_path=/tmp/p/plan.md squad_engine build_command || fail
-[[ "$(agy_settings | jq -c .permissions.allow)" == '["command(*)","read_file(/tmp/p/plan.md)"]' ]] || fail
-plan_path=none squad_engine build_command || fail
-[[ "$(agy_settings | jq -c .permissions.allow)" == '["command(*)"]' ]] || fail
-yolo=1 squad_engine build_command || fail
-[[ "${engine_command[*]}" == *'--dangerously-skip-permissions'* ]] || fail
-[[ "${engine_command[*]}" != *'--sandbox'* && "${engine_command[*]}" != *'--settings'* ]] || fail
-yolo=0 model_effort=""
-unset plan_path || true
-: >"$absolute_report"
-squad_engine run_and_extract_report || fail
-[[ "$(cat "$absolute_report")" == 'agy report' ]] || fail
-: >"$absolute_report"
-AGY_STATUS=FAILED squad_engine run_and_extract_report || fail
-[[ ! -s "$absolute_report" ]] || fail
-grep -q 'AGY stream rejected: terminal status FAILED' "$absolute_log" || fail
-
 # Claude-shaped streams name their models; codex events do not.
 printf '%s\n' '{"type":"assistant","message":{"model":"m-one"}}' '{"type":"result","result":"done","modelUsage":{"m-two":{}}}' >"$tmp/events"
-for name in claude ccr agy; do
+for name in claude ccr; do
   squad_engine_load "$name"
   [[ "$(squad_engine reported_models "$tmp/events")" == m-one,m-two ]] || fail
   [[ "$(squad_worker_reported_models "$name" "$tmp/events")" == m-one,m-two ]] || fail
@@ -191,33 +152,12 @@ cp "$tmp/events" "$absolute_log"
 squad_engine_stream_report
 [[ "$(cat "$absolute_report")" == done ]] || fail
 
-# AGY native init model extraction and actual model independence (no contamination)
-printf '%s\n' \
-  '{"event":"init","init":{"model":"agy-init-model"}}' \
-  '{"type":"assistant","message":{"model":"m-one"}}' \
-  '{"type":"result","result":"done","modelUsage":{"m-two":{}}}' >"$tmp/mixed_events"
-for name in claude ccr agy; do
-  squad_engine_load "$name"
-  [[ "$(squad_engine reported_models "$tmp/mixed_events")" == m-one,m-two ]] || fail
-  [[ "$(squad_worker_reported_models "$name" "$tmp/mixed_events")" == m-one,m-two ]] || fail
-done
-[[ "$(squad_worker_agy_configured_model "$tmp/mixed_events")" == agy-init-model ]] || fail
-
-# Stream with native init only reports configured model; actual model remains empty
-printf '%s\n' '{"event":"init","init":{"model":"agy-only-init"}}' >"$tmp/init_only"
-squad_engine_load agy
-[[ -z "$(squad_engine reported_models "$tmp/init_only")" ]] || fail
-[[ -z "$(squad_worker_reported_models agy "$tmp/init_only")" ]] || fail
-[[ "$(squad_worker_agy_configured_model "$tmp/init_only")" == agy-only-init ]] || fail
-
-# Stream with no init reports empty for agy configured model
-[[ -z "$(squad_worker_agy_configured_model "$tmp/events")" ]] || fail
-
 # The worker CLI keeps its unknown-engine error and exit status.
 if env -u SQUAD_MANAGER_ID -u SQUAD_DEVKIT_YOLO "$root/scripts/squad-worker.sh" w --engine ../claude --no-plan test --brief x 2>"$tmp/error"; then fail; else [[ $? == 2 ]] || fail; fi
-[[ "$(cat "$tmp/error")" == 'Unknown engine: ../claude (use claude, codex, opencode, grok, agy, or ccr)' ]] || fail
+[[ "$(cat "$tmp/error")" == 'Unknown engine: ../claude (use claude, codex, opencode, grok, or ccr)' ]] || fail
 
 # Monitor: each engine parses only its own stream format; no engine parses all.
+# agy is no longer a worker, but its old run logs still display (agy:2 below).
 mkdir -p "$tmp/mon/.squad/workers"
 monitor_log="$tmp/mon/.squad/workers/run.log"
 printf '%s\n' \

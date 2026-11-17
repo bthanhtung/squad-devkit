@@ -66,34 +66,34 @@ dry_run="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry
 filtered="$(cd "$project_directory" && SQUAD_WORKER_CODEX_MODEL_STRONG=enabled-choice SQUAD_WORKER_CLAUDE_MODEL_STRONG=disabled-choice "$repo_root/scripts/squad-devkit.sh" --dry-run --workers codex)"
 [[ "$filtered" == *enabled-choice* && "$filtered" != *disabled-choice* && "$filtered" == *unverified* ]] || fail
 # Saved partial mappings retain effort and do not emit unmapped tiers.
-cat >"$test_bin/agy" <<'EOF'
+cat >"$test_bin/opencode" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$test_bin/agy"
+chmod +x "$test_bin/opencode"
 mkdir -p "$project_directory/.squad"
 cat >"$project_directory/.squad/worker-models.json" <<'JSON'
-{"version":1,"engines":{"agy":{"fast":{"model":"fast-model"}},"codex":{"strong":{"model":"strong-model","effort":"high"}}}}
+{"version":1,"engines":{"opencode":{"fast":{"model":"fast-model"}},"codex":{"strong":{"model":"strong-model","effort":"high"}}}}
 JSON
-catalog_forward="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --manager codex --workers agy,codex 2>/dev/null)"
-catalog_reverse="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --manager codex --workers codex,agy 2>/dev/null)"
-[[ "$catalog_forward" == *'agy: fast=fast-model'* ]] || fail
+catalog_forward="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --manager codex --workers opencode,codex 2>/dev/null)"
+catalog_reverse="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --manager codex --workers codex,opencode 2>/dev/null)"
+[[ "$catalog_forward" == *'opencode: fast=fast-model'* ]] || fail
 [[ "$catalog_forward" == *'codex: strong=strong-model (effort high)'* ]] || fail
 # Catalog order follows the order given to --workers.
-[[ "$catalog_forward" == *'agy: fast=fast-model'*'codex: strong=strong-model'* ]] || fail
-[[ "$catalog_reverse" == *'codex: strong=strong-model'*'agy: fast=fast-model'* ]] || fail
+[[ "$catalog_forward" == *'opencode: fast=fast-model'*'codex: strong=strong-model'* ]] || fail
+[[ "$catalog_reverse" == *'codex: strong=strong-model'*'opencode: fast=fast-model'* ]] || fail
 # Model names containing whitespace or quotes cannot add prompt lines.
 for model in 'space model' 'quote\"model' 'line\nbreak'; do
-  printf '{"version":1,"engines":{"agy":{"fast":{"model":"%s"}}}}\n' "$model" >"$project_directory/.squad/worker-models.json"
-  injected="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --manager codex --workers agy,codex 2>/dev/null)" || true
-  [[ "$injected" == *'agy: CLI default only'* || "$injected" == *'agy: fast=quote"model'* ]] || fail
+  printf '{"version":1,"engines":{"opencode":{"fast":{"model":"%s"}}}}\n' "$model" >"$project_directory/.squad/worker-models.json"
+  injected="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --manager codex --workers opencode,codex 2>/dev/null)" || true
+  [[ "$injected" == *'opencode: CLI default only'* || "$injected" == *'opencode: fast=quote"model'* ]] || fail
   [[ "$injected" != *$'line\nbreak'* ]] || fail
 done
 echo 'PASS: catalog model names cannot inject prompt lines'
 rm "$project_directory/.squad/worker-models.json"
 rmdir "$project_directory/.squad"
-rm -f "$test_bin/agy"
-no_workers="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --disable-workers claude,codex,opencode,grok,agy,ccr)"
+rm -f "$test_bin/opencode"
+no_workers="$(cd "$project_directory" && "$repo_root/scripts/squad-devkit.sh" --dry-run --disable-workers claude,codex,opencode,grok,ccr)"
 [[ "$no_workers" != *provider_availability* ]] || fail
 session_name="$(printf '%s\n' "$dry_run" | awk '/^Session: / { print $2 }')"
 

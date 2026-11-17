@@ -35,19 +35,20 @@ Do it.
 Works.
 PLAN
 }
-cat >"$tmp/bin/agy" <<'ENGINE'
+cat >"$tmp/bin/opencode" <<'ENGINE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"$PROMPT_LOG"
 if [[ -n "${EDIT:-}" ]]; then printf '%s\n' "$EDIT" >"${EDIT_FILE:-file.txt}"; fi
+text() { jq -cn --arg t "$1" '{type:"text",part:{messageID:"m1",text:$t}}'; }
 if [[ "${SLOW:-0}" == 1 ]]; then
-  printf '%s\n' '{"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE","tool_name":"run_command","tool_info":{"parameters":{"CommandLine":"test command"}}}}'
+  printf '%s\n' '{"type":"tool_use","sessionID":"s","part":{"messageID":"m0","type":"tool","tool":"bash","state":{"status":"running","input":{"command":"test command"}}}}'
   sleep 5
-  printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"First report"}}'
+  text 'First report'
   exit 0
 fi
-printf '%s\n' "${REPORT:-First report}"
+text "${REPORT:-First report}"
 ENGINE
-chmod +x "$tmp/bin/agy"
+chmod +x "$tmp/bin/opencode"
 export PROMPT_LOG="$tmp/prompt"
 cd "$tmp/ws"
 squad init >/dev/null
@@ -62,7 +63,7 @@ git -C "$tmp/project" add file.txt
 git -C "$tmp/project" -c user.name=t -c user.email=t@t commit -qm init
 # shellcheck disable=SC2012
 last_status() { ls -t .squad/workers/"$1"-*.status | head -n 1; }
-run() { "$worker" "$1" --engine agy --project "$tmp/project" "${@:2}" >"$tmp/out"; }
+run() { "$worker" "$1" --engine opencode --project "$tmp/project" "${@:2}" >"$tmp/out"; }
 status=0
 run floor --plan .squad/plans/high.md --brief x 2>"$tmp/err" || status=$?
 [[ "$status" == 2 ]]
@@ -288,16 +289,16 @@ awk '/^Verify: FAIL/{p=1;next} /^Log:/{p=0} p && (length($0)>200 || ++n>20) {exi
 echo 'PASS: verification output bounds'
 
 # Failures and empty reports must never run the verification command.
-cp "$tmp/bin/agy" "$tmp/agy-original"
-printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/bin/agy"
+cp "$tmp/bin/opencode" "$tmp/opencode-original"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/bin/opencode"
 if run engine-fail --no-worktree --verify 'touch "$HOME/ran"' --brief x 2>"$tmp/err"; then exit 1; fi
 grep -qx 'verify=' "$(last_status engine-fail)" || exit 1
 [[ ! -e "${HOME}/ran" && ! -e "${tmp}/ws/$(basename "$(last_status engine-fail)" .status).verify.log" ]] || exit 1
-printf '#!/usr/bin/env bash\nprintf "\\n"\n' >"$tmp/bin/agy"
+printf '#!/usr/bin/env bash\nprintf "\\n"\n' >"$tmp/bin/opencode"
 if run engine-empty --no-worktree --verify 'touch "$HOME/ran"' --brief x 2>"$tmp/err"; then exit 1; fi
 grep -qx 'verify=' "$(last_status engine-empty)" || exit 1
 [[ ! -e "$HOME/ran" && ! -e ".squad/workers/$(basename "$(last_status engine-empty)" .status).verify.log" ]] || exit 1
-cp "$tmp/agy-original" "$tmp/bin/agy"
+cp "$tmp/opencode-original" "$tmp/bin/opencode"
 echo 'PASS: verification skipped for failed engines'
 
 EDIT=lifecycle run lifecycle --plan .squad/plans/low.md --verify false --brief x
@@ -325,7 +326,7 @@ iconv -f UTF-8 -t UTF-8 <"$tmp/out" >/dev/null || exit 1
 echo 'PASS: unicode cap'
 
 # Automatic repair drops explicit models and is bounded even if verification fails twice.
-export SQUAD_DEVKIT_NOTIFY=0 SQUAD_WORKER_AGY_MODEL_BALANCED=repair-balanced SQUAD_WORKER_AGY_MODEL_STRONG=repair-strong
+export SQUAD_DEVKIT_NOTIFY=0 SQUAD_WORKER_OPENCODE_MODEL_BALANCED=repair-balanced SQUAD_WORKER_OPENCODE_MODEL_STRONG=repair-strong
 run auto-repair --worktree --model lower-explicit --model-tier fast --retry-escalate --plan .squad/plans/low.md --own file.txt --verify 'echo repair-failure; exit 3' --brief original-context
 auto_status="$(last_status auto-repair)"
 grep -qx 'attempt=2' "$auto_status"
@@ -336,7 +337,7 @@ grep -q 'original-context' "$PROMPT_LOG"
 grep -q 'repair-failure' "$PROMPT_LOG"
 [[ $(find .squad/workers -name 'auto-repair-*.status' | wc -l | tr -d ' ') == 2 ]]
 for tier in strong fast; do
-  unset SQUAD_WORKER_AGY_MODEL_BALANCED
+  unset SQUAD_WORKER_OPENCODE_MODEL_BALANCED
   run "no-next-$tier" --no-worktree --model explicit --model-tier "$tier" --retry-escalate --verify false --brief x
   grep -qx 'attempt=1' "$(last_status "no-next-$tier")"
 done
@@ -366,19 +367,19 @@ for mode in verify scope; do
 done
 echo 'PASS: bounded escalation and automatic merge guardrails'
 
-export SQUAD_WORKER_AGY_MODEL_BALANCED=repair-balanced
+export SQUAD_WORKER_OPENCODE_MODEL_BALANCED=repair-balanced
 run auto-fixed --worktree --model explicit --model-tier fast --retry-escalate --verify "if [[ -e '$tmp/verify-once' ]]; then exit 0; else touch '$tmp/verify-once'; exit 1; fi" --brief x
 grep -qx 'attempt=2' "$(last_status auto-fixed)"
 grep -qx 'verify=pass' "$(last_status auto-fixed)"
 run no-verify-retry --no-worktree --model-tier fast --model explicit --retry-escalate --brief x
 grep -qx 'attempt=1' "$(last_status no-verify-retry)"
-cp "$tmp/bin/agy" "$tmp/agy-good"
-printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/bin/agy"
+cp "$tmp/bin/opencode" "$tmp/opencode-good"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/bin/opencode"
 status=0
 run engine-no-retry --no-worktree --model-tier fast --model explicit --retry-escalate --verify false --brief x 2>"$tmp/err" || status=$?
 [[ "$status" == 1 ]]
 grep -qx 'attempt=1' "$(last_status engine-no-retry)"
-cp "$tmp/agy-good" "$tmp/bin/agy"
+cp "$tmp/opencode-good" "$tmp/bin/opencode"
 # Advance only verification's wall clock to exercise timeout without a minute wait.
 export REAL_DATE="$(command -v date)" VERIFY_CLOCK="$tmp/verify-clock"
 cat >"$tmp/bin/date" <<'CLOCK'

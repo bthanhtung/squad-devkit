@@ -21,9 +21,9 @@ ln -s "$real_git" "$tmpdir/bin/git"
 export PATH="$tmpdir/bin"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# Fake manager/worker CLIs (claude, opencode, agy) and a fake squad that prints
+# Fake manager/worker CLIs (claude, opencode, grok) and a fake squad that prints
 # help containing agy, mirroring tests/squad_devkit_workers_smoke.sh.
-for cli in squad claude opencode agy; do
+for cli in squad claude opencode grok; do
   cat << MOCK > "$tmpdir/bin/$cli"
 #!/usr/bin/env bash
 if [[ "\$*" == *"--version"* ]]; then echo "$cli version 1.0.0"; fi
@@ -55,13 +55,13 @@ rm -f "$SQUAD_DEVKIT_CONFIG"
 out="$(printf '2\n1\n3,2\ny\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$DEVKIT" --setup 2>&1)"
 grep -q 'Personal custom' <<<"$out" || fail "missing Personal custom option: $out"
 grep -qx 'manager=claude' "$SQUAD_DEVKIT_CONFIG" || fail "config missing manager=claude"
-grep -qx 'workers=agy,opencode' "$SQUAD_DEVKIT_CONFIG" || fail "config missing workers=agy,opencode: $(cat "$SQUAD_DEVKIT_CONFIG")"
+grep -qx 'workers=grok,opencode' "$SQUAD_DEVKIT_CONFIG" || fail "config missing workers=grok,opencode: $(cat "$SQUAD_DEVKIT_CONFIG")"
 grep -qx 'setup_mode=custom' "$SQUAD_DEVKIT_CONFIG" || fail "config missing setup_mode=custom"
 mkdir -p "$tmpdir/proj"
 git -C "$tmpdir/proj" init -q
 dry="$("$DEVKIT" "$tmpdir/proj" --dry-run 2>/dev/null)"
 grep -q 'in the order the human chose' <<<"$dry" || fail "missing custom order label: $dry"
-grep -q 'agy opencode' <<<"$dry" || fail "missing agy opencode order: $dry"
+grep -q 'grok opencode' <<<"$dry" || fail "missing grok opencode order: $dry"
 echo "PASS: Test 2"
 
 echo "=== Test 3: Invalid worker input re-prompts ==="
@@ -96,9 +96,9 @@ grep -q 'needs an interactive terminal' <<<"$out" || fail "missing interactive-t
 echo "PASS: Test 6"
 
 echo "=== Test 7: installer follows the saved workers order (custom) ==="
-printf 'manager=claude\nworkers=agy,opencode\nsetup_mode=custom\n' > "$SQUAD_DEVKIT_CONFIG"
+printf 'manager=claude\nworkers=grok,opencode\nsetup_mode=custom\n' > "$SQUAD_DEVKIT_CONFIG"
 out="$("$SCRIPT_DIR/install-devkit.sh" --no-prompt 2>/dev/null)"
-grep -q 'Workers (in the order you chose): agy opencode' <<<"$out" || fail "missing custom-order workers line: $out"
+grep -q 'Workers (in the order you chose): grok opencode' <<<"$out" || fail "missing custom-order workers line: $out"
 if grep -q 'Workers (in the order you chose): .*claude' <<<"$out"; then fail "workers line must not list claude: $out"; fi
 echo "PASS: Test 7"
 

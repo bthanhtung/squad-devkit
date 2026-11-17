@@ -2,7 +2,7 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/squad-jq.sh"
 
-# Summarises a codex --json, claude stream-json, agy stream-json, or opencode
+# Summarises a codex --json, claude stream-json, agy stream-json (old runs only), or opencode
 # JSONL log as tab-separated metrics on the first line, then one activity line
 # per event: summarise_log <log> [engine]. Only the engine's own stream format
 # is parsed; an unknown engine (older status files) tries all of them.

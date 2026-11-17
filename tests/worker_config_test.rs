@@ -2,7 +2,7 @@
 use assert_cmd::Command;
 #[cfg(unix)]
 use predicates::prelude::*;
-use squad::worker_config::{parse_agy_models, parse_codex_models, parse_config};
+use squad::worker_config::{parse_codex_models, parse_config};
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
@@ -22,8 +22,11 @@ fn validates_saved_selections_and_discovered_models() {
     }
     assert!(parse_config(r#"{"version":2,"engines":{}}"#).is_err());
     assert!(parse_config(r#"{"version":1,"engines":{"ccr":{}}}"#).is_err());
-    assert!(parse_agy_models("broken output").is_err());
-    let models = parse_agy_models("fixture-id\tFriendly fixture\nfixture-id\tDuplicate\n").unwrap();
+    let catalog = serde_json::json!({"models":[
+        {"slug":"fixture-id","display_name":"Friendly fixture","visibility":"list"},
+        {"slug":"fixture-id","display_name":"Duplicate","visibility":"list"},
+        {"slug":"hidden","visibility":"hide"}]});
+    let models = parse_codex_models(&catalog).unwrap();
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].name, "Friendly fixture");
     assert!(parse_codex_models(&serde_json::json!({"models":[]})).is_err());
@@ -35,6 +38,12 @@ fn executable(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+/// A fake `codex` whose `debug models` lists one model with low and high efforts.
+#[cfg(unix)]
+const FIXTURE_CODEX: &str = r#"#!/bin/sh
+printf '{"models":[{"slug":"fixture-id","display_name":"Friendly fixture","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}'
+"#;
 
 #[cfg(unix)]
 struct Fixture {
@@ -74,7 +83,7 @@ impl Fixture {
 #[cfg(unix)]
 fn setup_saves_effort_reviews_cancels_and_preserves_existing_selections() {
     let f = Fixture::new();
-    f.cli("agy", "#!/bin/sh\ncase \"$1\" in\nmodels) printf 'fixture-id\\tFriendly fixture\\n';;\n--help) echo '--effort (low|high)' >&2;;\nesac\n");
+    f.cli("codex", FIXTURE_CODEX);
     f.command()
         .args(["config", "workers"])
         .write_stdin("q\n")
@@ -92,7 +101,7 @@ fn setup_saves_effort_reviews_cancels_and_preserves_existing_selections() {
     let saved = fs::read_to_string(f.saved()).unwrap();
     let parsed = parse_config(&saved).unwrap();
     assert_eq!(
-        parsed.engines["agy"]
+        parsed.engines["codex"]
             .fast
             .as_ref()
             .unwrap()
@@ -101,7 +110,7 @@ fn setup_saves_effort_reviews_cancels_and_preserves_existing_selections() {
         Some("high")
     );
     assert_eq!(
-        parsed.engines["agy"].balanced.as_ref().unwrap().effort,
+        parsed.engines["codex"].balanced.as_ref().unwrap().effort,
         None
     );
     assert!(f.dir.path().join(".squad/worker-model-cache.json").exists());
@@ -228,7 +237,7 @@ fn codex_refresh_requires_timestamp_advancement_and_can_be_refreshed_again() {
 fn global_setup_works_without_workspace_and_preserves_on_cancel() {
     let f = Fixture::new();
     fs::remove_dir(f.dir.path().join(".squad")).unwrap();
-    f.cli("agy", "#!/bin/sh\ncase \"$1\" in\nmodels) printf 'fixture-id\\tFriendly fixture\\n';;\n--help) echo '--effort (low|high)' >&2;;\nesac\n");
+    f.cli("codex", FIXTURE_CODEX);
     let saved = f.dir.path().join("home/.squad/worker-models.json");
     f.command()
         .args(["config", "workers", "--global", "--timeout", "2"])

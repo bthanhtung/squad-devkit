@@ -8,12 +8,12 @@ trap 'rm -rf "$tmpdir"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 mkdir -p "$tmpdir/bin" "$tmpdir/home" "$tmpdir/project"
 ln -s "$squad_bin" "$tmpdir/bin/squad"
-cat > "$tmpdir/bin/agy" <<'ENGINE'
+cat > "$tmpdir/bin/grok" <<'ENGINE'
 #!/usr/bin/env bash
 printf 'PASS: no files changed.\n'
 exit "${NOOP_ENGINE_EXIT:-0}"
 ENGINE
-chmod +x "$tmpdir/bin/agy"
+chmod +x "$tmpdir/bin/grok"
 export HOME="$tmpdir/home" PATH="$tmpdir/bin:$PATH"
 # Isolate from the machine's config: CI runners set XDG_CONFIG_HOME.
 export XDG_CONFIG_HOME="$HOME/.config"
@@ -26,7 +26,7 @@ squad init >/dev/null
 squad join manager --role manager --client codex --protocol-version 2 >/dev/null
 worker="$repo_root/scripts/squad-worker.sh"
 status=0
-"$worker" noop --engine agy --worktree --brief 'Report success without changing files' > "$tmpdir/output" 2>&1 || status=$?
+"$worker" noop --engine grok --worktree --brief 'Report success without changing files' > "$tmpdir/output" 2>&1 || status=$?
 if [[ "$status" != 0 ]]; then
   cat "$tmpdir/output" >&2
   fail "successful no-op worker exited $status"
@@ -40,7 +40,7 @@ patch_file=(.squad/workers/noop-*.patch)
 grep -q '0 changed file(s)' "$tmpdir/output" || fail 'missing zero-change report'
 "$worker" --discard noop >/dev/null
 status=0
-NOOP_ENGINE_EXIT=3 "$worker" noop-failed --engine agy --worktree --brief 'Fail without changing files' > "$tmpdir/output" 2>&1 || status=$?
+NOOP_ENGINE_EXIT=3 "$worker" noop-failed --engine grok --worktree --brief 'Fail without changing files' > "$tmpdir/output" 2>&1 || status=$?
 [[ "$status" == 3 ]] || fail "failed no-op worker returned $status instead of 3"
 status_file=(.squad/workers/noop-failed-*.status)
 [[ "${#status_file[@]}" == 1 && -f "${status_file[0]}" ]] || fail 'missing failed worker status'

@@ -6,6 +6,9 @@ releases.
 
 ## [Unreleased]
 
+### Removed
+- Removed agy as a worker engine: Antigravity blocks CLI calls from other AI agents. agy remains available as a manager. A saved `workers=` or `SQUAD_DEVKIT_WORKERS` that names agy is ignored with a one-line note; `squad-worker --engine agy` and `squad-devkit --workers agy` exit 2. Sub-managers run on `claude` or `codex`, and their children default to `opencode`.
+
 ### Behaviour changes
 - High-risk plans refuse launches below the strong tier unless `--tier-reason` is provided; children of sub-managers are exempt and record the reason in `tier_override`.
 - Printed reports and task summaries are capped at `SQUAD_WORKER_REPORT_LINES` (default 40); verification results appear first.

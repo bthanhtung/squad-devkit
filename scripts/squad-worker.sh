@@ -62,7 +62,6 @@ Engines, most trusted first:
   codex    codex exec, sandboxed to the project (--profile, default: CLI configuration)
   opencode OpenCode headless (experimental)
   grok     Grok Build headless (experimental)
-  agy      Antigravity CLI headless (experimental)
   ccr      Claude Code through claude-code-router: cheap model, file tools only
 
 Options:
@@ -86,7 +85,7 @@ Options:
   --worktree         Work in an isolated git worktree (default in git repositories,
                      except for the reviewer, researcher and security roles)
   --no-worktree      Work directly in the project directory
-  --yolo             Bypass permissions and sandbox (claude, codex, agy only;
+  --yolo             Bypass permissions and sandbox (claude, codex only;
                      inherited from SQUAD_DEVKIT_YOLO=1)
   --sandbox          Run shell commands in engine sandbox (default)
   --no-sandbox       Disable engine sandbox
@@ -379,7 +378,7 @@ if (( models == 1 )); then
   if [[ -n "$engine" ]]; then
     catalog_engines=("$engine")
   else
-    for candidate_engine in claude codex opencode grok agy ccr; do
+    for candidate_engine in claude codex opencode grok ccr; do
       command -v "$candidate_engine" >/dev/null 2>&1 && catalog_engines+=("$candidate_engine")
     done
   fi
@@ -961,6 +960,10 @@ if [[ -z "$worker_id" || -z "$engine" ]]; then
   usage >&2
   exit 2
 fi
+if [[ "$engine" == agy ]]; then
+  echo 'agy can no longer run as a worker: Antigravity blocks CLI calls from other AI agents. Use opencode, codex, claude, grok or ccr.' >&2
+  exit 2
+fi
 if [[ ! "$worker_id" =~ $id_pattern ]]; then
   echo "Invalid worker id: $worker_id" >&2
   exit 2
@@ -971,8 +974,8 @@ if [[ ! "$role" =~ $id_pattern ]]; then
 fi
 if [[ "$role" == sub-manager ]]; then
   case "$engine" in
-    agy|claude|codex) ;;
-    *) echo "sub-manager engine must be agy, claude or codex" >&2; exit 2 ;;
+    claude|codex) ;;
+    *) echo "sub-manager engine must be claude or codex" >&2; exit 2 ;;
   esac
 fi
 resolve_hierarchy() {
@@ -1018,8 +1021,8 @@ case "$view" in
 esac
 if [[ "$yolo" == 1 ]]; then
   case "$engine" in
-    claude|codex|agy) ;;
-    *) echo 'YOLO supports only claude, codex, and agy' >&2; exit 2 ;;
+    claude|codex) ;;
+    *) echo 'YOLO supports only claude, codex' >&2; exit 2 ;;
   esac
   if [[ "${SQUAD_WORKER_SANDBOX:-}" == 1 || "$sandbox_flag_set" == *s* ]]; then
     echo 'YOLO and --sandbox (or SQUAD_WORKER_SANDBOX=1) are mutually exclusive' >&2
@@ -1366,8 +1369,6 @@ process_started="$(LC_ALL=C ps -p "$$" -o lstart= | awk '{$1=$1; print}' || true
 run_profile=""
 [[ "$engine" == codex ]] && run_profile="$profile"
 actual_model=unknown
-configured_model=unknown
-configured_model_source=unknown
 tokens_in=""
 tokens_cached=""
 tokens_out=""
@@ -1383,9 +1384,6 @@ write_status() {
       "$worker_id" "$engine" "$run_profile" "$model" "$role"
     printf 'model_tier=%s\nattempt=%s\ntier_override=%s\nverify=%s\nverify_exit=%s\n' "$model_tier" "$attempt" "$tier_reason" "$verify" "$verify_exit"
     printf 'requested_model=%s\nmodel_source=%s\nactual_model=%s\n' "$model" "$model_source" "$actual_model"
-    if [[ "$engine" == agy ]]; then
-      printf 'configured_model=%s\nconfigured_model_source=%s\n' "$configured_model" "$configured_model_source"
-    fi
     printf 'title=%s\ntask=%s\nstate=%s\nreason=%s\n' \
       "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state" "${failure_reason:-$stop_reason}"
     printf 'process_started=%s\n' "$process_started"
@@ -1656,7 +1654,7 @@ output_age() {
 
 write_live() {
   local summary metrics activity input cached output tmp
-  case "$engine" in codex|claude|ccr|agy|opencode) ;; *) return 0 ;; esac
+  case "$engine" in codex|claude|ccr|opencode) ;; *) return 0 ;; esac
   squad_has_jq || return 0
   summary="$(summarise_log "$log_file" "$engine" 1)" || return 0
   # Preserve empty tab-separated token fields as zero.
@@ -1691,14 +1689,6 @@ if (( status == 0 )); then
       if [[ -n "$reported_model" && "$reported_model" != "$actual_model" ]]; then
         actual_model="$reported_model"
         model_changed=1
-      fi
-      if [[ "$engine" == agy ]]; then
-        reported_configured="$(squad_worker_agy_configured_model "$log_file")"
-        if [[ -n "$reported_configured" && ( "$reported_configured" != "$configured_model" || "$configured_model_source" != agy-init ) ]]; then
-          configured_model="$reported_configured"
-          configured_model_source=agy-init
-          model_changed=1
-        fi
       fi
       [[ "$model_changed" == 0 ]] || write_status running
     fi
@@ -1739,13 +1729,6 @@ fi
 
 reported_model="$(squad_engine reported_models "$log_file")"
 [[ -z "$reported_model" ]] || actual_model="$reported_model"
-if [[ "$engine" == agy ]]; then
-  reported_configured="$(squad_worker_agy_configured_model "$log_file")"
-  if [[ -n "$reported_configured" ]]; then
-    configured_model="$reported_configured"
-    configured_model_source=agy-init
-  fi
-fi
 
 # Token usage, summed from the engine's JSON events, for the monitor and the
 # savings summary.

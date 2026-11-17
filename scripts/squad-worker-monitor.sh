@@ -314,10 +314,10 @@ indexed_runs() {
 }
 
 render_indexed() {
-  local rows="$1" columns="$2" worker engine role state started finished pid tokens title profile requested model_source actual tier calls configured configured_source log summary activity
+  local rows="$1" columns="$2" worker engine role state started finished pid tokens title profile requested model_source actual tier calls log summary activity
   local elapsed now
   now="$(date +%s)"
-  while IFS='|' read -r worker engine role state started finished pid tokens title profile requested model_source actual tier calls configured configured_source log; do
+  while IFS='|' read -r worker engine role state started finished pid tokens title profile requested model_source actual tier calls log; do
     [[ -n "$worker" ]] || continue
     if [[ "$state" == running && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then state=lost; fi
     elapsed=$(( ${finished:-$now} - ${started:-$now} ))
@@ -328,7 +328,6 @@ render_indexed() {
       "$([[ "$tokens" == null ]] && printf '-' || format_count "$tokens")" \
       "${title:0:$(( columns > 90 ? columns - 90 : 10 ))}")"$'\n'
     frame+="requested=${requested:-default} source=${model_source:-unknown} actual=${actual:-unknown}"
-    [[ "$engine" != agy ]] || frame+=" configured=${configured:-unknown} configured_source=${configured_source:-unknown}"
     [[ -z "$tier" ]] || frame+=" tier=$tier"
     [[ -z "$profile" ]] || frame+=" profile=$profile"
     frame+=$'\n'
@@ -338,7 +337,7 @@ render_indexed() {
   done < <(printf '%s' "$rows" | squad_jq -r '.[] | [ .worker_id, .engine, .details.role, .state,
     .details.started, .details.finished, .details.pid,
     (if (.metrics.tokens_in // .tokens_in) == null and (.metrics.tokens_out // .tokens_out) == null then "null" else ((.metrics.tokens_in // .tokens_in // 0) + (.metrics.tokens_out // .tokens_out // 0) | tostring) end),
-    .details.title, .details.profile, (.details.requested_model // .details.model), .details.model_source, .details.actual_model, .details.model_tier, (.metrics.calls // 0), .details.configured_model, .details.configured_model_source, .details.log ]
+    .details.title, .details.profile, (.details.requested_model // .details.model), .details.model_source, .details.actual_model, .details.model_tier, (.metrics.calls // 0), .details.log ]
     | map((. // "") | tostring | gsub("[|\\r\\n]"; " ")) | join("|")')
 }
 

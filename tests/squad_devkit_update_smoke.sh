@@ -60,7 +60,7 @@ fail() {
 }
 
 # Fake manager/worker CLIs and squad.
-for cli in squad claude codex opencode agy; do
+for cli in squad claude codex opencode grok; do
   cat <<MOCK >"$tmpdir/bin/$cli"
 #!/usr/bin/env bash
 if [[ "\$*" == *"--version"* ]]; then echo "$cli version 1.0.0"; fi
@@ -80,7 +80,7 @@ mkdir -p "$proj"
 git -C "$proj" init -q
 mkdir -p "$proj/.squad/roles"
 printf '<!-- squad-devkit template: old -->\nstale manager role\n' >"$proj/.squad/roles/manager-devkit.md"
-printf 'manager=claude\nworkers=agy,opencode\nsetup_mode=custom\nview=orchestration\n' >"$SQUAD_DEVKIT_CONFIG"
+printf 'manager=claude\nworkers=grok,opencode\nsetup_mode=custom\nview=orchestration\n' >"$SQUAD_DEVKIT_CONFIG"
 
 out="$(cd "$proj" && SQUAD_MANAGER_ID=manager-4 SQUAD_WORKER_VIEW=panes "$DEVKIT" reload)"
 cmp -s "$REPO_ROOT/templates/devkit/manager-devkit.md" "$proj/.squad/roles/manager-devkit.md" ||
@@ -100,8 +100,8 @@ grep -q 'You already joined the squad as manager-4;' <<<"$out" ||
   fail "MANAGER_ID was not replaced with manager-4: $out"
 grep -q 'Always pass --manager manager-4 on every worker launch' <<<"$out" ||
   fail "worker launch MANAGER_ID was not replaced: $out"
-grep -q 'Installed worker engines, in the order the human chose (prefer earlier ones): agy opencode' <<<"$out" ||
-  fail "missing configured worker order agy opencode: $out"
+grep -q 'Installed worker engines, in the order the human chose (prefer earlier ones): grok opencode' <<<"$out" ||
+  fail "missing configured worker order grok opencode: $out"
 grep -q '## Your role (.squad/roles/manager-devkit.md)' <<<"$out" ||
   fail "missing role section heading: $out"
 grep -q 'You do not write code\.' <<<"$out" ||
@@ -209,7 +209,7 @@ grep -q 'Always pass --manager {{MANAGER_ID}} on every worker launch' <<<"$dry_o
   fail "dry-run missing worker launch line: $dry_out"
 grep -q 'squad receive {{MANAGER_ID}} --wait --timeout 900' <<<"$dry_out" ||
   fail "dry-run missing squad receive line: $dry_out"
-grep -q 'Installed worker engines, in the order the human chose (prefer earlier ones): agy opencode' <<<"$dry_out" ||
+grep -q 'Installed worker engines, in the order the human chose (prefer earlier ones): grok opencode' <<<"$dry_out" ||
   fail "dry-run missing worker order line: $dry_out"
 grep -q 'Workers work in this repository by default; pass --project <path> to have one work in another repository\.' <<<"$dry_out" ||
   fail "dry-run missing repository line: $dry_out"

@@ -16,8 +16,8 @@ squad_engine_loaded=""
 squad_engine_load() {
   local name="$1" function
   case "$name" in
-    claude|codex|opencode|grok|agy|ccr) ;;
-    *) echo "Unknown engine: $name (use claude, codex, opencode, grok, agy, or ccr)" >&2; return 2 ;;
+    claude|codex|opencode|grok|ccr) ;;
+    *) echo "Unknown engine: $name (use claude, codex, opencode, grok, or ccr)" >&2; return 2 ;;
   esac
   # shellcheck source=/dev/null
   source "$squad_engine_directory/$name.sh" || { echo "Could not load the $name engine adapter" >&2; return 2; }

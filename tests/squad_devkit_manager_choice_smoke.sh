@@ -68,6 +68,7 @@ grep -q 'Unknown manager: cursor' "$temp_directory/log"
 
 # --setup now runs the wizard: custom (2), manager codex (2 of claude, codex,
 # agy), empty worker order (all), then confirm.
+# agy stays a manager but is never listed as a worker.
 setup_output="$(printf '2\n2\n\ny\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$devkit" --setup 2>"$temp_directory/log")"
 grep -q '1) claude' "$temp_directory/log"
 [[ "$setup_output" == *'Saved setup to'* ]] || fail
@@ -104,7 +105,7 @@ rm "$SQUAD_DEVKIT_CONFIG"
 noninteractive="$("$devkit" "$project_directory" --no-prompt --dry-run 2>"$temp_directory/log")"
 [[ "$noninteractive" == *'Manager: agy'* ]] || fail
 grep -q 'Claude Code is not installed; using agy as the manager.' "$temp_directory/log"
-[[ "$noninteractive" == *'Installed worker engines, most trusted first: grok agy'* ]] || fail
+[[ "$noninteractive" == *'Installed worker engines, most trusted first: grok'* ]] || fail
 [[ ! -e "$SQUAD_DEVKIT_CONFIG" ]] || fail
 
 export SQUAD_DEVKIT_BIN_DIR="$temp_directory/bin-links"
@@ -114,7 +115,7 @@ install_output="$(printf '2\n2\n\ny\n' | SQUAD_DEVKIT_FORCE_PROMPT=1 "$repo_root
 [[ "$(readlink "$SQUAD_DEVKIT_BIN_DIR/squad-devkit")" == "$repo_root/scripts/squad-devkit.sh" ]] || fail
 [[ "$(readlink "$SQUAD_DEVKIT_BIN_DIR/squad-worker")" == "$repo_root/scripts/squad-worker.sh" ]] || fail
 [[ "$install_output" == *'Manager: grok (Grok Build)'* ]] || fail
-[[ "$install_output" == *'Workers (in the order you chose): grok agy'* ]] || fail
+[[ "$install_output" == *'Workers (in the order you chose): grok'* ]] || fail
 grep -qx 'manager=grok' "$SQUAD_DEVKIT_CONFIG" || fail
 grep -qx 'setup_mode=custom' "$SQUAD_DEVKIT_CONFIG" || fail
 fake_cli claude

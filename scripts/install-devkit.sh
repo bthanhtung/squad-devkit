@@ -268,7 +268,7 @@ else
   done
 fi
 if (( ${#worker_engines[@]} == 0 )); then
-  echo 'Workers: none (install claude, codex, opencode, grok, agy, or ccr; until then the manager does the work itself)'
+  echo 'Workers: none (install claude, codex, opencode, grok, or ccr; until then the manager does the work itself)'
 elif [[ "$(devkit_config_get setup_mode)" == custom ]]; then
   printf 'Workers (in the order you chose): %s\n' "${worker_engines[*]}"
 else

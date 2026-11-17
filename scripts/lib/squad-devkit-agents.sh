@@ -4,8 +4,8 @@
 
 manager_clients=(claude codex agy gemini grok opencode)
 
-# Built-in trust order for worker engines (claude > codex > opencode > grok, agy > ccr).
-worker_engine_order=(claude codex opencode grok agy ccr)
+# Built-in trust order for worker engines (claude > codex > opencode > grok > ccr).
+worker_engine_order=(claude codex opencode grok ccr)
 
 manager_label() {
   case "$1" in
@@ -30,7 +30,6 @@ worker_role_label() {
     codex) printf 'Normal implementation, debugging, tests; anything needing a shell or MCP' ;;
     opencode) printf 'Low-risk implementation, second opinion' ;;
     grok) printf 'Low-risk implementation, second opinion (experimental)' ;;
-    agy) printf 'Low-risk implementation, second opinion (experimental)' ;;
     ccr) printf 'Docs, comments, small exact edits (file tools only, no shell)' ;;
     *) return 1 ;;
   esac

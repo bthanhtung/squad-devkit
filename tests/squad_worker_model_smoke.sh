@@ -12,7 +12,7 @@ source "$root/scripts/lib/squad-worker-model.sh"
 status_get() {
   sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
 }
-for engine in claude codex opencode grok agy; do
+for engine in claude codex opencode grok; do
   model=explicit; squad_worker_select_model
   [[ "$model" == explicit && "$model_source" == flag ]]
   key="SQUAD_WORKER_$(printf '%s' "$engine" | tr '[:lower:]' '[:upper:]')_MODEL"
@@ -28,7 +28,7 @@ for engine in claude codex opencode grok agy; do
   fi
 done
 # Tier policy must override generic defaults, while explicit flags always win.
-for engine in claude codex opencode grok agy; do
+for engine in claude codex opencode grok; do
   generic_key="SQUAD_WORKER_$(printf '%s' "$engine" | tr '[:lower:]' '[:upper:]')_MODEL"
   export "$generic_key=generic-choice"
   for model_tier in fast balanced strong; do
@@ -97,63 +97,14 @@ JSON
 [[ "$(squad_worker_reported_models ccr "$tmp/events")" == reported-model,second-model ]]
 [[ -z "$(squad_worker_reported_models codex "$tmp/events")" ]]
 
-# squad_worker_agy_configured_model: native AGY init model extraction
-# 1. Valid native init object
-printf '%s\n' '{"event":"init","init":{"model":"gemini-2.5-flash"}}' >"$tmp/agy-init-valid"
-[[ "$(squad_worker_agy_configured_model "$tmp/agy-init-valid")" == gemini-2.5-flash ]]
-
-# 2. First valid init event wins
-printf '%s\n' \
-  '{"event":"init","init":{"model":"first-model"}}' \
-  '{"event":"init","init":{"model":"second-model"}}' >"$tmp/agy-init-multiple"
-[[ "$(squad_worker_agy_configured_model "$tmp/agy-init-multiple")" == first-model ]]
-
-# 3. Missing init, missing model, non-string, null, or empty file
-: >"$tmp/agy-empty"
-[[ -z "$(squad_worker_agy_configured_model "$tmp/agy-empty")" ]]
-[[ -z "$(squad_worker_agy_configured_model "$tmp/nonexistent-file")" ]]
-printf '%s\n' \
-  '{"event":"step_update","data":{}}' \
-  '{"event":"init"}' \
-  '{"event":"init","init":{}}' \
-  '{"event":"init","init":{"model":null}}' \
-  '{"event":"init","init":{"model":123}}' \
-  '{"event":"init","init":{"model":true}}' \
-  '{"event":"init","init":{"model":["array"]}}' \
-  '{"event":"init","init":{"model":{"nested":"object"}}}' >"$tmp/agy-init-missing"
-[[ -z "$(squad_worker_agy_configured_model "$tmp/agy-init-missing")" ]]
-
-# 4. Malformed JSON lines handled cleanly without failing
-printf '%s\n' \
-  '{not-valid-json' \
-  '{"event":"init", unclosed' \
-  '{"event":"init","init":{"model":"valid-after-malformed"}}' >"$tmp/agy-init-malformed"
-[[ "$(squad_worker_agy_configured_model "$tmp/agy-init-malformed")" == valid-after-malformed ]]
-
-printf '%s\n' '{broken json only' >"$tmp/agy-broken-only"
-[[ -z "$(squad_worker_agy_configured_model "$tmp/agy-broken-only")" ]]
-
-# 5. Unsafe, control character, whitespace, empty, or oversized values rejected
-long_model="$(printf 'm%.0s' {1..256})"
-too_long_model="$(printf 'm%.0s' {1..257})"
-printf '%s\n' "{\"event\":\"init\",\"init\":{\"model\":\"$long_model\"}}" >"$tmp/agy-256"
-[[ "$(squad_worker_agy_configured_model "$tmp/agy-256")" == "$long_model" ]]
-
-for unsafe_model in '' 'bad\nmodel' 'bad\rmodel' 'bad\tmodel' 'bad model' ' leading' 'trailing ' '\u001b[31mred' "$too_long_model"; do
-  printf '{"event":"init","init":{"model":"%s"}}\n' "$unsafe_model" >"$tmp/agy-unsafe"
-  [[ -z "$(squad_worker_agy_configured_model "$tmp/agy-unsafe")" ]]
-done
-
-# 6. Claude assistant/usage actual extraction unaffected and no init contamination
+# Claude assistant/usage actual extraction ignores init-style events
 cat >"$tmp/mixed-stream" <<'JSON'
-{"event":"init","init":{"model":"agy-native-init"}}
+{"event":"init","init":{"model":"ignored-init"}}
 {"type":"system","subtype":"init","model":"reported-alias"}
 {"type":"assistant","message":{"model":"claude-actual","content":[]}}
 {"type":"result","modelUsage":{"claude-actual":{},"claude-usage":{}}}
 {"type":"assistant","message":{"model":"bad\nstate=completed"}}
 JSON
-[[ "$(squad_worker_agy_configured_model "$tmp/mixed-stream")" == agy-native-init ]]
-[[ "$(squad_worker_reported_models agy "$tmp/mixed-stream")" == claude-actual,claude-usage ]]
 [[ "$(squad_worker_reported_models claude "$tmp/mixed-stream")" == claude-actual,claude-usage ]]
 [[ "$(squad_worker_reported_models ccr "$tmp/mixed-stream")" == claude-actual,claude-usage ]]
 : >"$tmp/log"
@@ -167,24 +118,13 @@ for args in "$tmp/run.status" "--all $tmp"; do
   grep -q 'actual=reported' "$tmp/frame"
 done
 
-# AGY status display: configured model and source
-printf 'worker=agy-test\nengine=agy\nstate=completed\nmodel=default\nrequested_model=default\nmodel_source=cli-default\nactual_model=agy-actual\nconfigured_model=gemini-2.5-pro\nconfigured_model_source=agy-init\nstarted=1\nfinished=2\nlog=%s\n' "$tmp/log" >"$tmp/run-agy.status"
+# An old agy run (agy is no longer a worker) still renders, without configured-model metadata.
+printf 'worker=agy-test\nengine=agy\nstate=completed\nmodel=default\nrequested_model=default\nmodel_source=cli-default\nactual_model=agy-actual\nstarted=1\nfinished=2\nlog=%s\n' "$tmp/log" >"$tmp/run-agy.status"
 "$root/scripts/squad-worker-monitor.sh" "$tmp/run-agy.status" --once >"$tmp/frame-agy"
 grep -q 'actual=agy-actual' "$tmp/frame-agy"
-grep -q 'configured=gemini-2.5-pro' "$tmp/frame-agy"
-grep -q 'configured_source=agy-init' "$tmp/frame-agy"
-label="$(squad_worker_model_label "$tmp/run-agy.status")"
-[[ "$label" == *'configured=gemini-2.5-pro configured_source=agy-init'* ]] || exit 1
+! grep -q 'configured=' "$tmp/frame-agy"
 
-# AGY status display when configured model is absent/unknown
-printf 'worker=agy-unknown\nengine=agy\nstate=completed\nmodel=default\nrequested_model=default\nmodel_source=cli-default\nactual_model=unknown\nstarted=1\nfinished=2\nlog=%s\n' "$tmp/log" >"$tmp/run-agy-unknown.status"
-"$root/scripts/squad-worker-monitor.sh" "$tmp/run-agy-unknown.status" --once >"$tmp/frame-agy-unknown"
-grep -q 'configured=unknown' "$tmp/frame-agy-unknown"
-grep -q 'configured_source=unknown' "$tmp/frame-agy-unknown"
-label="$(squad_worker_model_label "$tmp/run-agy-unknown.status")"
-[[ "$label" == *'configured=unknown configured_source=unknown'* ]] || exit 1
-
-# Non-AGY status display does not contain configured model metadata
+# Status display carries no configured-model metadata
 "$root/scripts/squad-worker-monitor.sh" "$tmp/run.status" --once >"$tmp/frame-codex"
 ! grep -q 'configured=' "$tmp/frame-codex"
 ! grep -q 'configured_source=' "$tmp/frame-codex"

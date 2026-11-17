@@ -12,7 +12,7 @@
 squad-devkit turns one terminal into an engineering team. You talk to a single
 manager agent (Claude Code by default). The manager triages the request, plans
 it, gives each task to the most cost-effective worker that can do it well
-(Claude, Codex, Grok, Antigravity, or a cheap local model), verifies every
+(Claude, Codex, OpenCode, Grok, or a cheap local model), verifies every
 result, and sends back anything that is wrong. Workers start only when there is
 work and stop when they are done, so idle agents cost nothing.
 
@@ -32,8 +32,8 @@ work and stop when they are done, so idle agents cost nothing.
 
 - **Plans like a senior team.** Every request is triaged by risk and complexity, then planned from
   five angles: principal engineer, engineering manager, tech lead, QA, and end user.
-- **Right worker for the job.** Workers are chosen by trust and cost (`claude` > `codex` > `grok`,
-  `agy`, `opencode` > `ccr`), using the smallest model that fits the brief.
+- **Right worker for the job.** Workers are chosen by trust and cost (`claude` > `codex` > `opencode`,
+  `grok` > `ccr`), using the smallest model that fits the brief.
 - **The manager owns the outcome.** Reports are checked against `git diff` and verification
   commands; defects go back with `path:line` detail, escalating models if needed.
 - **Workers can push back.** Workers question ambiguous briefs or propose better approaches with
@@ -72,7 +72,7 @@ Regenerate with `vhs scripts/demo/<name>.tape`.
 
 Requirements: macOS or Linux, bash, git, one manager
 CLI (`claude`, `codex`, `agy`, `gemini`, `grok`, or `opencode`), and at least one
-worker engine (`claude`, `codex`, `opencode`, `grok`, `agy`, or `ccr` from
+worker engine (`claude`, `codex`, `opencode`, `grok`, or `ccr` from
 [claude-code-router](https://github.com/musistudio/claude-code-router)).
 `jq` is optional (used when present).
 Monitor panes split in tmux, Orca, Herdr, WezTerm, Kitty, iTerm2, and Ghostty. In other
@@ -135,7 +135,7 @@ squad-worker --stop dev-1           # or --stop all
 |---|---|---|
 | `claude` | highest | Work that must be right the first time; `haiku` by default, `sonnet` for complex or high-risk work, `opus` for the hardest |
 | `codex` | high | Normal implementation, debugging, and tests; the only engine with MCP access |
-| `grok`, `agy`, `opencode` | medium | Low-risk implementation or a second opinion (experimental) |
+| `opencode`, `grok` | medium | Low-risk implementation or a second opinion (experimental) |
 | `ccr` | basic | Docs and small exact edits; cheap model, file tools only |
 
 Roles: `dev`, `tester`, `reviewer`, `researcher`, or any role from `.squad/roles/`. Use `--project <path>`
@@ -202,7 +202,7 @@ models and assign tiers, and use `squad-worker --models` to list the local engin
 
 ### YOLO sessions
 
-`--yolo` opts in native permission bypass for Claude, Codex, and AGY sessions, disabling engine
+`--yolo` opts in native permission bypass for Claude, Codex, and AGY manager sessions (and Claude and Codex workers), disabling engine
 permission checks and sandboxing. Use only in a trusted environment. See
 [opt-in YOLO sessions](./docs/squad-devkit.md#opt-in-yolo-sessions).
 
@@ -218,7 +218,7 @@ experimental:
 | Monitor panes in Herdr desktop (`herdr-app`, local spaces), Herdr TUI, tmux, and Ghostty | Verified in real runs |
 | Codex manager fallback when Claude Code hits a limit | Handoff verified with a simulated limit error |
 | Claude workers | File edits verified; shell commands rely on Claude Code's sandbox |
-| `grok` and `agy` workers; `agy`, `gemini`, `grok`, `opencode` managers | Experimental: built from each CLI's documentation, covered by tests with stand-in CLIs; AGY CLI may exit 1 after a successful result event |
+| `grok` workers; `agy`, `gemini`, `grok`, `opencode` managers | Experimental: built from each CLI's documentation, covered by tests with stand-in CLIs. `agy` is manager-only: Antigravity blocks CLI calls from other AI agents, so it cannot run as a worker |
 | Panes in Orca, WezTerm, Kitty, iTerm2, Zellij; dashboard in Terminal.app and Linux desktops | Experimental: built from each terminal's documented API, covered by tests with stand-in commands |
 | Linux | Covered by CI (Ubuntu); real-world reports welcome |
 

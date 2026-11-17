@@ -61,10 +61,10 @@ fi
 echo "Done. Verification: ok."
 EOF
 
-cat >"$test_bin/agy" <<'EOF'
+cat >"$test_bin/claude" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
-  echo "agy 1.0"
+  echo "claude 1.0"
   exit 0
 fi
 echo '{"type":"result","result":"Done. Verification: ok."}'
@@ -89,7 +89,7 @@ esac
 exit 0
 EOF
 
-chmod +x "$test_bin/squad" "$test_bin/grok" "$test_bin/agy" "$test_bin/tmux"
+chmod +x "$test_bin/squad" "$test_bin/grok" "$test_bin/claude" "$test_bin/tmux"
 
 cd "$project_directory"
 
@@ -134,7 +134,7 @@ grep -q 'hierarchy depth limit is 2' "$temp_directory/err"
 
 # 4. --role sub-manager --parent x exits 2 with "sub-managers cannot be nested"
 status=0
-"$worker" nested-sm --engine agy --role sub-manager --parent root-dev --no-worktree --brief "Nested sub-manager" \
+"$worker" nested-sm --engine claude --role sub-manager --parent root-dev --no-worktree --brief "Nested sub-manager" \
   >/dev/null 2>"$temp_directory/err" || status=$?
 [[ "$status" == 2 ]] || fail
 grep -q 'sub-managers cannot be nested' "$temp_directory/err"
@@ -172,7 +172,7 @@ exit 0
 EOF
 chmod +x "$temp_directory/scripts/squad-submanager.sh"
 
-sm_out="$("$worker" sm-1 --engine agy --model gemini-4-argon-high --role sub-manager --brief "Delegate area A")"
+sm_out="$("$worker" sm-1 --engine claude --model sonnet --role sub-manager --brief "Delegate area A")"
 [[ "$sm_out" == *'stub report'* ]] || fail
 sm_status="$(ls -t .squad/workers/sm-1-*.status | head -n 1)"
 grep -qx 'state=completed' "$sm_status"
@@ -210,7 +210,7 @@ done
 # 7. Missing sub-manager driver -> run fails with reason "sub-manager driver missing"
 rm -f "$temp_directory/scripts/squad-submanager.sh"
 status=0
-"$worker" sm-missing --engine agy --role sub-manager --no-worktree --brief "Missing driver" \
+"$worker" sm-missing --engine claude --role sub-manager --no-worktree --brief "Missing driver" \
   >/dev/null 2>"$temp_directory/err" || status=$?
 [[ "$status" != 0 ]] || fail
 missing_status="$(ls -t .squad/workers/sm-missing-*.status | head -n 1)"
@@ -223,7 +223,7 @@ mkdir -p "$tree_ws/.squad/workers"
 cat >"$tree_ws/.squad/workers/sm-alpha-20261114-100000.status" <<'EOF'
 worker=sm-alpha
 role=sub-manager
-engine=agy
+engine=claude
 state=completed
 started=1000
 tokens_in=1000
@@ -236,7 +236,7 @@ EOF
 cat >"$tree_ws/.squad/workers/child-a1-20261114-100100.status" <<'EOF'
 worker=child-a1
 role=dev
-engine=agy
+engine=claude
 state=completed
 started=1010
 tokens_in=2000
@@ -275,8 +275,8 @@ tree_json="$(cd "$tree_ws" && "$worker" --tree --json)"
 
 tree_text="$(cd "$tree_ws" && SQUAD_MANAGER_ID=manager-4 "$worker" --tree)"
 [[ "$tree_text" == $'manager-4\n'* ]] || fail
-[[ "$tree_text" == *'└─ sm-alpha  sub-manager  agy  completed  1500  branch 4600'* ]] || fail
-[[ "$tree_text" == *'  └─ child-a1  dev  agy  completed  2300'* ]] || fail
+[[ "$tree_text" == *'└─ sm-alpha  sub-manager  claude  completed  1500  branch 4600'* ]] || fail
+[[ "$tree_text" == *'  └─ child-a1  dev  claude  completed  2300'* ]] || fail
 
 # SQUAD_DEVKIT_SESSION_START filters out older runs (solo-1 started=500 < 900)
 filtered_json="$(cd "$tree_ws" && SQUAD_DEVKIT_SESSION_START=900 "$worker" --tree --json)"

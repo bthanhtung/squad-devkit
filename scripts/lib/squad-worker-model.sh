@@ -20,7 +20,7 @@ squad_worker_saved_selection() {
           else .engines[$engine][$tier] end
           | if . == null then empty
             elif (.model | model) and
-              (.effort == null or (($engine == "codex" or $engine == "agy") and (.effort | effort)))
+              (.effort == null or ($engine == "codex" and (.effort | effort)))
             then .model + "\t" + (.effort // "")
             else error("invalid selection") end' "$file" 2>/dev/null
         local result=$?
@@ -99,11 +99,11 @@ squad_worker_select_model() {
 # Kept for callers without an engine adapter; adapters call squad_worker_stream_models.
 squad_worker_reported_models() {
   local engine="$1" log="$2"
-  [[ "$engine" == claude || "$engine" == ccr || "$engine" == agy ]] || return 0
+  [[ "$engine" == claude || "$engine" == ccr ]] || return 0
   squad_worker_stream_models "$log"
 }
 
-# Models named in a Claude-shaped stream-json log (claude, ccr, agy).
+# Models named in a Claude-shaped stream-json log (claude, ccr).
 squad_worker_stream_models() {
   local log="$1"
   [[ -s "$log" ]] && squad_has_jq || return 0
@@ -117,16 +117,8 @@ squad_worker_stream_models() {
     | unique | join(",")' "$log" 2>/dev/null || true
 }
 
-squad_worker_agy_configured_model() {
-  local log="$1"
-  [[ -s "$log" ]] && squad_has_jq || return 0
-  squad_jq -Rrs '[split("\n")[] | fromjson? | select(type == "object" and .event == "init" and (.init | type) == "object")
-    | .init.model | select(type == "string" and length > 0 and length <= 256)
-    | select(test("[\\s\\p{Cc}]") | not)] | first // empty' "$log" 2>/dev/null || true
-}
-
 squad_worker_model_label() {
-  local file="$1" requested actual source profile tier configured configured_source engine
+  local file="$1" requested actual source profile tier engine
   requested="$(status_get "$file" requested_model)"
   [[ -n "$requested" ]] || requested="$(status_get "$file" model)"
   source="$(status_get "$file" model_source)"
@@ -135,11 +127,6 @@ squad_worker_model_label() {
   profile="$(status_get "$file" profile)"
   tier="$(status_get "$file" model_tier)"
   printf 'requested=%s source=%s actual=%s' "${requested:-default}" "${source:-unknown}" "${actual:-unknown}"
-  if [[ "$engine" == agy ]]; then
-    configured="$(status_get "$file" configured_model)"
-    configured_source="$(status_get "$file" configured_model_source)"
-    printf ' configured=%s configured_source=%s' "${configured:-unknown}" "${configured_source:-unknown}"
-  fi
   [[ -z "$tier" ]] || printf ' tier=%s' "$tier"
   [[ -z "$profile" ]] || printf ' profile=%s' "$profile"
   return 0
@@ -151,8 +138,8 @@ squad_worker_model_catalog() {
   squad_has_jq || { echo 'Missing command: jq' >&2; return 1; }
   for engine in "$@"; do
     case "$engine" in
-      claude|codex|opencode|grok|agy|ccr) ;;
-      *) echo 'Unknown catalog engine (use claude, codex, opencode, grok, agy, or ccr)' >&2; return 2 ;;
+      claude|codex|opencode|grok|ccr) ;;
+      *) echo 'Unknown catalog engine (use claude, codex, opencode, grok, or ccr)' >&2; return 2 ;;
     esac
   done
   for engine in "$@"; do

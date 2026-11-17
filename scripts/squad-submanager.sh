@@ -59,8 +59,8 @@ squad_has_jq || fail_early "missing required command: jq"
 [[ "$SQUAD_SM_MAX_CHILDREN" =~ ^[1-9][0-9]*$ ]] || fail_early "SQUAD_SM_MAX_CHILDREN must be a positive integer: $SQUAD_SM_MAX_CHILDREN"
 
 case "$SQUAD_SM_ENGINE" in
-  agy|claude|codex) ;;
-  *) fail_early "unsupported SQUAD_SM_ENGINE: $SQUAD_SM_ENGINE (expected agy, claude, or codex)" ;;
+  claude|codex) ;;
+  *) fail_early "unsupported SQUAD_SM_ENGINE: $SQUAD_SM_ENGINE (expected claude or codex)" ;;
 esac
 
 # shellcheck source=lib/squad-worker-model.sh
@@ -133,8 +133,7 @@ sm_turn_tokens() {
   local count
   count="$(squad_jq -R -r -s '
     [split("\n")[] | fromjson? | select(type == "object")
-     | if .event == "result" then (.result.usage // .usage // empty)
-       elif .type == "result" or .type == "turn.completed" then (.usage // empty)
+     | if .type == "result" or .type == "turn.completed" then (.usage // empty)
        else empty end
      | select(type == "object")
      | ((.input_tokens // 0) + (.output_tokens // 0))]
@@ -398,12 +397,12 @@ validate_plan_json() {
             (if (($c.role | type) != "string") or (($c.role | IN("dev","tester","researcher","docs")) | not) then
               "child[\($idx)]: invalid role \($c.role // "null") (allowed: dev, tester, researcher, docs)"
              else empty end),
-            (($c.engine // "agy") as $eng |
+            (($c.engine // "opencode") as $eng |
              if (($eng | type) != "string") or
-                (($eng | IN("agy","opencode")) | not) and ((($eng == "claude") and $allow_claude) | not) then
+                (($eng == "opencode") | not) and ((($eng == "claude") and $allow_claude) | not) then
               "child[\($idx)]: disallowed engine \($eng)"
              else empty end),
-            (($c.model // "gemini-3.8-flash-medium") as $mdl |
+            (($c.model // "default") as $mdl |
              if (($mdl | type) != "string") or ($mdl | length) == 0 or ($mdl | startswith("-")) or ($mdl | test("[\\s\\p{Cc}]")) then
               "child[\($idx)]: invalid model \($mdl | tostring)"
              else empty end),
@@ -470,9 +469,9 @@ validate_plan_json() {
   return 0
 }
 
-allowed_engines_label="agy, opencode"
+allowed_engines_label="opencode"
 if [[ "${SQUAD_SM_ALLOW_CLAUDE:-0}" == 1 ]]; then
-  allowed_engines_label="agy, opencode, claude"
+  allowed_engines_label="opencode, claude"
 fi
 
 build_plan_prompt() {
@@ -486,7 +485,7 @@ $role_instructions
 - Maximum children: $SQUAD_SM_MAX_CHILDREN
 - Allowed roles: dev, tester, researcher, docs
 - Allowed engines: $allowed_engines_label
-- Default child engine/model: agy / gemini-3.8-flash-medium (use gemini-4-argon-high only for deep reasoning)
+- Default child engine: opencode; omit "model" to use the tier mapping or the engine's own default (name a model only when the brief requires one)
 - Branch token budget: $SQUAD_SM_BUDGET
 ${root_owned:+- Root owned paths (every child owns path must be inside these): $root_owned}
 
@@ -534,8 +533,7 @@ fi
 # Normalize defaults in plan_json and store per-child metadata.
 plan_json="$(printf '%s\n' "$plan_json" | squad_jq -c '
   .children |= map(
-    .engine = (.engine // "agy") |
-    .model = (.model // "gemini-3.8-flash-medium")
+    .engine = (.engine // "opencode")
   )')"
 
 children_count="$(printf '%s\n' "$plan_json" | squad_jq -r '.children | length')"
@@ -575,11 +573,11 @@ run_children_batch() {
       --manager "$SQUAD_SM_ID"
       --parent "$SQUAD_SM_ID"
       --engine "$ceng"
-      --model "$cmdl"
       --role "$crole"
       --no-worktree
       --project "$SQUAD_SM_DIR"
     )
+    [[ -z "$cmdl" ]] || cmd+=(--model "$cmdl")
     if [[ -n "$SQUAD_SM_PLAN" && "$SQUAD_SM_PLAN" != "none" ]]; then
       cmd+=(--plan "$SQUAD_SM_PLAN")
     else

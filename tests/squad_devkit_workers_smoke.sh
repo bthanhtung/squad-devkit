@@ -21,7 +21,7 @@ export PATH="$tmpdir/bin"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # Create mock CLI binaries
-for cli in squad jq tmux claude codex agy ccr grok; do
+for cli in squad jq tmux claude codex opencode ccr grok; do
   cat << MOCK > "$tmpdir/bin/$cli"
 #!/usr/bin/env bash
 if [[ "\$*" == *"--version"* ]]; then echo "$cli version 1.0.0"; fi
@@ -39,14 +39,14 @@ echo "=== Test 1: Default (all installed worker engines enabled) ==="
 out=$("$DEVKIT" --doctor)
 grep -q "claude.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "codex.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
-grep -q "agy.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
+grep -q "opencode.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "ccr.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "grok.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
 echo "PASS: Test 1"
 
-echo "=== Test 2: CLI flag --workers agy ==="
-out=$("$DEVKIT" --doctor --workers agy)
-grep -q "agy.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
+echo "=== Test 2: CLI flag --workers opencode ==="
+out=$("$DEVKIT" --doctor --workers opencode)
+grep -q "opencode.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "claude.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "codex.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
 echo "PASS: Test 2"
@@ -56,18 +56,18 @@ out=$("$DEVKIT" --doctor --disable-workers claude,ccr)
 grep -q "claude.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "ccr.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "codex.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
-grep -q "agy.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
+grep -q "opencode.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
 echo "PASS: Test 3"
 
 echo "=== Test 4: Config file precedence ==="
 cat << CFG > "$HOME/.config/squad-devkit/config"
 manager=codex
-workers=agy,codex
+workers=opencode,codex
 disabled_workers=codex
 CFG
 out=$("$DEVKIT" --doctor)
 grep -q "Active default manager: codex" <<<"$out" || fail "unexpected output: $out"
-grep -q "agy.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
+grep -q "opencode.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "codex.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
 grep -q "claude.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
 echo "PASS: Test 4"
@@ -75,7 +75,7 @@ echo "PASS: Test 4"
 echo "=== Test 5: Env var overrides config file ==="
 out=$(SQUAD_DEVKIT_WORKERS="claude" "$DEVKIT" --doctor)
 grep -q "claude.*\[enabled\]" <<<"$out" || fail "unexpected output: $out"
-grep -q "agy.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
+grep -q "opencode.*\[disabled\]" <<<"$out" || fail "unexpected output: $out"
 echo "PASS: Test 5"
 
 echo "=== Test 6: CLI flags override env var and config ==="
@@ -91,19 +91,19 @@ mkdir -p "$tmpdir/proj"
 cd "$tmpdir/proj"
 git init -q
 [[ -d .git ]] || fail "git fixture was not initialized"
-out=$("$DEVKIT" --dry-run --manager codex --workers agy --disable-workers claude,ccr 2>"$tmpdir/warnings")
+out=$("$DEVKIT" --dry-run --manager codex --workers opencode --disable-workers claude,ccr 2>"$tmpdir/warnings")
 echo "$out"
-grep -q "Installed worker engines, most trusted first: agy" <<<"$out" || fail "unexpected output: $out"
-grep -q 'SQUAD_WORKER_AGY_MODEL_FAST' "$tmpdir/warnings" || fail 'missing fast tier warning'
+grep -q "Installed worker engines, most trusted first: opencode" <<<"$out" || fail "unexpected output: $out"
+grep -q 'SQUAD_WORKER_OPENCODE_MODEL_FAST' "$tmpdir/warnings" || fail 'missing fast tier warning'
 grep -q 'squad config workers' "$tmpdir/warnings" || fail 'missing setup guidance'
 if grep -Eq 'CODEX|CLAUDE|CCR' "$tmpdir/warnings"; then fail 'unselected engines warned'; fi
 mkdir -p .squad
 cat > .squad/worker-models.json <<'JSON'
-{"version":1,"engines":{"agy":{"fast":{"model":"f"},"balanced":{"model":"b"},"strong":{"model":"s"}}}}
+{"version":1,"engines":{"opencode":{"fast":{"model":"f"},"balanced":{"model":"b"},"strong":{"model":"s"}}}}
 JSON
-"$DEVKIT" --dry-run --manager codex --workers agy >"$tmpdir/saved-output" 2>"$tmpdir/warnings"
+"$DEVKIT" --dry-run --manager codex --workers opencode >"$tmpdir/saved-output" 2>"$tmpdir/warnings"
 [[ ! -s "$tmpdir/warnings" ]] || fail 'saved tiers warned'
-grep -Fq 'agy: fast=f, balanced=b, strong=s' "$tmpdir/saved-output" || fail 'saved catalog missing'
+grep -Fq 'opencode: fast=f, balanced=b, strong=s' "$tmpdir/saved-output" || fail 'saved catalog missing'
 "$DEVKIT" --dry-run --manager codex --workers claude,ccr > /dev/null 2>"$tmpdir/warnings"
 [[ ! -s "$tmpdir/warnings" ]] || fail 'builtins or unsupported CCR tiers warned'
 echo "PASS: Test 7"
@@ -145,7 +145,7 @@ MOCK
 [[ "$status" == 0 ]] || fail "fake squad with jq returned $status"
 grep -q "\[OK\].*jq.*(squad jq)" <<<"$out" || fail "doctor missing (squad jq)"
 
-out=$("$DEVKIT" --doctor --disable-workers claude,codex,opencode,grok,agy,ccr)
+out=$("$DEVKIT" --doctor --disable-workers claude,codex,opencode,grok,ccr)
 grep -q 'Manager will work without sub-workers' <<<"$out" || fail "all-disabled diagnostic"
 if grep -q '\[enabled\]' <<<"$out"; then fail "disabled worker enabled"; fi
 
@@ -154,10 +154,26 @@ status=0
 "$DEVKIT" --doctor --workers unknown-engine >/dev/null 2>&1 || status=$?
 [[ "$status" == 2 ]] || fail "unknown worker must exit 2"
 
-out=$(SQUAD_DEVKIT_DISABLE_WORKERS=agy "$DEVKIT" --doctor --workers agy,codex --disable-workers codex)
-grep -q 'agy.*\[enabled\]' <<<"$out" || fail "CLI deny must override environment"
+out=$(SQUAD_DEVKIT_DISABLE_WORKERS=opencode "$DEVKIT" --doctor --workers opencode,codex --disable-workers codex)
+grep -q 'opencode.*\[enabled\]' <<<"$out" || fail "CLI deny must override environment"
 grep -q 'codex.*\[disabled\]' <<<"$out" || fail "deny must win over allow"
-out=$(SQUAD_DEVKIT_DISABLE_WORKERS=agy "$DEVKIT" --doctor --workers agy,codex)
-grep -q 'agy.*\[disabled\]' <<<"$out" || fail "environment deny must apply"
+out=$(SQUAD_DEVKIT_DISABLE_WORKERS=opencode "$DEVKIT" --doctor --workers opencode,codex)
+grep -q 'opencode.*\[disabled\]' <<<"$out" || fail "environment deny must apply"
 grep -q 'codex.*\[enabled\]' <<<"$out" || fail "environment deny must override config"
+# agy can no longer be a worker: a saved config naming it is accepted with one note.
+cat << CFG > "$HOME/.config/squad-devkit/config"
+manager=codex
+workers=opencode,agy
+CFG
+status=0
+out=$("$DEVKIT" --dry-run --manager codex 2>"$tmpdir/warnings") || status=$?
+[[ "$status" == 0 ]] || fail "config naming agy must not fail the launcher (exit $status): $(cat "$tmpdir/warnings")"
+[[ "$(grep -c 'Note: ignoring agy in workers' "$tmpdir/warnings")" == 1 ]] || fail "expected exactly one agy note: $(cat "$tmpdir/warnings")"
+grep -q "Installed worker engines, most trusted first: opencode" <<<"$out" || fail "agy not dropped from the worker order: $out"
+status=0
+"$DEVKIT" --dry-run --manager codex --workers agy >/dev/null 2>"$tmpdir/warnings" || status=$?
+[[ "$status" == 2 ]] || fail "--workers agy must exit 2, got $status"
+grep -q 'agy can no longer run as a worker' "$tmpdir/warnings" || fail "missing agy worker message"
+/bin/rm -f "$HOME/.config/squad-devkit/config"
+
 echo "ALL WORKER TESTS PASSED!"

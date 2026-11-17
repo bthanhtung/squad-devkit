@@ -118,5 +118,4 @@ jobs:
           bash tests/squad_terminal_routing_regression.sh
           bash tests/squad_herdr_app_panes_regression.sh
           bash tests/squad_orca_panes_regression.sh
-          bash tests/squad_worker_agy_lifecycle_smoke.sh
           bash tests/squad_engine_adapters_smoke.sh

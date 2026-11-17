@@ -18,7 +18,8 @@ check_bash _squad_devkit --yolo squad-devkit --yo
 check_bash _squad_worker --yolo squad-worker dev-1 --yo
 check_bash _squad_devkit --doctor squad-devkit --doc
 check_bash _squad_devkit codex squad-devkit --manager co
-check_bash _squad_devkit agy squad-devkit --workers ag
+check_bash _squad_devkit agy squad-devkit --manager ag
+check_bash _squad_devkit grok squad-devkit --workers gr
 check_bash _squad_devkit ccr squad-devkit --disable-workers cc
 check_bash _squad_worker strong squad-worker dev-1 --model-tier st
 check_bash _squad_worker --models squad-worker --models
@@ -51,7 +52,8 @@ check 'squad-devkit --yo' 'squad-devkit --yolo '
 check 'squad-worker dev-1 --yo' 'squad-worker dev-1 --yolo '
 check 'squad-devkit --doc' 'squad-devkit --doctor '
 check 'squad-devkit --manager co' 'squad-devkit --manager codex '
-check 'squad-devkit --workers ag' 'squad-devkit --workers agy '
+check 'squad-devkit --manager ag' 'squad-devkit --manager agy '
+check 'squad-devkit --workers gr' 'squad-devkit --workers grok '
 check 'squad-devkit --disable-workers cc' 'squad-devkit --disable-workers ccr '
 check 'squad-worker worker-1 --engine open' 'squad-worker worker-1 --engine opencode '
 check 'squad-worker dev-1 --role sub' 'squad-worker dev-1 --role sub-manager '

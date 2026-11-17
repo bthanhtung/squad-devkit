@@ -27,17 +27,21 @@ expect_usage_error() {
 }
 
 for id in ../evil 'a b' .hidden; do
-  expect_usage_error "Invalid worker id: $id" "$worker" "$id" --engine agy --brief hi
+  expect_usage_error "Invalid worker id: $id" "$worker" "$id" --engine codex --brief hi
 done
 for flag in --merge --discard --diff --stop; do
   expect_usage_error "Invalid worker id: ../evil" "$worker" "$flag" ../evil
 done
-expect_usage_error "at least 1" "$worker" w1 --engine agy --brief hi --timeout 0
-expect_usage_error "Brief file not readable: $tmpdir/missing" "$worker" w1 --engine agy --brief-file "$tmpdir/missing"
-expect_usage_error "mutually exclusive" "$worker" w1 --engine agy --brief hi --sandbox --no-sandbox
+expect_usage_error "at least 1" "$worker" w1 --engine codex --brief hi --timeout 0
+expect_usage_error "Brief file not readable: $tmpdir/missing" "$worker" w1 --engine codex --brief-file "$tmpdir/missing"
+expect_usage_error "mutually exclusive" "$worker" w1 --engine codex --brief hi --sandbox --no-sandbox
 # YOLO does not bypass the plan gate in manager context.
 expect_usage_error "a plan is required" env -u SQUAD_WORKER_REQUIRE_PLAN SQUAD_MANAGER_ID=manager-1 \
   "$worker" x --engine claude --yolo --brief y
+# agy was removed as a worker: the flags exit 2 with one message; a saved config only gets a note.
+agy_message='agy can no longer run as a worker: Antigravity blocks CLI calls from other AI agents. Use opencode, codex, claude, grok or ccr.'
+expect_usage_error "$agy_message" "$worker" w1 --engine agy --brief hi
+expect_usage_error "$agy_message" "$devkit" --dry-run --no-prompt --workers agy "$tmpdir"
 expect_usage_error "Unknown worker: bogus (use one of:" "$devkit" --dry-run --no-prompt --workers claude,bogus "$tmpdir"
 expect_usage_error "Unknown worker: nope" "$devkit" --dry-run --no-prompt --disable-workers nope "$tmpdir"
 expect_usage_error "Unknown worker: envbad" env SQUAD_DEVKIT_WORKERS=envbad "$devkit" --dry-run --no-prompt "$tmpdir"
@@ -45,7 +49,7 @@ expect_usage_error "Unknown worker: envbad" env SQUAD_DEVKIT_WORKERS=envbad "$de
 # Edge cases below run from an empty directory with no .squad/ above it. A value
 # that passes validation stops at "No .squad/ found"; a rejected one exits 2 first.
 mkdir -p "$tmpdir/bin" "$tmpdir/empty" "$tmpdir/ws/.squad/workers" "$tmpdir/brief-dir"
-for cli in squad agy codex claude; do
+for cli in squad opencode codex claude; do
   printf '#!/usr/bin/env bash\nexit 0\n' >"$tmpdir/bin/$cli"
   chmod +x "$tmpdir/bin/$cli"
 done
@@ -75,10 +79,10 @@ expect_engine() {
 
 # Worker ids start with a letter or digit, then letters, digits, '.', '_' or '-'.
 for id in . .. a/b 'a;b' 'é1' _x; do
-  expect_exit 2 "Invalid worker id: $id" "$worker" "$id" --engine agy --brief hi
+  expect_exit 2 "Invalid worker id: $id" "$worker" "$id" --engine codex --brief hi
 done
 for id in dev-1 a.b_c A9 "$(printf 'a%.0s' {1..200})"; do
-  expect_exit 1 "$no_workspace" "$worker" "$id" --engine agy --brief hi
+  expect_exit 1 "$no_workspace" "$worker" "$id" --engine codex --brief hi
 done
 
 # --stop/--discard/--merge with "all" pass validation; merge/discard/stop reject traversal ids.
@@ -93,28 +97,28 @@ expect_exit 2 "Missing value for --stop" "$worker" --stop ""
 
 # --timeout must be a whole number of minutes, at least 1.
 for timeout in 00 -1 1.5 ' 5'; do
-  expect_exit 2 "at least 1" "$worker" w1 --engine agy --brief hi --timeout "$timeout"
+  expect_exit 2 "at least 1" "$worker" w1 --engine codex --brief hi --timeout "$timeout"
 done
-expect_exit 1 "$no_workspace" "$worker" w1 --engine agy --brief hi --timeout 1
-expect_exit 2 "take whole minutes" env SQUAD_WORKER_TIMEOUT=abc "$worker" w1 --engine agy --brief hi
+expect_exit 1 "$no_workspace" "$worker" w1 --engine codex --brief hi --timeout 1
+expect_exit 2 "take whole minutes" env SQUAD_WORKER_TIMEOUT=abc "$worker" w1 --engine codex --brief hi
 
 # Brief sources: a directory is not a readable file; empty or blank briefs are rejected.
-expect_exit 2 "Brief file not readable: $tmpdir/brief-dir" "$worker" w1 --engine agy --brief-file "$tmpdir/brief-dir"
+expect_exit 2 "Brief file not readable: $tmpdir/brief-dir" "$worker" w1 --engine codex --brief-file "$tmpdir/brief-dir"
 : >"$tmpdir/empty.md"
 printf ' \n\t\n' >"$tmpdir/blank.md"
-expect_exit 2 "The brief is empty" "$worker" w1 --engine agy --brief-file "$tmpdir/empty.md"
-expect_exit 2 "The brief is empty" "$worker" w1 --engine agy --brief-file "$tmpdir/blank.md"
-expect_exit 2 "The brief is empty" "$worker" w1 --engine agy --brief-file -
-expect_exit 2 "The brief is empty" "$worker" w1 --engine agy --brief '   '
+expect_exit 2 "The brief is empty" "$worker" w1 --engine codex --brief-file "$tmpdir/empty.md"
+expect_exit 2 "The brief is empty" "$worker" w1 --engine codex --brief-file "$tmpdir/blank.md"
+expect_exit 2 "The brief is empty" "$worker" w1 --engine codex --brief-file -
+expect_exit 2 "The brief is empty" "$worker" w1 --engine codex --brief '   '
 
 # SQUAD_WORKER_SANDBOX is a default only: explicit flags still win, and both flags still conflict.
-expect_exit 2 "mutually exclusive" env SQUAD_WORKER_SANDBOX=1 "$worker" w1 --engine agy --brief hi --sandbox --no-sandbox
-expect_exit 1 "$no_workspace" env SQUAD_WORKER_SANDBOX=0 "$worker" w1 --engine agy --brief hi --sandbox
-expect_exit 1 "$no_workspace" "$worker" w1 --engine agy --brief hi --no-sandbox
+expect_exit 2 "mutually exclusive" env SQUAD_WORKER_SANDBOX=1 "$worker" w1 --engine codex --brief hi --sandbox --no-sandbox
+expect_exit 1 "$no_workspace" env SQUAD_WORKER_SANDBOX=0 "$worker" w1 --engine codex --brief hi --sandbox
+expect_exit 1 "$no_workspace" "$worker" w1 --engine codex --brief hi --no-sandbox
 
 # Roles added with the ui-ux and security templates are accepted.
 for role in ui-ux security; do
-  expect_exit 1 "$no_workspace" "$worker" w1 --engine agy --brief hi --role "$role"
+  expect_exit 1 "$no_workspace" "$worker" w1 --engine codex --brief hi --role "$role"
 done
 
 # --workers / --disable-workers lists: empty items are skipped, names are exact, unknown names exit 2.
@@ -122,7 +126,7 @@ capture "$devkit" --doctor --workers 'codex,,claude'
 [[ "$captured_status" != 2 ]] || fail "--workers codex,,claude rejected: $captured_out"
 expect_engine codex enabled
 expect_engine claude enabled
-expect_engine agy disabled
+expect_engine opencode disabled
 
 capture "$devkit" --doctor --workers 'codex,'
 [[ "$captured_status" != 2 ]] || fail "--workers codex, rejected: $captured_out"

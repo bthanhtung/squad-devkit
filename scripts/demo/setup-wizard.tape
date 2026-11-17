@@ -27,7 +27,7 @@ Sleep 1.2s
 Type "1"
 Enter
 Sleep 1.2s
-Type "agy,opencode"
+Type "grok,opencode"
 Enter
 Sleep 1.5s
 Type "y"

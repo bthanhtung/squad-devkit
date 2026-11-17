@@ -1,6 +1,6 @@
 ---
 name: squad-devkit
-description: Delegate coding, testing, review, research, or log/report work to on-demand AI workers (Claude, Codex, OpenCode, Grok, Antigravity, or a cheap ccr model) that run in parallel in isolated git worktrees, then review and merge their changes. Use when the user wants to split work across workers, run squad-devkit or squad-worker, check worker status, merge or discard a worker's worktree, or save tokens by offloading work from the current session.
+description: Delegate coding, testing, review, research, or log/report work to on-demand AI workers (Claude, Codex, OpenCode, Grok, or a cheap ccr model) that run in parallel in isolated git worktrees, then review and merge their changes. Use when the user wants to split work across workers, run squad-devkit or squad-worker, check worker status, merge or discard a worker's worktree, or save tokens by offloading work from the current session.
 ---
 
 # squad-devkit
@@ -81,13 +81,13 @@ Workers see only the brief, so make it complete.
 ## Choose the worker
 
 Pick the cheapest worker that can do the task well. Trust, highest first:
-claude > codex > opencode > grok, agy > ccr.
+claude > codex > opencode > grok > ccr.
 
 | Task | Options |
 |---|---|
 | Must be right first time (high risk or complexity) | `--engine claude` (`--model haiku` by default, `sonnet` for complex work, `opus` for the hardest) |
 | Normal implementation, debugging, tests; anything needing a shell or MCP | `--engine codex` (`--profile medium` for mechanical work; `--mcp NAME` to enable one MCP server) |
-| Low-risk work or a second opinion (experimental) | `--engine opencode`, `grok`, or `agy` |
+| Low-risk work or a second opinion (experimental) | `--engine opencode` or `grok` |
 | Docs and small exact edits | `--engine ccr` (cheap, file tools only, no shell) |
 
 Roles: `--role dev|tester|reviewer|researcher` (reviewers and researchers read

@@ -46,7 +46,7 @@ Without an objective the manager opens an interactive chat and asks for one firs
   --manager CLI Manager CLI for this run: claude, codex, agy, gemini, grok, or
                 opencode (or set SQUAD_DEVKIT_MANAGER)
   --setup       Detect installed AI CLIs and choose the manager, workers and their order, then exit
-  --workers LIST          Only enable these worker engines (comma list of claude,codex,opencode,grok,agy,ccr)
+  --workers LIST          Only enable these worker engines (comma list of claude,codex,opencode,grok,ccr)
                           (or SQUAD_DEVKIT_WORKERS, or workers= in the config file)
   --disable-workers LIST  Exclude these worker engines
                           (or SQUAD_DEVKIT_DISABLE_WORKERS, or disabled_workers=)
@@ -104,6 +104,7 @@ reload_passthrough_args=()
 caller_worker_view="${SQUAD_WORKER_VIEW:-}"
 manager_client="${SQUAD_DEVKIT_MANAGER:-}"
 workers_opt="${SQUAD_DEVKIT_WORKERS:-}"
+workers_cli=0
 disable_workers_opt="${SQUAD_DEVKIT_DISABLE_WORKERS:-}"
 view_opt="${SQUAD_WORKER_VIEW:-}"
 view_source=""
@@ -146,11 +147,12 @@ while (( $# > 0 )); do
         exit 2
       fi
       if [[ "$1" == --workers ]]; then workers_opt="$2"; else disable_workers_opt="$2"; fi
+      workers_cli=1
       reload_passthrough_args+=("$1" "$2")
       shift
       ;;
-    --workers=*) workers_opt="${1#*=}"; reload_passthrough_args+=("$1") ;;
-    --disable-workers=*) disable_workers_opt="${1#*=}"; reload_passthrough_args+=("$1") ;;
+    --workers=*) workers_opt="${1#*=}"; workers_cli=1; reload_passthrough_args+=("$1") ;;
+    --disable-workers=*) disable_workers_opt="${1#*=}"; workers_cli=1; reload_passthrough_args+=("$1") ;;
     --view)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
@@ -452,8 +454,8 @@ in_list() {
 # means every engine is allowed; the disable list always wins.
 worker_enabled() {
   local allow="$workers_opt" deny="$disable_workers_opt"
-  [[ -n "$allow" ]] || allow="$(devkit_config_get workers)"
-  [[ -n "$deny" ]] || deny="$(devkit_config_get disabled_workers)"
+  [[ -n "$allow" ]] || allow="$(drop_agy_worker "$(devkit_config_get workers)")"
+  [[ -n "$deny" ]] || deny="$(drop_agy_worker "$(devkit_config_get disabled_workers)")"
   if [[ -n "$allow" ]] && ! in_list "$allow" "$1"; then return 1; fi
   if [[ -n "$deny" ]] && in_list "$deny" "$1"; then return 1; fi
   return 0
@@ -502,10 +504,10 @@ run_doctor() {
       fi
     fi
   done
-  # Upstream squad rejects --client agy/grok/ccr; those workers fall back to a
-  # client it accepts, so this is worth knowing but not an error.
+  # Upstream squad rejects --client agy/grok/ccr; those workers and the agy
+  # manager fall back to a client it accepts, so this is worth knowing but not an error.
   if command -v squad >/dev/null 2>&1 && ! squad help 2>&1 | grep -q 'agy'; then
-    printf '  [INFO]    squad is the upstream build: ccr joins as claude, grok and agy as codex. ./install.sh keeps their own names.\n'
+    printf '  [INFO]    squad is the upstream build: ccr joins as claude, grok and an agy manager as codex. ./install.sh keeps their own names.\n'
   fi
   printf '\n'
 
@@ -702,9 +704,29 @@ if (( list_projects == 1 )); then
 fi
 
 # Validate and dedupe worker lists (flag > env > config) before any use.
-known_workers="claude codex opencode grok agy ccr"
-normalize_worker_list() {
+known_workers="claude codex opencode grok ccr"
+agy_worker_message='agy can no longer run as a worker: Antigravity blocks CLI calls from other AI agents. Use opencode, codex, claude, grok or ccr.'
+# Prints a worker list without agy (no note); used where the list is only read.
+drop_agy_worker() {
   local item out=""
+  for item in ${1//,/ }; do
+    [[ "$item" == agy ]] || out="${out:+$out,}$item"
+  done
+  printf '%s' "$out"
+}
+# normalize_worker_list LIST NAME: agy on the command line is an error; from the
+# saved config or the environment it is dropped with one note.
+normalize_worker_list() {
+  local item out="" kept
+  if [[ " ${1//,/ } " == *" agy "* ]]; then
+    if (( workers_cli == 1 )); then
+      echo "$agy_worker_message" >&2
+      exit 2
+    fi
+    kept="$(drop_agy_worker "$1")"
+    echo "Note: ignoring agy in ${2:-workers}: Antigravity blocks CLI calls from other AI agents, so it cannot be a worker." >&2
+    set -- "$kept" "${2:-}"
+  fi
   for item in ${1//,/ }; do
     [[ " $known_workers " == *" $item "* ]] || {
       echo "Unknown worker: $item (use one of: ${known_workers// /, })" >&2
@@ -720,8 +742,8 @@ workers_from_flag=0
 if [[ -n "$workers_opt" ]]; then
   workers_from_flag=1
 fi
-workers_opt="$(normalize_worker_list "${workers_opt:-$(devkit_config_get workers)}")" || exit 2
-disable_workers_opt="$(normalize_worker_list "${disable_workers_opt:-$(devkit_config_get disabled_workers)}")" || exit 2
+workers_opt="$(normalize_worker_list "${workers_opt:-$(devkit_config_get workers)}" workers)" || exit 2
+disable_workers_opt="$(normalize_worker_list "${disable_workers_opt:-$(devkit_config_get disabled_workers)}" disabled_workers)" || exit 2
 setup_mode="$(devkit_config_get setup_mode)"
 
 interactive=0
@@ -784,7 +806,7 @@ require_command squad
 worker_engines=()
 # Worker engines in the effective allow-list order when one is set (so the
 # manager prefers them in the order the human chose), otherwise the built-in
-# trust order (claude > codex > opencode > grok, agy > ccr).
+# trust order (claude > codex > opencode > grok > ccr).
 if [[ -n "$workers_opt" ]]; then
   for engine in ${workers_opt//,/ }; do
     if command -v "$engine" >/dev/null 2>&1 && worker_enabled "$engine"; then
@@ -800,7 +822,7 @@ else
   done
 fi
 if (( ${#worker_engines[@]} == 0 && clean_only == 0 )); then
-  echo "Note: no worker engine (claude, codex, opencode, grok, agy, ccr) is installed; the manager will do the work itself." >&2
+  echo "Note: no worker engine (claude, codex, opencode, grok, ccr) is installed; the manager will do the work itself." >&2
 fi
 if (( clean_only > 0 )); then
   if [[ -d "$project_directory/.squad" ]]; then
