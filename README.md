@@ -22,7 +22,7 @@ work and stop when they are done, so idle agents cost nothing.
 
 <p align="center"><sub>A real run in tmux: three Claude haiku workers fix a bug, write tests, and update docs in parallel, each in its own git worktree, then everything is merged and the tests pass.</sub></p>
 
-**Contents:** [Highlights](#highlights) · [Demos](#demos) · [Install](#install) ·
+**Contents:** [Highlights](#highlights) · [How it works](#how-it-works) · [Demos](#demos) · [Install](#install) ·
 [Usage](#usage) · [Workers](#workers) · [Watching workers](#watching-workers) ·
 [Configuration](#configuration) · [Project status](#project-status) · [Security](#security) ·
 [FAQ](#faq) · [Contributing](#contributing) · [Credits](#credits) · [License](#license) ·
@@ -47,6 +47,63 @@ work and stop when they are done, so idle agents cost nothing.
   and Ghostty.
 - **Lean by design.** Instructions live in system prompts, MCP servers stay off until requested,
   and a Codex manager takes over if Claude hits usage limits.
+
+## How it works
+
+You talk to one manager. The manager plans and verifies; workers do the edits, each in its own git worktree. Workers exist only while they have a task.
+
+```mermaid
+flowchart TB
+  you([You]) -->|request| launcher["squad-devkit launcher"]
+  launcher --> mgr["Manager agent<br/>Claude Code, Codex, ..."]
+  mgr -->|"triage and plan"| plan[(".squad/plans/*.md")]
+  mgr -->|"brief, --plan, --own"| sw["squad-worker"]
+  sw --> w1["dev-1<br/>worktree squad/dev-1"]
+  sw --> w2["dev-2<br/>worktree squad/dev-2"]
+  sw --> w3["reviewer<br/>reads the project"]
+  w1 -->|"report, questions"| bus[("squad message bus")]
+  w2 --> bus
+  w3 --> bus
+  bus --> mgr
+  mgr -->|"verify, then squad-worker --merge"| repo[("Your repository")]
+  mgr -->|"commit / push with your approval"| repo
+  sw -.-> view["Orchestration pane"]
+```
+
+A request moves through these steps:
+
+```mermaid
+sequenceDiagram
+  actor You
+  participant M as Manager
+  participant W as Worker (worktree)
+  participant R as Repository
+  You->>M: request
+  M->>M: triage, read the code, write the plan
+  M->>W: squad-worker --plan --brief
+  opt brief is unclear
+    W-->>M: question (squad-ask)
+    M-->>W: answer
+  end
+  W->>M: report and diff
+  M->>M: read the diff, rerun the checks
+  alt a check fails
+    M->>W: fix run, same id, defects with path:line
+  else all checks pass
+    M->>R: squad-worker --merge (uncommitted)
+  end
+  M->>You: summary and evidence
+  You->>M: approve commit / push
+  M->>R: git commit, git push
+```
+
+| Part | What it does |
+|---|---|
+| `squad-devkit` | Picks the manager CLI and the workspace, then starts the manager with its role prompt (`templates/devkit/manager-devkit.md`). |
+| Manager | Triages, plans from five perspectives, briefs workers, verifies every result, and reports to you. It never edits project files: a guard hook blocks edits outside `.squad/` and blocks commit or push without your approval. |
+| `squad-worker` | Validates the plan, creates the worktree, starts an engine adapter (`scripts/lib/engines/`: claude, codex, opencode, grok, ccr), enforces time limits and file ownership, and merges on request. |
+| `squad` | A small Rust binary that serves as the message bus and task store (`.squad/messages.db`). Workers report, ask and answer through it. |
+| Orchestration pane | Live view of every worker's status and its conversation with the manager. It closes itself when the work is done. |
 
 ## Demos
 
