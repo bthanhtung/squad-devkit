@@ -264,6 +264,8 @@ squad-worker test-1 --engine codex --profile medium --role tester --brief-file b
 squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief '...'
 ```
 
+Reviewer workers are read-only: Claude and ccr get no Edit/Write tools, Codex runs with `--sandbox read-only`, and OpenCode uses its `plan` agent (grok has no read-only mode).
+
 | Option | Meaning |
 |---|---|
 | `--engine claude\|codex\|opencode\|grok\|ccr` | Worker engine (required) |
@@ -782,3 +784,117 @@ candidates or silently downgrade; escalate failed rounds, use another capable
 enabled engine, or report the required mapping. Router advice cannot override
 safety/quality policy. Status and monitor labels add `model_tier` while preserving
 requested and actual model evidence separately.
+
+## Highlights
+
+- **Plans like a senior team.** Every request is triaged by risk and complexity, then planned from
+  five angles: principal engineer, engineering manager, tech lead, QA, and end user.
+- **Right worker for the job.** Workers are chosen by trust and cost (`claude` > `codex` > `opencode`,
+  `grok` > `ccr`), using the smallest model that fits the brief.
+- **The manager owns the outcome.** Reports are checked against `git diff` and verification
+  commands; defects go back with `path:line` detail, escalating models if needed.
+- **Workers can push back.** Workers question ambiguous briefs or propose better approaches with
+  `squad-ask` instead of guessing.
+- **Isolated by default.** Editing workers get their own git worktree and branch, so parallel tasks
+  never overwrite each other; the manager merges changes cleanly.
+- **Nothing hangs.** Workers run with time limits and stall detection; failures report back for
+  reassignment or re-runs.
+- **Live visibility.** One orchestration pane per manager (lifecycle flow chart, closes itself
+  when idle) or one pane per worker; supported in tmux, Orca, Herdr, WezTerm, Kitty, iTerm2,
+  and Ghostty.
+- **Lean by design.** Instructions live in system prompts, MCP servers stay off until requested,
+  and a Codex manager takes over if Claude hits usage limits.
+
+## Demos
+
+**Setup wizard** — Detect installed AI CLIs and configure preferences (`squad-devkit --setup`):
+
+![Setup wizard](../assets/demo/setup-wizard.gif)
+
+**Orchestration view** — Live lifecycle flow chart and worker details (`g` graph, `c` cards, `t` tree, `j`/`k` select, `i` details, `a` all managers, `p` keep open):
+
+![Orchestration view graph/pipeline/tree](../assets/demo/orchestration-graph.gif)
+
+**Hierarchy mode** — Root manager delegates independent areas to sub-managers (`1`–`9` zoom, `Esc` return):
+
+![Hierarchy mode](../assets/demo/hierarchy.gif)
+
+**Classic panes (`--view panes`)** — Dedicated split monitor pane for each running worker:
+
+![Classic panes](../assets/demo/panes.gif)
+
+Regenerate with `vhs scripts/demo/<name>.tape`.
+
+## Configuration reference
+
+Environment variables that tune a run. Related settings appear in the sections above.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SQUAD_DEVKIT_MANAGER` | saved choice, else `claude` | Manager CLI for a run (`--manager`) |
+| `SQUAD_DEVKIT_PERMISSION_MODE` | `auto` | Claude Code permission mode for the manager |
+| `SQUAD_DEVKIT_FALLBACK_MANAGER` | `codex` | Manager that takes over when Claude Code hits a limit (`none` disables) |
+| `SQUAD_DEVKIT_RETENTION_DAYS` | `7` | Days to keep finished worker runs |
+| `SQUAD_DEVKIT_MAX_MB` | `200` | Size cap for `.squad/workers` |
+| `SQUAD_DEVKIT_STATUSLINE` | `1` | `0` turns off the squad status-line label |
+| `SQUAD_DEVKIT_NOTIFY` | `1` | `0` disables desktop notifications |
+| `SQUAD_WORKER_CLAUDE_MODEL` | `haiku` | Default model for Claude workers |
+| `SQUAD_WORKER_CODEX_PROFILE` | CLI configuration | Default Codex profile for workers |
+| `SQUAD_WORKER_TIMEOUT` / `SQUAD_WORKER_STALL` | `45` / `10` | Minutes before a run is stopped / counted as stuck |
+| `SQUAD_WORKER_VIEW` | `orchestration` (manager) / `panes` (direct) | Worker progress view: `orchestration` (one live flow view) or `panes` (one split per worker; `--view`, or `view=` in config) |
+| `SQUAD_WORKER_VERIFY_TIMEOUT` | `10` | Minutes allowed for `--verify` |
+| `SQUAD_WORKER_REPORT_LINES` | `40` | Maximum report lines printed by a worker |
+| `SQUAD_ORCHESTRATION_HOLD` | `SQUAD_WORKER_PANE_HOLD`, else `60` | Seconds before an idle orchestration pane closes itself (`0` = never) |
+| `SQUAD_WORKER_PANE_HOLD` | `60` | Seconds a finished monitor pane stays open (`panes` view) |
+| `SQUAD_WORKER_WORKTREE` | `auto` | `0` disables git worktree isolation |
+| `SQUAD_WORKER_SANDBOX` | `1` | `0` disables engine sandbox (Codex and Claude workers) |
+| `SQUAD_DEVKIT_ROUTER_URL` | unset | Optional advisory triage router for `squad-route` |
+
+`squad-devkit --clean` prunes old worker runs on demand and `--clean-all` removes every finished run.
+Full reference: [docs/squad-devkit.md](./squad-devkit.md).
+
+## Project status
+
+squad-devkit 1.0 runs daily on macOS with Claude Code as the manager and Codex
+and ccr workers. What has been verified end to end, and what is still
+experimental:
+
+| Area | Status |
+|---|---|
+| Claude Code manager, Codex and ccr workers, worktrees and merging | Verified in real runs |
+| Monitor panes in Herdr desktop (`herdr-app`, local spaces), Herdr TUI, tmux, and Ghostty | Verified in real runs |
+| Codex manager fallback when Claude Code hits a limit | Handoff verified with a simulated limit error |
+| Claude workers | File edits verified; shell commands rely on Claude Code's sandbox |
+| `grok` workers; `agy`, `gemini`, `grok`, `opencode` managers | Experimental: built from each CLI's documentation, covered by tests with stand-in CLIs. `agy` is manager-only: Antigravity blocks CLI calls from other AI agents, so it cannot run as a worker |
+| Panes in Orca, WezTerm, Kitty, iTerm2, Zellij; dashboard in Terminal.app and Linux desktops | Experimental: built from each terminal's documented API, covered by tests with stand-in commands |
+| Linux | Covered by CI (Ubuntu); real-world reports welcome |
+
+If you try an experimental path, please report what worked or failed in an
+[issue](https://github.com/bthanhtung/squad-devkit/issues/new/choose).
+
+## FAQ
+
+**Why not just use Claude Code subagents?**
+Subagents run inside your Claude Code session on Claude models, so every task draws from the same
+quota. squad-devkit keeps Claude for planning and review and sends the bulk of the work to other
+engines (Codex, cheap ccr models), each in its own process and git worktree, with a time limit and
+a live pane you can watch or stop.
+
+**How many tokens does it actually save?**
+Two measured examples: a trivial edit by a Codex worker costs about 18k tokens instead of 52–98k,
+because workers start with MCP servers off; and the earlier setup with three always-on workers
+burned about 1M tokens polling before any work arrived, which on-demand workers avoid entirely.
+The status line shows the running total for your own session. See
+[Why this saves tokens](./squad-devkit.md#why-this-saves-tokens).
+
+**Do I need Claude Code?**
+No. It is the default and best-tested manager, but Codex, Gemini CLI, Grok, Antigravity, and
+OpenCode can manage too (`squad-devkit --setup`).
+
+**Can a worker break my repository?**
+Editing workers never touch your working tree. They work on a `squad/<id>` branch in
+`.squad/worktrees/`, and nothing reaches your files until the manager (or you) runs
+`squad-worker --merge`, which leaves the changes uncommitted for review.
+
+**Windows?**
+Not supported yet. WSL has not been tested; reports are welcome.

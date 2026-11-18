@@ -10,6 +10,8 @@ releases.
 - Removed agy as a worker engine: Antigravity blocks CLI calls from other AI agents. agy remains available as a manager. A saved `workers=` or `SQUAD_DEVKIT_WORKERS` that names agy is ignored with a one-line note; `squad-worker --engine agy` and `squad-devkit --workers agy` exit 2. Sub-managers run on `claude` or `codex`, and their children default to `opencode`.
 
 ### Behaviour changes
+- Manager instructions put the per-session manager ID in a short final block, so manager tabs share the prompt cache instead of each writing ~20k tokens of fresh cache on the first turn.
+- Reviewer workers are read-only at the engine level (Claude/ccr without Edit/Write, Codex `--sandbox read-only`, OpenCode `--agent plan`); they run in place on the project, so a prompt alone was not enough.
 - High-risk plans refuse launches below the strong tier unless `--tier-reason` is provided; children of sub-managers are exempt and record the reason in `tier_override`.
 - Printed reports and task summaries are capped at `SQUAD_WORKER_REPORT_LINES` (default 40); verification results appear first.
 - Fix runs reuse the worktree and receive the previous round's report and diff stat.
