@@ -18,10 +18,13 @@ engine_claude_build_command() {
   if [[ -n "${SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS:-}" ]]; then
     claude_allowed_tools=(--allowedTools "$SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS")
   fi
+  # Reviewers run in place on the project, so they get no edit tools.
+  local default_tools=Read,Edit,Write,Glob,Grep,Bash
+  [[ "${role:-}" != reviewer ]] || default_tools=Read,Glob,Grep,Bash
   local permission_arguments=(--permission-mode "${SQUAD_WORKER_CLAUDE_PERMISSION_MODE:-acceptEdits}")
   [[ "$yolo" != 1 ]] || permission_arguments=(--dangerously-skip-permissions)
   engine_command=(claude -p --model "$model" --strict-mcp-config --disable-slash-commands
-    --no-session-persistence --tools "${SQUAD_WORKER_CLAUDE_TOOLS:-Read,Edit,Write,Glob,Grep,Bash}"
+    --no-session-persistence --tools "${SQUAD_WORKER_CLAUDE_TOOLS:-$default_tools}"
     "${permission_arguments[@]}"
     ${claude_allowed_tools[@]+"${claude_allowed_tools[@]}"} --settings "$claude_settings"
     --add-dir "$workspace_root" --output-format stream-json --verbose "$prompt")

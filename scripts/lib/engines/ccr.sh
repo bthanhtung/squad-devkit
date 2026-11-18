@@ -29,7 +29,10 @@ ensure_ccr_server() {
 }
 
 engine_ccr_build_command() {
-  local tools="${SQUAD_WORKER_CCR_TOOLS:-Read,Edit,Write,Glob,Grep}"
+  # Reviewers run in place on the project, so they get no edit tools.
+  local default_tools=Read,Edit,Write,Glob,Grep
+  [[ "${role:-}" != reviewer ]] || default_tools=Read,Glob,Grep
+  local tools="${SQUAD_WORKER_CCR_TOOLS:-$default_tools}"
   engine_command=(claude -p --strict-mcp-config --disable-slash-commands --no-session-persistence
     --tools "$tools" --allowedTools "$tools" --permission-mode acceptEdits
     --output-format stream-json --verbose "$prompt")

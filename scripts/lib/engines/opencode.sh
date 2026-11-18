@@ -10,6 +10,8 @@ engine_opencode_check_deps() {
 engine_opencode_build_command() {
   engine_command=(opencode run --format json "$prompt")
   [[ -z "$model" ]] || engine_command+=(--model "$model")
+  # Reviewers run in place on the project, so they get no edit tools.
+  [[ "${role:-}" != reviewer ]] || engine_command+=(--agent plan)
   squad_engine_require_jq
 }
 

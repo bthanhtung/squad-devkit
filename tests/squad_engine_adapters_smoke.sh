@@ -58,6 +58,7 @@ keep_mcp=()
 all_mcp=0
 sandbox_mode=1
 yolo=0
+role=dev
 : >"$log_file"
 
 # Claude: sandboxed shell, acceptEdits, strict MCP; YOLO and --no-sandbox switch both.
@@ -68,6 +69,12 @@ command_line="${engine_command[*]}"
 yolo=1 sandbox_mode=0 squad_engine build_command || fail
 [[ "${engine_command[*]}" == *'--dangerously-skip-permissions --settings {"sandbox":{"enabled":false}}'* ]] || fail
 [[ "${engine_command[*]}" != *--permission-mode* ]] || fail
+
+# Reviewers get no edit tools; an explicit SQUAD_WORKER_CLAUDE_TOOLS wins.
+role=reviewer squad_engine build_command || fail
+[[ "${engine_command[*]}" == *'--tools Read,Glob,Grep,Bash --permission-mode'* ]] || fail
+role=reviewer SQUAD_WORKER_CLAUDE_TOOLS=X squad_engine build_command || fail
+[[ "${engine_command[*]}" == *'--tools X --permission-mode'* ]] || fail
 
 # Codex: every configured MCP server except --mcp ones is disabled without copying
 # credentials; a failed listing or a missing bearer token refuses the launch (3).
@@ -107,6 +114,14 @@ model_effort=high profile=deep yolo=1 squad_engine build_command || fail
 engine_directory="$workspace_root" sandbox_mode=0 squad_engine build_command || fail
 [[ "${engine_command[*]}" == *'--sandbox danger-full-access'* && "${engine_command[*]}" != *--add-dir* ]] || fail
 
+# Codex reviewers are read-only, even with --no-sandbox; YOLO still bypasses.
+role=reviewer squad_engine build_command || fail
+[[ "${engine_command[*]}" == *'--sandbox read-only'* && "${engine_command[*]}" != *workspace-write* ]] || fail
+role=reviewer sandbox_mode=0 squad_engine build_command || fail
+[[ "${engine_command[*]}" == *'--sandbox read-only'* && "${engine_command[*]}" != *danger-full-access* ]] || fail
+role=reviewer yolo=1 squad_engine build_command || fail
+[[ "${engine_command[*]}" == *--dangerously-bypass-approvals-and-sandbox* && "${engine_command[*]}" != *read-only* ]] || fail
+
 # Grok prints the report on stdout; OpenCode runs in JSON mode.
 printf '#!/usr/bin/env bash\necho "report from grok $*"\necho diagnostics >&2\n' >"$tmp/bin/grok"
 chmod +x "$tmp/bin/grok"
@@ -138,6 +153,19 @@ squad_engine run_and_extract_report || fail
 grep -q '"type":"tool_use"' "$absolute_log" || fail
 grep -q '"type":"step_finish"' "$absolute_log" || fail
 [[ -z "$(squad_engine reported_models "$absolute_log")" ]] || fail
+squad_engine build_command || fail
+[[ "${engine_command[*]}" != *--agent* ]] || fail
+role=reviewer squad_engine build_command || fail
+[[ "${engine_command[*]}" == *' --agent plan'* ]] || fail
+
+# ccr reviewers get read-only tools (a fake curl stands in for the router).
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/bin/curl"
+chmod +x "$tmp/bin/curl"
+squad_engine_load ccr
+squad_engine build_command || fail
+[[ "${engine_command[*]}" == *'--tools Read,Edit,Write,Glob,Grep --allowedTools Read,Edit,Write,Glob,Grep'* ]] || fail
+role=reviewer squad_engine build_command || fail
+[[ "${engine_command[*]}" == *'--tools Read,Glob,Grep --allowedTools Read,Glob,Grep'* ]] || fail
 
 # Claude-shaped streams name their models; codex events do not.
 printf '%s\n' '{"type":"assistant","message":{"model":"m-one"}}' '{"type":"result","result":"done","modelUsage":{"m-two":{}}}' >"$tmp/events"
