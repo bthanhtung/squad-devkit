@@ -106,8 +106,10 @@ manager_start_command() {
   shell_join "$binary" ${arguments[@]+"${arguments[@]}"}
 }
 
-# Expands {{MANAGER_ID}} and {{MANAGER_LABEL}} in the prompt template and
-# appends the project's manager-devkit role file when present.
+# Expands {{MANAGER_LABEL}} in the prompt template, appends the project's
+# manager-devkit role file when present, and ends with a short per-session block
+# holding the manager ID, so the long static prefix is identical across tabs and
+# shares the prompt cache.
 build_manager_instructions() {
   local client="$1"
   local template="$2"
@@ -120,6 +122,7 @@ build_manager_instructions() {
     text+=$'\n\n'"## Your role (.squad/roles/manager-devkit.md)"$'\n\n'
     text+="$(grep -v '^<!-- squad-devkit template' "$role_file")"
   fi
+  text+=$'\n\n'"## This session"$'\n\n'"Your manager ID is $mgr_id. Pass --manager $mgr_id on every worker launch and wait with squad receive $mgr_id."
   printf '%s' "$text"
 }
 

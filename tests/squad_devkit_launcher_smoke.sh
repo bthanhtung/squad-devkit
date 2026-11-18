@@ -188,7 +188,7 @@ fi
 [[ "$(tmux list-panes -t "$session_name" -F '#{pane_title}')" == 'Claude Code · manager' ]] || fail
 [[ "$(tmux show-options -t "$session_name" -v prefix)" == C-a ]] || fail
 [[ "$(tmux show-options -gv prefix)" == C-b ]] || fail
-rg -q '^claude:--permission-mode auto --append-system-prompt You are the Claude Code manager.*You already joined the squad as manager;' "$DEVKIT_TEST_LOG"
+rg -q '^claude:--permission-mode auto --append-system-prompt You are the Claude Code manager.*You have already joined the squad;' "$DEVKIT_TEST_LOG"
 rg -q '## Your role \(.squad/roles/manager-devkit.md\).*You do not write code' "$DEVKIT_TEST_LOG"
 rg -q '^  manager \(role: manager-devkit\)' <<<"$(cd "$project_directory" && squad agents)"
 [[ -f "$project_directory/.squad/managers/manager.pid" ]] || fail
@@ -256,7 +256,7 @@ chmod +x "$test_bin/osascript-id"
 (cd "$HOME" && TERM_PROGRAM=ghostty SQUAD_DEVKIT_OSASCRIPT="$test_bin/osascript-id" \
   "$repo_root/scripts/squad-devkit.sh" "$project_directory" --here 'check the deploy logs' 2>"$temp_directory/here-log")
 rg -Fq "here:$resolved_project_directory:GHOSTTY-7:" "$DEVKIT_TEST_LOG"
-rg -q '^here:.*You already joined the squad as manager;' "$DEVKIT_TEST_LOG"
+rg -q '^here:.*You have already joined the squad;' "$DEVKIT_TEST_LOG"
 [[ "$(cd "$project_directory" && squad agents)" != *'manager'* ]] || fail
 [[ ! -e "$project_directory/.squad/managers/manager.pid" ]] || fail
 rg -q "^here:.*--append-system-prompt You are the Claude Code manager.* check the deploy logs$" "$DEVKIT_TEST_LOG"

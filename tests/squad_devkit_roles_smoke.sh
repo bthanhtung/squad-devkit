@@ -215,6 +215,28 @@ call="$(last_codex_call)"
 [[ "$call" != *'squad-devkit template'* ]] || fail
 pass 'tester worker gets a worktree and the customized .squad/roles/tester.md'
 
+# Manager instructions: same bytes up to the final block, so tabs share the prompt cache.
+(
+  # shellcheck source=/dev/null
+  source "$repo_root/scripts/lib/squad-devkit-agents.sh"
+  cache_project="$temp_directory/cache-project"
+  mkdir -p "$cache_project/.squad/roles"
+  printf 'Static role body.\n' >"$cache_project/.squad/roles/manager-devkit.md"
+  cache_template='You are the {{MANAGER_LABEL}} manager. Pass --manager <your manager ID>.'
+  first="$(build_manager_instructions claude "$cache_template" manager-2 "$cache_project")"
+  second="$(build_manager_instructions claude "$cache_template" manager-3 "$cache_project")"
+  marker=$'\n\n## This session\n\n'
+  [[ "$first" == *"$marker"* ]] || exit 1
+  [[ "${first%%"$marker"*}" == "${second%%"$marker"*}" ]] || exit 1
+  tail_part="${first#*"$marker"}"
+  (( ${#tail_part} + 16 < 400 )) || exit 1
+  [[ "${first%%"$marker"*}" != *manager-2* ]] || exit 1
+  # A custom template that still uses {{MANAGER_ID}} keeps working.
+  legacy="$(build_manager_instructions claude 'Use {{MANAGER_ID}} here.' manager-2 "$cache_project")"
+  [[ "$legacy" == 'Use manager-2 here.'* ]] || exit 1
+) || fail
+pass "manager instructions differ only in the final session block"
+
 printf 'PASS: %d squad-devkit role checks (templates, prepare_project, completions, squad-worker roles)\n' "$passed"
 
 grep -qF 'read `.squad/roles/manager-hierarchy.md`' "$roles_directory/manager-devkit.md" || fail

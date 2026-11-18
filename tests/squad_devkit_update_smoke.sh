@@ -96,10 +96,16 @@ grep -qx '## Updated squad-devkit manager instructions (replace the earlier ones
   fail "missing updated instructions heading: $out"
 grep -q 'You are the Claude Code manager of this squad devkit' <<<"$out" ||
   fail "missing manager label in instructions: $out"
-grep -q 'You already joined the squad as manager-4;' <<<"$out" ||
-  fail "MANAGER_ID was not replaced with manager-4: $out"
-grep -q 'Always pass --manager manager-4 on every worker launch' <<<"$out" ||
-  fail "worker launch MANAGER_ID was not replaced: $out"
+grep -q 'You have already joined the squad; workers report to you' <<<"$out" ||
+  fail "missing joined sentence: $out"
+grep -q '^## This session$' <<<"$out" ||
+  fail "missing final session block: $out"
+grep -q 'Your manager ID is manager-4\. Pass --manager manager-4 on every worker launch and wait with squad receive manager-4\.' <<<"$out" ||
+  fail "session block missing manager-4: $out"
+before_session="${out%%$'\n## This session'*}"
+if [[ "$before_session" == *manager-4* ]]; then
+  fail "manager-4 must appear only in the final block: $out"
+fi
 grep -q 'Installed worker engines, in the order the human chose (prefer earlier ones): grok opencode' <<<"$out" ||
   fail "missing configured worker order grok opencode: $out"
 grep -q '## Your role (.squad/roles/manager-devkit.md)' <<<"$out" ||
@@ -203,11 +209,11 @@ echo "=== Test 5: launcher --dry-run manager prompt keeps its key lines after re
 dry_out="$(SQUAD_MANAGER_ID=manager-9 "$DEVKIT" "$proj" --dry-run)"
 grep -q 'You are the {{MANAGER_LABEL}} manager of this squad devkit' <<<"$dry_out" ||
   fail "dry-run missing {{MANAGER_LABEL}} template line: $dry_out"
-grep -q 'You already joined the squad as {{MANAGER_ID}}; workers report to you automatically\.' <<<"$dry_out" ||
-  fail "dry-run missing {{MANAGER_ID}} template line: $dry_out"
-grep -q 'Always pass --manager {{MANAGER_ID}} on every worker launch' <<<"$dry_out" ||
+grep -q 'You have already joined the squad; workers report to you automatically\.' <<<"$dry_out" ||
+  fail "dry-run missing joined template line: $dry_out"
+grep -q 'Always pass --manager <your manager ID> (given at the end of these instructions) on every worker launch' <<<"$dry_out" ||
   fail "dry-run missing worker launch line: $dry_out"
-grep -q 'squad receive {{MANAGER_ID}} --wait --timeout 900' <<<"$dry_out" ||
+grep -q 'squad receive <your manager ID> --wait --timeout 900' <<<"$dry_out" ||
   fail "dry-run missing squad receive line: $dry_out"
 grep -q 'Installed worker engines, in the order the human chose (prefer earlier ones): grok opencode' <<<"$dry_out" ||
   fail "dry-run missing worker order line: $dry_out"

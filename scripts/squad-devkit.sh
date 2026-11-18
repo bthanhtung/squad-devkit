@@ -856,7 +856,7 @@ build_manager_prompt() {
       worker_order_line="Installed worker engines, in the order the human chose (prefer earlier ones): ${worker_engines[*]}"
     fi
     worker_line="squad-worker is: $worker_command
-Always pass --manager {{MANAGER_ID}} on every worker launch; do not rely on inherited environment variables.
+Always pass --manager <your manager ID> (given at the end of these instructions) on every worker launch; do not rely on inherited environment variables.
 $worker_order_line
 Mapped worker models (local configuration; provider availability unverified; use only these):
 $(printf '%s' "$worker_catalog" | squad_jq -r '
@@ -866,12 +866,12 @@ $(printf '%s' "$worker_catalog" | squad_jq -r '
   | [$rows[] | select(.engine == $engine and .tier != "" and .candidate != null)
       | if .effort != null then "\(.tier)=\(.candidate) (effort \(.effort))" else "\(.tier)=\(.candidate)" end]
   | if length == 0 then "\($engine): CLI default only" else "\($engine): " + join(", ") end')
-In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive {{MANAGER_ID}} --wait --timeout 900, instead of polling or sleeping."
+In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive <your manager ID> --wait --timeout 900, instead of polling or sleeping."
   fi
   if [[ -n "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then
     worker_line+=$'\n'"squad-route is configured: $script_dir/squad-route.sh \"<redacted digest>\""
   fi
-  prompt="You are the {{MANAGER_LABEL}} manager of this squad devkit, in an interactive session in this repository. You already joined the squad as {{MANAGER_ID}}; workers report to you automatically.
+  prompt="You are the {{MANAGER_LABEL}} manager of this squad devkit, in an interactive session in this repository. You have already joined the squad; workers report to you automatically.
 $worker_line"
   if (( general_workspace == 1 )); then
     prompt+=$'\n\n'"You are in the general squad workspace ($project_directory), not inside a project. Many requests need no repository: checking logs or metrics (prod, staging), querying data, and writing reports. Run those workers here without --project, give them the MCP servers they need, and save reports under reports/ in this workspace. When a request changes or inspects code, work out which repositories it involves (they live under ~/Workspace; $script_dir/squad-devkit.sh --list lists them) and pass --project <repository path> to those squad-worker runs. Keep plans in .squad/plans/ here. Ask the human only when the repository is genuinely unclear."

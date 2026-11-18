@@ -41,8 +41,8 @@ grep -q 'Enter a number from 1 to 2.' "$temp_directory/log"
 [[ "$choice" == *'Manager: agy'* ]] || fail
 [[ "$choice" == *"manager: env SQUAD_DEVKIT_YOLO=0 SQUAD_WORKER_VIEW=orchestration $repo_root/scripts/lib/squad-devkit-manager.sh agy "* ]] || fail
 [[ "$choice" == *"cli: $test_bin/agy -i INSTRUCTIONS"* ]] || fail
-[[ "$choice" == *'You already joined the squad as {{MANAGER_ID}}'* ]] || fail
-[[ "$choice" == *'squad receive {{MANAGER_ID}} --wait --timeout 900'* ]] || fail
+[[ "$choice" == *'You have already joined the squad; workers report to you automatically.'* ]] || fail
+[[ "$choice" == *'squad receive <your manager ID> --wait --timeout 900'* ]] || fail
 [[ "$choice" == *'You are the {{MANAGER_LABEL}} manager'* ]] || fail
 [[ "$(cat "$SQUAD_DEVKIT_CONFIG")" == 'manager=agy' ]] || fail
 
