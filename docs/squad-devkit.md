@@ -541,6 +541,64 @@ demand, and `squad-devkit --clean-all` removes every finished run, including its
 
 `squad-devkit --stats [--days N]` summarizes runs by engine and tier (default 30 days), including first-pass rate, rounds, tokens and duration. It uses `SQUAD_DEVKIT_PROJECT_ROOT` if set; otherwise it searches upward for the nearest `.squad` workspace, falling back to the current directory. `squad-devkit --doctor --split-test` also opens and verifies a monitor split.
 
+## Telegram remote
+
+One Telegram bot controls every running squad-devkit manager on the laptop: see
+the managers and their workers, send a message to one (it arrives as if typed in
+its pane), get its reply after each turn, and get a note when a worker finishes
+or a manager waits for input or permission. It is off until you set it up.
+
+Setup, in 5 steps:
+
+1. In Telegram, message `@BotFather`, send `/newbot`, and copy the bot token.
+2. Run `squad-devkit telegram setup` and paste the token (input is hidden).
+3. The laptop terminal prints a 6-digit pairing code. Send exactly that code to
+   your bot in a private chat. Only that chat is paired; other chats are
+   ignored, and setup gives up after 5 minutes without saving anything.
+4. Run `squad-devkit telegram start` (`status` shows whether it runs and the
+   live managers; `run` keeps it in the foreground).
+5. Start managers inside herdr or tmux. A manager in a plain terminal tab still
+   sends notifications but cannot receive text.
+
+Phone commands:
+
+- `/list` numbers the live managers with their pane kind and running workers.
+- `/to <n|label> <text>` sends text to a manager (number from the last `/list`,
+  or an exact or unique-prefix label) and makes it the current one. Use the
+  number when a label contains spaces.
+- Plain text goes to the current manager. Replying to a bot message sends your
+  text to the manager that message came from.
+- `/help` lists the commands. Text longer than 2000 characters is rejected.
+
+What it never does: it runs no shell command from Telegram, transfers no files,
+and serves no chat but the paired private one. Text from the phone has escape
+sequences and control characters removed, newlines become spaces, and it is
+typed as `[telegram] <text>` with herdr or tmux, never through a shell. The one
+exception is a bare answer to a prompt (`1`-`9`, `y`, `n`, `yes`, `no`, `Y`, `N`),
+which is typed as is so a Claude Code permission prompt accepts it. A reply to a
+bot message goes only to the manager whose label matches exactly; `/to` also
+accepts a label prefix. `setup` refuses to run while the daemon is up (stop it
+first). The bot
+token is read by `curl` from stdin, so it is not in `ps` or the log; the log
+(`daemon.log` in the state directory, mode 600) holds event kinds and labels,
+never message bodies, the token or the chat id.
+
+Keep client code off Telegram. Replies and worker results leave the laptop for
+Telegram's servers, so exclude those workspaces:
+
+- `SQUAD_DEVKIT_TELEGRAM=0` turns the remote off for one session.
+- List absolute path prefixes in `~/.local/state/squad-devkit/telegram-exclude`
+  (one per line) or in a `TELEGRAM_EXCLUDE=/path/a:/path/b` line of
+  `~/.config/squad-devkit/telegram.env`. A manager or worker whose workspace
+  is inside a listed path sends nothing, is not registered, and is hidden from
+  `/list`.
+- Phone copies of worker results are sent even when `SQUAD_DEVKIT_NOTIFY=0`
+  (that setting only silences desktop notifications).
+
+To stop: `squad-devkit telegram stop`. To remove it, stop the daemon and delete
+`~/.config/squad-devkit/telegram.env`; with no config, the hooks and registry do
+nothing. Revoke the token with BotFather's `/revoke` if it may have leaked.
+
 ## Watching workers
 
 In a manager session, `orchestration` is the default view: the first worker opens one live `squad-orchestration` pane to the manager's right (or one orchestration window in terminals without a split API). Each manager session (each terminal tab) gets exactly one such pane and no other monitor panes: no per-worker pane and no per-sub-manager pane. Later workers reuse that pane without opening more splits. `orchestration-branches` is still accepted as a value but behaves like `orchestration` (a single pane).

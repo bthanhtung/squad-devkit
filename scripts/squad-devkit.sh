@@ -26,6 +26,7 @@ Usage: squad-devkit [project-name-or-directory] [objective] [--task objective]
                     [--disable-workers LIST] [--view MODE] [--setup] [--doctor] [--list] [--ghostty] [--tmux]
                     [--update] [--reload] [--dry-run] [--no-attach] [--no-prompt]
        squad-devkit update|reload|restart [project-name-or-directory]
+       squad-devkit telegram setup|start|stop|status|run
 
 Start a manager (Claude Code by default) for a project in the current terminal.
 The manager plans and starts on-demand Codex or CCR workers with squad-worker
@@ -110,6 +111,11 @@ view_opt="${SQUAD_WORKER_VIEW:-}"
 view_source=""
 [[ -z "$view_opt" ]] || view_source="env"
 backend="${SQUAD_DEVKIT_BACKEND:-here}"
+# `squad-devkit telegram ...` hands the rest of the arguments to the daemon.
+if [[ "${1:-}" == telegram && ! -d telegram ]]; then
+  shift
+  exec "$script_dir/squad-telegram.sh" "$@"
+fi
 while (( $# > 0 )); do
   case "$1" in
     --here) backend=here; reload_passthrough_args+=("$1") ;;

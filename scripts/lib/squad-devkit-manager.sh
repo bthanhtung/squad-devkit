@@ -11,6 +11,7 @@ lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$lib_dir/squad-tmux-launcher-helpers.sh"
 source "$lib_dir/squad-devkit-agents.sh"
 source "$lib_dir/squad-jq.sh"
+source "$lib_dir/squad-telegram-spool.sh"
 
 client="$1"
 validate_yolo_client "$client"
@@ -49,8 +50,13 @@ if [[ -z "$manager_id" ]]; then
   exit 1
 fi
 printf '%s\n' "$$" >"$pid_directory/$manager_id.pid"
+# The Telegram remote finds this manager through the registry (a no-op unless
+# telegram is set up).
+telegram_label="$(basename "$PWD")/$manager_id"
+tg_registry_write "$telegram_label" "$manager_id" "$PWD" "$$" "$client" || true
 leave_squad() {
   squad leave "$manager_id" >/dev/null 2>&1 || true
+  tg_registry_remove "$$" || true
   rm -f "$pid_directory/$manager_id.pid"
 }
 trap leave_squad EXIT
@@ -107,6 +113,13 @@ if [[ "$client" == claude ]] && squad_has_jq; then
     guard_command="$(shell_join "$lib_dir/squad-devkit-manager-guard.sh" "$PWD")"
     settings="$(squad_jq -c --arg command "$guard_command" \
       '.hooks.PreToolUse = [{matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash", hooks: [{type: "command", command: $command}]}]' <<<"$settings")"
+  fi
+  if tg_enabled; then
+    stop_command="$(shell_join "$lib_dir/squad-telegram-hook.sh" stop "$telegram_label")"
+    notification_command="$(shell_join "$lib_dir/squad-telegram-hook.sh" notification "$telegram_label")"
+    settings="$(squad_jq -c --arg stop "$stop_command" --arg notification "$notification_command" \
+      '.hooks.Stop = [{hooks: [{type: "command", command: $stop, timeout: 10}]}]
+       | .hooks.Notification = [{hooks: [{type: "command", command: $notification, timeout: 10}]}]' <<<"$settings")"
   fi
   if [[ "${SQUAD_DEVKIT_STATUSLINE:-1}" != 0 ]]; then
     savings_command="$(shell_join "$lib_dir/../squad-worker-monitor.sh" --savings "$PWD")"

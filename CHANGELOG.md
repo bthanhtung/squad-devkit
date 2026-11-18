@@ -18,6 +18,7 @@ releases.
 - The manager prompt lists mapped models as text.
 
 ### Added
+- Telegram remote (`squad-devkit telegram setup|start|stop|status|run`, `squad-telegram`): one bot controls every running manager from your phone (`/list`, `/to`, plain text, reply-to), with manager replies, worker results and waiting-for-input notices sent back. Only the paired private chat is served, phone text is stripped of control characters, and `SQUAD_DEVKIT_TELEGRAM=0` or a `telegram-exclude` / `TELEGRAM_EXCLUDE` path list keeps client workspaces off Telegram.
 - Orchestration cards show live activity, worker health and verification, merge and scope status; plan progress, Flow filters and worker details/actions make runs easier to inspect. Desktop completion notifications can be disabled with `SQUAD_DEVKIT_NOTIFY=0`.
 - Plan task briefs, opt-in verification retry escalation and gated automatic merging; run statistics and a doctor split test. Low-risk, low-complexity plans may omit Perspectives.
 - In-session `squad-devkit update` and `squad-devkit reload` (`--update`, `--reload`, `restart`): refreshes `.squad/roles/` templates, re-links devkit commands, sends `SIGHUP` to running `squad-orchestration.sh` views, and prints the updated manager instructions to stdout so a running manager session adopts pulled devkit changes or updated config without restarting. `update` fast-forward pulls the devkit checkout first (skipping the pull and exiting `1` after reloading if the checkout has local changes) and re-execs the new script for the reload steps.
