@@ -26,16 +26,30 @@ reload_on_hup() {
   exec bash "$script_path" ${orig_args[@]+"${orig_args[@]}"}
 }
 
-# Substring work (${s:0:n}) must count characters, not bytes: force a UTF-8 locale.
-case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
-  *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
-  *) export LC_ALL=en_US.UTF-8 ;;
-esac
-utf8_probe="é"
-if (( ${#utf8_probe} != 1 )); then
-  export LC_ALL=C.UTF-8
-fi
-unset utf8_probe
+# Substring and width work count characters, not bytes, only in a UTF-8 locale, and bracket
+# ranges compare code points only with LC_COLLATE=C (macOS collation folds fullwidth letters
+# onto ASCII). A pane started by herdr, tmux or Ghostty can have LANG unset or LC_ALL=C: pick a
+# UTF-8 locale that `locale -a` lists, and keep the current one when none is found. LC_ALL is
+# unset because it would override LC_COLLATE.
+use_utf8_locale() {
+  local cur="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" cand="" found="" avail
+  case "$cur" in
+    *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) found="$cur" ;;
+    *)
+      avail="$(locale -a 2>/dev/null || true)"
+      for cand in C.UTF-8 en_US.UTF-8 en_US.utf8 C.utf8; do
+        if [[ $'\n'"$avail"$'\n' == *$'\n'"$cand"$'\n'* ]]; then
+          found="$cand"
+          break
+        fi
+      done
+      ;;
+  esac
+  [[ -n "$found" ]] || return 0
+  unset LC_ALL
+  export LC_CTYPE="$found" LC_COLLATE=C
+}
+use_utf8_locale
 
 # Environment variables:
 #   SQUAD_ORCHESTRATION_LIVE=1    Keep live loop running even when stdout is not a TTY (for tests)
@@ -326,22 +340,104 @@ terminal_lines() {
   REPLY="$lines"
 }
 
+# Text that comes from logs, status files or messages can hold anything. Strip ANSI
+# CSI/OSC sequences, turn CR/tab/newline into spaces and drop the other control
+# characters, so it can never move the cursor or erase part of the frame.
+SANITIZE_ANSI_RE=$'\033(\\][^\a\033]*(\a|\033\\\\)|\\[[0-9:;<=>?]*[ -/]*[@-~])'
+SGR_RE=$'^\033\\[[0-9;:]*m'
+sanitize_text() {
+  local s="$1"
+  if [[ "$s" != *[[:cntrl:]]* ]]; then
+    REPLY="$s"
+    return
+  fi
+  while [[ "$s" =~ $SANITIZE_ANSI_RE ]]; do
+    s="${s/"${BASH_REMATCH[0]}"/ }"
+  done
+  s="${s//$'\r'/ }"
+  s="${s//$'\t'/ }"
+  s="${s//$'\n'/ }"
+  REPLY="${s//[[:cntrl:]]/}"
+}
+
+# Bracket expressions (UTF-8 bytes, built from the code point ranges below; they work as
+# globs because the locale is UTF-8 with LC_COLLATE=C). DW_ZERO is zero columns wide:
+# 0300-036F combining marks, 200B-200D zero-width space and joiners, FE0F variation selector.
+# DW_WIDE is two columns: 1100-115F, 2E80-A4CF, AC00-D7A3, F900-FAFF, FE30-FE4F, FF00-FF60,
+# FFE0-FFE6 (CJK, Hangul, fullwidth forms), 1F300-1FAFF (emoji) and the emoji-presentation
+# symbols below 2C00 (231A-231B 23E9-23EC 23F0 23F3 25FD-25FE 2614-2615 2648-2653 267F 2693 26A1
+# 26AA-26AB 26BD-26BE 26C4-26C5 26CE 26D4 26EA 26F2-26F3 26F5 26FA 26FD 2705 270A-270B 2728 274C
+# 274E 2753-2755 2757 2795-2797 27B0 27BF 2B1B-2B1C 2B50 2B55).
+DW_ZERO=$'[\xcc\x80-\xcd\xaf\xe2\x80\x8b-\xe2\x80\x8d\xef\xb8\x8f]'
+DW_WIDE=$'[\xe1\x84\x80-\xe1\x85\x9f\xe2\x8c\x9a-\xe2\x8c\x9b\xe2\x8f\xa9-\xe2\x8f\xac\xe2\x8f\xb0\xe2\x8f\xb3\xe2\x97\xbd-\xe2\x97\xbe\xe2\x98\x94-\xe2\x98\x95\xe2\x99\x88-\xe2\x99\x93\xe2\x99\xbf\xe2\x9a\x93\xe2\x9a\xa1\xe2\x9a\xaa-\xe2\x9a\xab\xe2\x9a\xbd-\xe2\x9a\xbe\xe2\x9b\x84-\xe2\x9b\x85\xe2\x9b\x8e\xe2\x9b\x94\xe2\x9b\xaa\xe2\x9b\xb2-\xe2\x9b\xb3\xe2\x9b\xb5\xe2\x9b\xba\xe2\x9b\xbd\xe2\x9c\x85\xe2\x9c\x8a-\xe2\x9c\x8b\xe2\x9c\xa8\xe2\x9d\x8c\xe2\x9d\x8e\xe2\x9d\x93-\xe2\x9d\x95\xe2\x9d\x97\xe2\x9e\x95-\xe2\x9e\x97\xe2\x9e\xb0\xe2\x9e\xbf\xe2\xac\x9b-\xe2\xac\x9c\xe2\xad\x90\xe2\xad\x95\xe2\xba\x80-\xea\x93\x8f\xea\xb0\x80-\xed\x9e\xa3\xef\xa4\x80-\xef\xab\xbf\xef\xb8\xb0-\xef\xb9\x8f\xef\xbc\x80-\xef\xbd\xa0\xef\xbf\xa0-\xef\xbf\xa6\xf0\x9f\x8c\x80-\xf0\x9f\xab\xbf]'
+DW_ODD="${DW_ZERO%]}${DW_WIDE#[}"
+
+# Display width in terminal columns of a string: sets DW. Strings without any
+# zero or double width character (the common case) cost a single pattern test.
+char_width() {
+  # shellcheck disable=SC2254 # the class variables are glob patterns on purpose
+  case "$1" in
+    $DW_ZERO) CW=0 ;;
+    $DW_WIDE) CW=2 ;;
+    *) CW=1 ;;
+  esac
+}
+
+display_width() {
+  local s="$1"
+  if [[ "$s" != *$DW_ODD* ]]; then
+    DW=${#s}
+    return
+  fi
+  local i n=${#s} w=0
+  for (( i = 0; i < n; i++ )); do
+    char_width "${s:i:1}"
+    w=$(( w + CW ))
+  done
+  DW=$w
+}
+
+# cut_cols TEXT MAX: longest prefix of TEXT at most MAX columns wide (REPLY), its width in DW.
+cut_cols() {
+  local s="$1" max_w="$2"
+  display_width "$s"
+  if (( DW <= max_w )); then
+    REPLY="$s"
+  elif [[ "$s" != *$DW_ODD* ]]; then
+    REPLY="${s:0:max_w}"
+    DW=${#REPLY}
+  else
+    local i=0 n=${#s} w=0
+    while (( i < n )); do
+      char_width "${s:i:1}"
+      (( w + CW <= max_w )) || break
+      w=$(( w + CW ))
+      i=$(( i + 1 ))
+    done
+    REPLY="${s:0:i}"
+    DW=$w
+  fi
+}
+
 pad_str() {
-  local s="$1" w="$2"
-  local l="${#s}"
-  if (( l < w )); then
-    REPLY="${s}${SPACES_PAD:0:$(( w - l ))}"
+  sanitize_text "$1"
+  local s="$REPLY" w="$2"
+  display_width "$s"
+  if (( DW < w )); then
+    REPLY="${s}${SPACES_PAD:0:$(( w - DW ))}"
   else
     REPLY="$s"
   fi
 }
 
 trunc_str() {
-  local s="$1" max_w="$2"
-  local l="${#s}"
-  if (( l > max_w )); then
+  sanitize_text "$1"
+  local s="$REPLY" max_w="$2"
+  display_width "$s"
+  if (( DW > max_w )); then
     if (( max_w > 1 )); then
-      REPLY="${s:0:$(( max_w - 1 ))}…"
+      cut_cols "$s" $(( max_w - 1 ))
+      REPLY="${REPLY}…"
     elif (( max_w == 1 )); then
       REPLY="…"
     else
@@ -353,15 +449,86 @@ trunc_str() {
 }
 
 center_str() {
-  local s="$1" w="$2"
-  local l="${#s}"
-  if (( l >= w )); then
-    REPLY="${s:0:$w}"
+  sanitize_text "$1"
+  local s="$REPLY" w="$2"
+  display_width "$s"
+  if (( DW >= w )); then
+    cut_cols "$s" "$w"
+    display_width "$REPLY"
+    REPLY="${REPLY}${SPACES_PAD:0:$(( w - DW ))}"
   else
-    local lp=$(( (w - l) / 2 ))
-    local rp=$(( w - l - lp ))
+    local lp=$(( (w - DW) / 2 ))
+    local rp=$(( w - DW - lp ))
     REPLY="${SPACES_PAD:0:$lp}${s}${SPACES_PAD:0:$rp}"
   fi
+}
+
+# clamp_line LINE COLS: LINE cut to COLS columns (REPLY). SGR colour codes are passed
+# through as zero width, @@SPIN@@ counts as one column, any other ESC is dropped.
+clamp_line() {
+  local orig="$1" cols="$2" line rest pre seq res="" w=0 cut=0
+  line="${orig//@@ASK_CLR@@/}"
+  if [[ "$line" != *$'\033'* ]]; then
+    line="${line//@@SPIN@@/•}"
+    display_width "$line"
+    if (( DW <= cols )); then
+      REPLY="$orig"
+    else
+      cut_cols "$line" $(( cols - 1 ))
+      REPLY="${REPLY}…"
+    fi
+    return
+  fi
+  rest="$line"
+  while [[ -n "$rest" ]]; do
+    if [[ "$rest" == $'\033'* ]]; then
+      if [[ "$rest" =~ $SGR_RE ]]; then
+        seq="${BASH_REMATCH[0]}"
+        res+="$seq"
+        rest="${rest#"$seq"}"
+      else
+        rest="${rest#?}"
+      fi
+      continue
+    fi
+    pre="${rest%%$'\033'*}"
+    rest="${rest#"$pre"}"
+    (( cut == 0 )) || continue
+    pre="${pre//@@SPIN@@/•}"
+    display_width "$pre"
+    if (( w + DW <= cols )); then
+      res+="$pre"
+      w=$(( w + DW ))
+    else
+      cut_cols "$pre" $(( cols - w - 1 ))
+      res+="${REPLY}…"
+      cut=1
+    fi
+  done
+  if (( cut == 1 )); then REPLY="$res"; else REPLY="$orig"; fi
+}
+
+# clamp_frame FRAME COLS ROWS: every line at most COLS wide, at most ROWS lines (REPLY).
+# Extra rows are dropped from the middle with a "+N more" row; the header and the
+# last row (footer) stay.
+clamp_frame() {
+  local frame="$1" cols="$2" rows="$3" line out="" n i
+  local frame_lines=()
+  frame="${frame%$'\n'}"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    frame_lines[${#frame_lines[@]}]="$line"
+  done <<<"$frame"
+  n=${#frame_lines[@]}
+  if (( rows >= 3 && n > rows )); then
+    local head=$(( rows - 2 ))
+    frame_lines=("${frame_lines[@]:0:head}" "  +$(( n - head - 1 )) more" "${frame_lines[$(( n - 1 ))]}")
+    n=${#frame_lines[@]}
+  fi
+  for (( i = 0; i < n; i++ )); do
+    clamp_line "${frame_lines[$i]}" "$cols"
+    out+="${REPLY}"$'\n'
+  done
+  REPLY="$out"
 }
 
 box_cell() {
@@ -1012,7 +1179,8 @@ load_data() {
       while IFS= read -r line || [[ -n "$line" ]]; do
         [[ "$line" == *=* ]] || continue
         k="${line%%=*}"
-        v="${line#*=}"
+        sanitize_text "${line#*=}"
+        v="$REPLY"
         case "$k" in
           worker)          f_worker="$v" ;;
           started)         f_started="$v" ;;
@@ -1331,13 +1499,8 @@ load_data() {
           W_TOK[$wi]=$(( ${clean_l_in:-0} + ${clean_l_out:-0} ))
         fi
         if [[ -n "$l_act" ]]; then
-          l_act="${l_act//$'\r'/}"
-          l_act="${l_act//$'\n'/}"
-          l_act="${l_act//$'\t'/ }"
-          if [[ "$l_act" =~ [[:cntrl:]] ]]; then
-            l_act="$(printf '%s' "$l_act" | tr -d '[:cntrl:]')"
-          fi
-          W_ACTIVITY[$wi]="$l_act"
+          sanitize_text "$l_act"
+          W_ACTIVITY[$wi]="$REPLY"
         fi
       fi
       [[ -n "${W_ACTIVITY[$wi]}" ]] || W_ACTIVITY[$wi]="${raw_act[$wi]:-}"
@@ -1465,13 +1628,14 @@ load_data() {
   local tail_idx=-1 tail_lines=0
   while IFS= read -r raw_line; do
     [[ -n "$raw_line" ]] || continue
+    sanitize_text "$raw_line"
+    raw_line="$REPLY"
     if [[ ! "$raw_line" =~ $regex ]]; then
       # Continuation line of a multi-line message: keep the first few for previews.
       if (( tail_idx >= 0 && tail_lines < 12 )); then
         H_TAIL[$tail_idx]+="${raw_line}"$'\n'
         if [[ "${H_TYPE[$tail_idx]}" == "QUESTION" || "${H_TYPE[$tail_idx]}" == "ANSWER" ]]; then
           local cont="$raw_line"
-          cont="$(printf '%s' "$cont" | tr -d '[:cntrl:]')"
           while [[ "$cont" == " "* ]]; do cont="${cont# }"; done
           if (( ${#H_BODY[$tail_idx]} < 1000 )); then
             H_BODY[$tail_idx]+=" ${cont}"
@@ -4669,15 +4833,18 @@ render_list_worker_rows() {
     parts_plain="${parts_plain} · ${outcome_part}"
   fi
 
-  local avail_title=$(( avail2 - ${#parts_plain} ))
+  display_width "$parts_plain"
+  local avail_title=$(( avail2 - DW ))
+  display_width "$brief_title"
   if (( avail_title <= 0 )); then
     brief_title=""
-  elif (( ${#brief_title} > avail_title )); then
+  elif (( DW > avail_title )); then
     if (( avail_title <= 1 )); then
       brief_title="…"
     else
-      local sub="${brief_title:0:$(( avail_title - 1 ))}"
-      if [[ "${brief_title:$(( avail_title - 1 )):1}" =~ [[:space:]] ]]; then
+      cut_cols "$brief_title" $(( avail_title - 1 ))
+      local sub="$REPLY"
+      if [[ "${brief_title:${#sub}:1}" =~ [[:space:]] ]]; then
         sub="${sub%"${sub##*[![:space:]]}"}"
       elif [[ "$sub" == *" "* ]]; then
         sub="${sub% *}"
@@ -5521,6 +5688,23 @@ panel_key() {
   return 0
 }
 
+# Fit every frame template to the pane, so a wide or tall line can never wrap or scroll
+# the screen and make the next redraw land on a shifted frame.
+FRAME_ROWS=24
+clamp_frame_templates() {
+  local columns="$1" rows n
+  terminal_lines; rows="$REPLY"
+  FRAME_ROWS="$rows"
+  for n in 0 1 2 3; do
+    if (( n > 0 )) && [[ "${FRAME_TPL[$n]}" == "${FRAME_TPL[$(( n - 1 ))]}" ]]; then
+      FRAME_TPL[$n]="${FRAME_TPL[$(( n - 1 ))]}"
+      continue
+    fi
+    clamp_frame "${FRAME_TPL[$n]}" "$columns" "$rows"
+    FRAME_TPL[$n]="$REPLY"
+  done
+}
+
 build_frame_templates() {
   selection_sync
   notify_questions
@@ -5532,6 +5716,7 @@ build_frame_templates() {
       rule_line="${dim}${rule_line}${reset}"
     fi
     build_history_screen "$columns" "$rule_line"
+    clamp_frame_templates "$columns"
     return 0
   fi
   build_base_frame_templates
@@ -5573,6 +5758,7 @@ build_frame_templates() {
   [[ -z "$stop_pending" ]] || text="Stop $stop_pending? y/n"
   if [[ -n "$text" ]]; then trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'; fi
   for n in 0 1 2 3; do FRAME_TPL[$n]+="$footer"; done
+  clamp_frame_templates "$columns"
 }
 
 # One-shot execution mode
@@ -5814,7 +6000,14 @@ while true; do
   [[ "$draw_fnum" =~ ^[0-9]+$ ]] || draw_fnum="$frame_counter"
   render_cached_frame "$draw_fnum"
   frame_output="${REPLY%$'\n'}"
-  printf '\033[?2026h\033[H%s\033[K\033[J\033[?2026l' "${frame_output//$'\n'/$'\033[K\n'}"
+  # Erase each row before writing it: a row exactly as wide as the pane leaves the cursor in the
+  # last column, where a trailing erase-to-end-of-line would wipe the row's last character.
+  # The rows below the frame are cleared from an explicit cursor position for the same reason.
+  frame_rows="${frame_output//[!$'\n']/}"
+  frame_rows=$(( ${#frame_rows} + 1 ))
+  frame_tail=""
+  (( frame_rows >= FRAME_ROWS )) || frame_tail=$'\033['"$(( frame_rows + 1 ))"$';1H\033[J'
+  printf '\033[?2026h\033[H\033[2K%s%s\033[?2026l' "${frame_output//$'\n'/$'\n\033[2K'}" "$frame_tail"
 
   if (( first_frame == 1 )); then
     first_frame=0

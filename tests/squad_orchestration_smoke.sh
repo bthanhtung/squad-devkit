@@ -2206,4 +2206,71 @@ for width in 80 60 18; do
   [[ "$detail_out" != *$'\033'* ]]
 done
 
+# ==============================================================================
+# Regression: a worker's text must never wrap, scroll or move the cursor
+# ==============================================================================
+# Wide characters (emoji, CJK), long lines and terminal escapes in a worker's activity, title
+# or message used to push rows past the pane edge, so the frame scrolled and the next redraw
+# landed on a shifted screen. ORCH_UNDER_TEST lets the test run against an older script.
+orch_under_test="${ORCH_UNDER_TEST:-$root/scripts/squad-orchestration.sh}"
+panel_dir="$tmp/panel_fixture"
+panel_workers="$panel_dir/.squad/workers"
+mkdir -p "$panel_workers"
+long_text="$(printf 'x%.0s' $(seq 1 300))"
+write_panel_worker() {
+  local id="$1" title="$2" activity="$3"
+  printf 'worker=%s\nmanager=manager-2\nengine=opencode\nmodel=opencode-go/deepseek-v4-pro\nrole=dev\ntitle=%s\nstate=running\npid=%s\nstarted=%s\ntokens_in=10\ntokens_out=20\n' \
+    "$id" "$title" "$$" "$(( now - 90 ))" >"$panel_workers/$id.status"
+  printf 'tokens_in=1\ntokens_out=2\nactivity=%s\n' "$activity" >"$panel_workers/$id.live"
+}
+write_panel_worker dev-1 "Fix 修复 ✅🚀 sửa lỗi hiển thị" "✅🚀 修复 sửa lỗi hiển thị $long_text"
+write_panel_worker dev-2 "Colors" $'\033[31mred\033[0m\r overwritten\ttab \033]0;title\007 end'
+write_panel_worker dev-3 "Empty activity" ""
+write_panel_worker dev-4 $'Evil \033[2J\033[1;1HX\rY\tZ' $'act \033[2J\rQ'
+panel_hist="cat <<'HEOF'
+* [2026-11-14T07:00:00Z] manager-2 -> dev-1: Goal: 修复 ✅🚀 sửa lỗi hiển thị a very long brief title that keeps going and going
+* [2026-11-14T07:00:00Z] manager-2 -> dev-2: Goal: Colors
+HEOF
+printf '* [2026-11-14T07:00:00Z] manager-2 -> dev-4: Goal: evil \\033[2Jx\\ry\\tz\\n'"
+
+# Terminal columns of each line, one number per line: wide characters count 2, combining marks 0.
+panel_widths() {
+  python3 -I -c '
+import sys, unicodedata
+for line in sys.stdin.buffer.read().decode("utf-8").split("\n"):
+    print(sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in line))
+'
+}
+
+check_panel_frame() {
+  local label="$1" out_file="$2" cols=40 rows=12 w n
+  n="$(wc -l <"$out_file" | tr -d ' ')"
+  (( n <= rows )) || { echo "FAIL ($label): $n lines, more than $rows" >&2; cat "$out_file" >&2; exit 1; }
+  if [[ "$(LC_ALL=C tr -cd '\033\r' <"$out_file" | wc -c | tr -d ' ')" != 0 ]]; then
+    echo "FAIL ($label): ESC or CR byte in the frame" >&2; exit 1
+  fi
+  iconv -f UTF-8 -t UTF-8 <"$out_file" >/dev/null 2>&1 || { echo "FAIL ($label): invalid UTF-8" >&2; exit 1; }
+  if command -v python3 >/dev/null 2>&1; then
+    while IFS= read -r w; do
+      (( w <= cols )) || { echo "FAIL ($label): line is $w columns wide, over $cols" >&2; cat "$out_file" >&2; exit 1; }
+    done < <(panel_widths <"$out_file")
+  fi
+  grep -q '● dev-1 ' "$out_file" || { echo "FAIL ($label): dev-1 row missing" >&2; cat "$out_file" >&2; exit 1; }
+  # Every worker row has a non-empty detail line below it (unless the rows were cut for height).
+  local prev_row=0 line
+  while IFS= read -r line; do
+    if (( prev_row == 1 )); then
+      [[ "$line" =~ ↳[[:space:]]+[^[:space:]] || "$line" =~ ^[[:space:]]+\+[0-9]+\ more$ ]] || { echo "FAIL ($label): empty detail line after a worker row: '$line'" >&2; exit 1; }
+    fi
+    prev_row=0
+    if [[ "$line" == "  ● dev-"* ]]; then prev_row=1; fi
+  done <"$out_file"
+}
+
+for panel_locale in en_US.UTF-8 C; do
+  COLUMNS=40 LINES=12 LC_ALL="$panel_locale" SQUAD_MANAGER_ID=manager-2 SQUAD_ORCHESTRATION_HISTORY_CMD="$panel_hist" \
+    bash "$orch_under_test" --once "$panel_workers" >"$tmp/panel_frame.out"
+  check_panel_frame "panel frame LC_ALL=$panel_locale" "$tmp/panel_frame.out"
+done
+
 echo "PASS: squad_orchestration_smoke"
