@@ -109,6 +109,7 @@ bash "$repo_root/scripts/install-devkit.sh" --no-prompt --no-hud --no-skill
 
 # Assert $installed_bin/squad was installed and executable
 [[ -x "$installed_bin/squad" ]] || fail
+[[ "$(SQUAD_DEVKIT_ROUTER_URL= "$installed_bin/squad-route" test)" == '{"configured":false}' ]] || fail
 version_output="$("$installed_bin/squad" --version)"
 [[ "$version_output" == *"$cargo_version"* ]] || fail
 
