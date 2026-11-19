@@ -37,7 +37,7 @@ Needs macOS or Linux, bash, git, one manager CLI (such as `claude`) and one work
 
 ## How it works
 
-You talk to one manager. The manager plans and verifies; workers do the edits, each in its own git worktree.
+You talk to one manager. The manager plans and verifies; cheap read-only scouts explore the codebase and workers do the edits, each in its own git worktree.
 
 ```mermaid
 flowchart TB

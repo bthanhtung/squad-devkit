@@ -18,9 +18,13 @@ engine_claude_build_command() {
   if [[ -n "${SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS:-}" ]]; then
     claude_allowed_tools=(--allowedTools "$SQUAD_WORKER_CLAUDE_ALLOWED_TOOLS")
   fi
-  # Reviewers run in place on the project, so they get no edit tools.
+  # Reviewers and scouts run in place on the project, so they get no edit tools.
+  # Scouts also omit Bash so pre-plan exploration stays strictly read-only and lean.
   local default_tools=Read,Edit,Write,Glob,Grep,Bash
-  [[ "${role:-}" != reviewer ]] || default_tools=Read,Glob,Grep,Bash
+  case "${role:-}" in
+    reviewer) default_tools=Read,Glob,Grep,Bash ;;
+    scout) default_tools=Read,Glob,Grep ;;
+  esac
   local permission_arguments=(--permission-mode "${SQUAD_WORKER_CLAUDE_PERMISSION_MODE:-acceptEdits}")
   [[ "$yolo" != 1 ]] || permission_arguments=(--dangerously-skip-permissions)
   engine_command=(claude -p --model "$model" --strict-mcp-config --disable-slash-commands

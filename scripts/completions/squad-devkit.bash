@@ -22,7 +22,7 @@ _squad_devkit() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="--manager --setup --workers --disable-workers --view --doctor --list --ghostty --tmux --yolo --update --reload --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
+  local opts="--manager --setup --workers --disable-workers --scout --view --doctor --list --ghostty --tmux --yolo --update --reload --dry-run --task --prompt --clean --clean-all --no-attach --no-prompt --version -h --help"
   local managers="claude codex agy gemini grok opencode"
 
   case "$prev" in
@@ -31,7 +31,7 @@ _squad_devkit() {
       COMPREPLY=( $(compgen -W "$managers" -- "$cur") )
       return 0
       ;;
-    --workers|--disable-workers)
+    --workers|--disable-workers|--scout)
       local engines="claude codex opencode grok ccr"
       # shellcheck disable=SC2207
       COMPREPLY=( $(compgen -W "$engines" -- "$cur") )
@@ -71,7 +71,7 @@ _squad_worker() {
 
   local opts="--engine --role --title --brief --brief-file --project --profile --model --model-tier --tier-reason --verify --models --mcp --all-mcp --timeout --worktree --no-worktree --yolo --sandbox --no-sandbox --manager --list --stop --merge --diff --discard --plan --no-plan --clone --init --override-review --own --no-plan-context --parent --budget-tokens --max-children --tree --json -h --help"
   local engines="claude codex opencode grok ccr"
-  local roles="dev tester reviewer researcher ui-ux security manager-devkit sub-manager"
+  local roles="dev tester reviewer researcher scout ui-ux security manager-devkit sub-manager"
   local profiles="high medium max"
 
   case "$prev" in

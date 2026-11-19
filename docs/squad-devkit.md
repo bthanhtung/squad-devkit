@@ -218,7 +218,7 @@ names list every match. A directory that is not a git repository is accepted, an
 `squad init` creates `.squad/` there.
 
 Each launch runs `squad init` and installs the role prompts `manager-devkit`,
-`dev`, `tester`, `reviewer`, `researcher`, and the optional `ui-ux` and `security` roles into `.squad/roles/`. Role files that still
+`dev`, `tester`, `reviewer`, `researcher`, `scout`, and the optional `ui-ux` and `security` roles into `.squad/roles/`. Role files that still
 start with the `<!-- squad-devkit template` line are refreshed from
 `templates/devkit/`. Delete that line to keep your own edits; the launcher then
 only prints a note when the template changes.
@@ -262,13 +262,14 @@ BRIEF
 squad-worker doc-1 --engine ccr --role dev --brief 'Document the --json flag in README.md. Files you own: README.md'
 squad-worker test-1 --engine codex --profile medium --role tester --brief-file brief.md
 squad-worker logs-1 --engine codex --role researcher --mcp grafana-logs --brief '...'
+squad-worker scout-1 --role scout --brief 'Locate authentication handlers, callers, and auth tests.'
 ```
 
-Reviewer workers are read-only: Claude and ccr get no Edit/Write tools, Codex runs with `--sandbox read-only`, and OpenCode uses its `plan` agent (grok has no read-only mode).
+Reviewer and scout workers are read-only at the engine level: Claude reviewers drop Edit/Write (`Read,Glob,Grep,Bash`) while Claude scouts get `Read,Glob,Grep` (no Edit/Write/Bash), ccr gets `Read,Glob,Grep`, Codex runs with `--sandbox read-only`, and OpenCode uses its `plan` agent (grok has no read-only mode).
 
 | Option | Meaning |
 |---|---|
-| `--engine claude\|codex\|opencode\|grok\|ccr` | Worker engine (required) |
+| `--engine claude\|codex\|opencode\|grok\|ccr` | Worker engine (required except with `--role scout`, which resolves configured/cheapest engine) |
 | `--role ROLE` | Role prompt from `.squad/roles/ROLE.md` (default `dev`) |
 | `--brief TEXT`, `--brief-file FILE\|-` | Self-contained task description (required) |
 | `--title TITLE` | Task title (default: first line of the brief) |
@@ -341,7 +342,7 @@ edit them.)
   with a three-way merge through a temporary index, leaves them uncommitted,
   and removes the worktree and branch. Conflicts keep standard markers in the
   listed files and keep the worktree until `--discard`.
-- **Choose**: reviewers, researchers and security workers read the project directly;
+- **Choose**: reviewers, scouts, researchers and security workers read the project directly;
   `--worktree` forces isolation, `--no-worktree` edits in place, and
   `SQUAD_WORKER_WORKTREE=0` turns isolation off.
 
@@ -843,6 +844,25 @@ enabled engine, or report the required mapping. Router advice cannot override
 safety/quality policy. Status and monitor labels add `model_tier` while preserving
 requested and actual model evidence separately.
 
+### Pre-plan scouting with cheap models (`--role scout`)
+
+Instead of spending expensive manager context finding files, searching symbols, and reading code before planning, managers can launch `--role scout` workers:
+
+- **Pre-plan & no-worktree:** `--role scout` is exempt from the manager `--plan` gate (so it can run during step 2, Investigate, before `.squad/plans/<name>.md` is written) and runs in place without a git worktree. Explicit `--plan FILE` still validates and applies the high-risk tier floor.
+- **Engine-level read-only:** Claude scouts receive `Read,Glob,Grep` (no `Edit`, `Write`, or `Bash`), `ccr` receives `Read,Glob,Grep`, Codex runs with `--sandbox read-only`, and OpenCode uses its `plan` agent.
+- **Omit `--engine` for automatic cheap selection:** When `--engine` is omitted for `--role scout`, `squad-worker` resolves the first available target in this order:
+  1. Explicit scout override: `SQUAD_WORKER_SCOUT_ENGINE` / `SQUAD_WORKER_SCOUT_MODEL` (or `scout_engine=` / `scout_model=` in `~/.config/squad-devkit/config`, or `squad-devkit --scout ENGINE[:MODEL]`).
+  2. Enabled engine with an explicit (non-builtin) `fast` tier mapping (`tier-environment` or `.squad/worker-models.json`) in cheap-first order: `opencode`, `codex`, `claude`, `grok`.
+  3. Configured `ccr` (when `~/.claude-code-router/config.json` exists).
+  4. Built-in `claude` `fast` tier (`haiku`).
+  5. Fallback to the first enabled installed engine (`opencode`, `codex`, `ccr`, `grok`).
+- **Examples:**
+  - `squad-devkit --scout claude:haiku` or `squad-devkit --scout opencode:luna`
+  - `SQUAD_WORKER_SCOUT_ENGINE=opencode SQUAD_WORKER_SCOUT_MODEL=luna squad-worker scout-1 --role scout --brief 'Find auth callers'`
+  - `squad-devkit --scout ccr` (uses the cheap model configured in `ccr`)
+  - Or configure `codex` `fast` tier via `squad config workers` and omit `--engine`.
+- **Timeout:** Scout runs default to 10 minutes (`SQUAD_WORKER_SCOUT_TIMEOUT`, overridable with `--timeout` or `SQUAD_WORKER_TIMEOUT`).
+
 ## Highlights
 
 - **Plans like a senior team.** Every request is triaged by risk and complexity, then planned from
@@ -899,6 +919,8 @@ Environment variables that tune a run. Related settings appear in the sections a
 | `SQUAD_WORKER_CLAUDE_MODEL` | `haiku` | Default model for Claude workers |
 | `SQUAD_WORKER_CODEX_PROFILE` | CLI configuration | Default Codex profile for workers |
 | `SQUAD_WORKER_TIMEOUT` / `SQUAD_WORKER_STALL` | `45` / `10` | Minutes before a run is stopped / counted as stuck |
+| `SQUAD_WORKER_SCOUT_ENGINE` / `SQUAD_WORKER_SCOUT_MODEL` | unset | Explicit engine (and optional model) used when `--role scout` omits `--engine` |
+| `SQUAD_WORKER_SCOUT_TIMEOUT` | `10` | Default timeout in minutes for `--role scout` workers |
 | `SQUAD_WORKER_VIEW` | `orchestration` (manager) / `panes` (direct) | Worker progress view: `orchestration` (one live flow view) or `panes` (one split per worker; `--view`, or `view=` in config) |
 | `SQUAD_WORKER_VERIFY_TIMEOUT` | `10` | Minutes allowed for `--verify` |
 | `SQUAD_WORKER_REPORT_LINES` | `40` | Maximum report lines printed by a worker |

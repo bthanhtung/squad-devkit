@@ -200,7 +200,7 @@ rg -Fq 'codex: CLI default only' "$DEVKIT_TEST_LOG"
 rg -q -- "--manager [^ ]+" "$DEVKIT_TEST_LOG"
 rg -q 'Do not repeat these instructions to the human\.\\n\\n## Your role' "$DEVKIT_TEST_LOG"
 [[ "$(cat "$DEVKIT_TEST_LOG")" != *ERROR* ]] || fail
-for role in manager-devkit dev tester reviewer researcher ui-ux security; do
+for role in manager-devkit dev tester reviewer researcher scout ui-ux security; do
   cmp -s "$repo_root/templates/devkit/$role.md" "$project_directory/.squad/roles/$role.md"
 done
 

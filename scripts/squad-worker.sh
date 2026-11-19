@@ -35,7 +35,7 @@ original_arguments=("$@")
 
 usage() {
   cat <<'EOF'
-Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FILE | --task [ID])
+Usage: squad-worker <worker-id> [--engine ENGINE] (--brief TEXT | --brief-file FILE | --task [ID])
                     [--role ROLE] [--title TITLE] [--project DIR]
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
                     [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
@@ -65,7 +65,8 @@ Engines, most trusted first:
   ccr      Claude Code through claude-code-router: cheap model, file tools only
 
 Options:
-  --role ROLE        Role prompt from .squad/roles/ROLE.md (default: dev)
+  --engine ENGINE    Worker engine (optional with --role scout: uses configured or cheapest read-only engine)
+  --role ROLE        Role prompt from .squad/roles/ROLE.md (default: dev; scout is read-only, skips worktree, and may omit --plan)
   --title TITLE      Task title (default: first line of the brief)
   --task [ID]       Use exact plan task ID (default: worker ID) plus Acceptance; requires --plan
   --brief-file -     Read the brief from stdin
@@ -81,9 +82,9 @@ Options:
   --mcp NAME         codex only: keep this MCP server enabled (repeatable);
                      all others are disabled to keep the worker's context small
   --all-mcp          codex only: keep every configured MCP server
-  --timeout MINUTES  Stop the run after this long (default 45)
+  --timeout MINUTES  Stop the run after this long (default 45, or 10 for scout)
   --worktree         Work in an isolated git worktree (default in git repositories,
-                     except for the reviewer, researcher and security roles)
+                     except for the reviewer, researcher, scout and security roles)
   --no-worktree      Work directly in the project directory
   --yolo             Bypass permissions and sandbox (claude, codex only;
                      inherited from SQUAD_DEVKIT_YOLO=1)
@@ -128,7 +129,8 @@ default 10), SQUAD_WORKER_VIEW (orchestration or panes, default orchestration
 when managed, panes otherwise), SQUAD_WORKER_PANES=0,
 SQUAD_WORKER_PANE_HOLD (seconds a finished monitor pane stays open, default 60),
 SQUAD_WORKER_WORKTREE (auto, 1, or 0), SQUAD_WORKER_SANDBOX (1 or 0), SQUAD_WORKER_VERIFY_TIMEOUT (minutes, default 10),
-SQUAD_WORKER_REPORT_LINES (default 40).
+SQUAD_WORKER_REPORT_LINES (default 40), SQUAD_WORKER_SCOUT_ENGINE, SQUAD_WORKER_SCOUT_MODEL,
+SQUAD_WORKER_SCOUT_TIMEOUT (minutes, default 10).
 EOF
 }
 
@@ -143,8 +145,17 @@ task_mode=0
 task_id=""
 profile="${SQUAD_WORKER_CODEX_PROFILE:-}"
 model=""
+model_flag_set=0
 model_source=""
 model_tier=""
+tier_flag_set=0
+scout_model_applied=0
+scout_model_source=""
+scout_resolved_engine=""
+scout_resolved_tier=""
+scout_resolved_model=""
+scout_resolved_source=""
+scout_resolved_error=""
 tier_reason=""
 retry_escalate=0
 merge_if_green=0
@@ -170,6 +181,7 @@ verdict=""
 scope_violation=""
 project_directory=""
 timeout_minutes="${SQUAD_WORKER_TIMEOUT:-45}"
+timeout_flag_set=0
 stall_minutes="${SQUAD_WORKER_STALL:-10}"
 keep_mcp=()
 all_mcp=0
@@ -180,11 +192,11 @@ sandbox_mode="${SQUAD_WORKER_SANDBOX:-1}"
 sandbox_flag_set=""
 yolo="${SQUAD_DEVKIT_YOLO:-0}"
 view="${SQUAD_WORKER_VIEW:-}"
+if ! declare -f devkit_config_get >/dev/null 2>&1 && [[ -f "$script_dir/lib/squad-devkit-agents.sh" ]]; then
+  # shellcheck source=lib/squad-devkit-agents.sh
+  source "$script_dir/lib/squad-devkit-agents.sh"
+fi
 if [[ -z "$view" ]]; then
-  if ! declare -f devkit_config_get >/dev/null 2>&1 && [[ -f "$script_dir/lib/squad-devkit-agents.sh" ]]; then
-    # shellcheck source=lib/squad-devkit-agents.sh
-    source "$script_dir/lib/squad-devkit-agents.sh"
-  fi
   if declare -f devkit_config_get >/dev/null 2>&1; then
     view="$(devkit_config_get view)"
   elif [[ -f "${SQUAD_DEVKIT_CONFIG:-$HOME/.config/squad-devkit/config}" ]]; then
@@ -226,8 +238,8 @@ while (( $# > 0 )); do
         --brief) brief="$2" ;;
         --brief-file) brief_file="$2" ;;
         --profile) profile="$2" ;;
-        --model) model="$2" ;;
-        --model-tier) model_tier="$2" ;;
+        --model) model="$2"; model_flag_set=1 ;;
+        --model-tier) model_tier="$2"; tier_flag_set=1 ;;
         --tier-reason) tier_reason="$(one_line_reason --tier-reason "$2")" || exit 2 ;;
         --verify) verify_command="$2" ;;
         --mcp) keep_mcp+=("$2") ;;
@@ -241,7 +253,7 @@ while (( $# > 0 )); do
         --budget-tokens) budget_tokens="$2" ;;
         --max-children) max_children="$2" ;;
         --project) project_directory="$2" ;;
-        --timeout) timeout_minutes="$2" ;;
+        --timeout) timeout_minutes="$2"; timeout_flag_set=1 ;;
         --stop) action=stop; stop_target="$2" ;;
         --merge) action=merge; stop_target="$2" ;;
         --discard) action=discard; stop_target="$2" ;;
@@ -365,6 +377,7 @@ find_workspace() {
   printf '%s\n' "$directory"
 }
 
+# shellcheck source=lib/squad-worker-model.sh
 source "$script_dir/lib/squad-worker-model.sh"
 
 if (( models == 1 )); then
@@ -956,12 +969,59 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
   exit "$exit_status"
 fi
 
-if [[ -z "$worker_id" || -z "$engine" ]]; then
+scout_read_configured_target() {
+  cfg_scout_engine=""
+  cfg_scout_model=""
+  cfg_scout_source=""
+  if [[ -n "${SQUAD_WORKER_SCOUT_ENGINE:-}" ]]; then
+    cfg_scout_engine="$SQUAD_WORKER_SCOUT_ENGINE"
+    cfg_scout_model="${SQUAD_WORKER_SCOUT_MODEL:-}"
+    cfg_scout_source="scout-env"
+  elif [[ -n "${SQUAD_WORKER_SCOUT_MODEL:-}" ]]; then
+    echo 'SQUAD_WORKER_SCOUT_MODEL requires SQUAD_WORKER_SCOUT_ENGINE' >&2
+    exit 2
+  elif declare -f devkit_config_get >/dev/null 2>&1; then
+    cfg_scout_engine="$(devkit_config_get scout_engine)"
+    cfg_scout_model="$(devkit_config_get scout_model)"
+    cfg_scout_source="scout-config"
+    if [[ -z "$cfg_scout_engine" && -n "$cfg_scout_model" ]]; then
+      echo 'scout_model in config requires scout_engine' >&2
+      exit 2
+    fi
+  fi
+}
+
+scout_in_list() {
+  local item
+  for item in ${1//,/ }; do
+    [[ "$item" == "$2" ]] && return 0
+  done
+  return 1
+}
+
+scout_enabled_installed_engines() {
+  local allow="${SQUAD_DEVKIT_WORKERS:-}" deny="${SQUAD_DEVKIT_DISABLE_WORKERS:-}" eng
+  if [[ -z "$allow" ]] && declare -f devkit_config_get >/dev/null 2>&1; then
+    allow="$(devkit_config_get workers)"
+  fi
+  if [[ -z "$deny" ]] && declare -f devkit_config_get >/dev/null 2>&1; then
+    deny="$(devkit_config_get disabled_workers)"
+  fi
+  local clean_allow="" item
+  for item in ${allow//,/ }; do
+    [[ "$item" == agy ]] || clean_allow="${clean_allow:+$clean_allow,}$item"
+  done
+  for eng in claude codex opencode grok ccr; do
+    if [[ -n "$clean_allow" ]] && ! scout_in_list "$clean_allow" "$eng"; then continue; fi
+    if [[ -n "$deny" ]] && scout_in_list "$deny" "$eng"; then continue; fi
+    if command -v "$eng" >/dev/null 2>&1; then
+      printf '%s\n' "$eng"
+    fi
+  done
+}
+
+if [[ -z "$worker_id" ]]; then
   usage >&2
-  exit 2
-fi
-if [[ "$engine" == agy ]]; then
-  echo 'agy can no longer run as a worker: Antigravity blocks CLI calls from other AI agents. Use opencode, codex, claude, grok or ccr.' >&2
   exit 2
 fi
 if [[ ! "$worker_id" =~ $id_pattern ]]; then
@@ -970,6 +1030,72 @@ if [[ ! "$worker_id" =~ $id_pattern ]]; then
 fi
 if [[ ! "$role" =~ $id_pattern ]]; then
   echo "Invalid role: $role" >&2
+  exit 2
+fi
+
+if [[ "$role" == scout ]]; then
+  saved_ws="${workspace_root:-}"
+  workspace_root="$(find_workspace 2>/dev/null || true)"
+  cfg_scout_engine=""
+  cfg_scout_model=""
+  cfg_scout_source=""
+  scout_read_configured_target
+  if [[ -n "$cfg_scout_engine" ]]; then
+    if [[ "$cfg_scout_engine" == *:* ]]; then
+      echo "Unknown scout engine: $cfg_scout_engine (use claude, codex, opencode, grok, or ccr)" >&2
+      exit 2
+    fi
+    squad_worker_parse_scout_spec "$cfg_scout_engine${cfg_scout_model:+:$cfg_scout_model}" || exit 2
+  fi
+  if [[ -z "$engine" ]]; then
+    scout_candidates=()
+    while IFS= read -r scout_cand; do
+      [[ -n "$scout_cand" ]] && scout_candidates+=("$scout_cand")
+    done < <(scout_enabled_installed_engines)
+    if [[ -n "$cfg_scout_engine" && "$cfg_scout_source" == scout-config ]]; then
+      if ! command -v "$cfg_scout_engine" >/dev/null 2>&1 ||
+         ! _squad_engine_in_list "$cfg_scout_engine" ${scout_candidates[@]+"${scout_candidates[@]}"}; then
+        echo "Note: configured scout_engine '$cfg_scout_engine' is unavailable or disabled; falling back to auto-selected scout engine." >&2
+        cfg_scout_engine=""
+        cfg_scout_model=""
+      fi
+    fi
+    if ! squad_worker_resolve_scout_target "$cfg_scout_engine" "$cfg_scout_model" ${scout_candidates[@]+"${scout_candidates[@]}"}; then
+      echo "squad-worker: ${scout_resolved_error:-no enabled worker engine found for scout; install a worker engine or pass --engine}" >&2
+      exit 2
+    fi
+    engine="$scout_resolved_engine"
+    if (( model_flag_set == 0 && tier_flag_set == 0 )); then
+      if [[ "$scout_resolved_source" == configured ]]; then
+        model="$scout_resolved_model"
+        scout_model_applied=1
+        scout_model_source="$cfg_scout_source"
+      elif [[ "$scout_resolved_tier" == fast ]]; then
+        model_tier="fast"
+      fi
+    fi
+  elif (( model_flag_set == 0 && tier_flag_set == 0 )); then
+    if [[ -n "$cfg_scout_engine" && "$cfg_scout_engine" == "$engine" && -n "$cfg_scout_model" ]]; then
+      model="$cfg_scout_model"
+      scout_model_applied=1
+      scout_model_source="$cfg_scout_source"
+    elif [[ "$engine" != ccr ]] && squad_worker_probe_fast_tier "$engine" >/dev/null; then
+      model_tier="fast"
+    fi
+  fi
+  if [[ -n "$saved_ws" ]]; then
+    workspace_root="$saved_ws"
+  else
+    unset workspace_root
+  fi
+fi
+
+if [[ -z "$engine" ]]; then
+  usage >&2
+  exit 2
+fi
+if [[ "$engine" == agy ]]; then
+  echo 'agy can no longer run as a worker: Antigravity blocks CLI calls from other AI agents. Use opencode, codex, claude, grok or ccr.' >&2
   exit 2
 fi
 if [[ "$role" == sub-manager ]]; then
@@ -1049,12 +1175,16 @@ if [[ -n "$manager_flag_set" || -n "${SQUAD_MANAGER_ID:-}" || "${SQUAD_WORKER_RE
   manager_context=1
 fi
 [[ "${SQUAD_WORKER_REQUIRE_PLAN:-}" != 0 ]] || manager_context=0
-if (( manager_context == 1 )) && [[ -z "$plan_argument" && -z "$no_plan_reason" ]]; then
+if (( manager_context == 1 )) && [[ "$role" != scout && -z "$plan_argument" && -z "$no_plan_reason" ]]; then
   echo 'squad-worker: a plan is required in manager context. Pass --plan .squad/plans/<name>.md (see templates/devkit/plan.md.example) or --no-plan "<reason>".' >&2
   exit 2
 fi
 plan_path=none
-plan_line="Plan: none (override: ${no_plan_reason:-no plan given})"
+if [[ "$role" == scout && -z "$no_plan_reason" ]]; then
+  plan_line="Plan: none (read-only scout)"
+else
+  plan_line="Plan: none (override: ${no_plan_reason:-no plan given})"
+fi
 if [[ -n "$plan_argument" ]]; then
   plan_directory="$(cd "$(dirname "$plan_argument")" 2>/dev/null && pwd || true)"
   plan_path="${plan_directory:-$(dirname "$plan_argument")}/$(basename "$plan_argument")"
@@ -1091,11 +1221,17 @@ if [[ ! "$verify_timeout" =~ ^[0-9]+$ || "$verify_timeout" =~ ^0+$ || ! "$report
   echo "SQUAD_WORKER_VERIFY_TIMEOUT and SQUAD_WORKER_REPORT_LINES must be positive whole numbers" >&2
   exit 2
 fi
+if [[ "$role" == scout ]] && (( timeout_flag_set == 0 )) && [[ -z "${SQUAD_WORKER_TIMEOUT:-}" ]]; then
+  timeout_minutes="${SQUAD_WORKER_SCOUT_TIMEOUT:-10}"
+fi
 if [[ ! "$timeout_minutes" =~ ^[0-9]+$ || "$timeout_minutes" =~ ^0+$ || ! "$stall_minutes" =~ ^[0-9]+$ ]]; then
   echo "--timeout (at least 1) and SQUAD_WORKER_STALL take whole minutes" >&2
   exit 2
 fi
 squad_worker_select_model
+if (( scout_model_applied == 1 )) && [[ "$model_source" == flag ]]; then
+  model_source="$scout_model_source"
+fi
 if [[ "$plan_path" != none ]]; then
   plan_risk="$(plan_field "$plan_path" risk)"
   plan_complexity="$(plan_field "$plan_path" complexity)"
@@ -1237,7 +1373,7 @@ on_stop() {
 trap on_stop TERM INT
 
 # Isolated worktree: by default in git repositories, except for the read-only
-# reviewer, researcher and security roles. Fix rounds reuse an unmerged worktree.
+# reviewer, researcher, scout and security roles. Fix rounds reuse an unmerged worktree.
 engine_directory="$project_directory"
 repository_root=""
 worktree_path=""
@@ -1249,7 +1385,7 @@ previous_context=""
 case "$worktree_mode" in
   1) use_worktree=1 ;;
   0) ;;
-  *) [[ "$role" != reviewer && "$role" != researcher && "$role" != security ]] && use_worktree=1 ;;
+  *) [[ "$role" != reviewer && "$role" != researcher && "$role" != security && "$role" != scout ]] && use_worktree=1 ;;
 esac
 if (( use_worktree == 1 )); then
   repository_root="$(worktree_repository_root "$project_directory" || true)"
@@ -1321,9 +1457,27 @@ fi
 ask_command="$(printf '%q --from %q --workspace %q' "$script_dir/squad-ask.sh" "$worker_id" "$workspace_root")"
 if [[ "$engine" == ccr ]]; then
   questions="- You have no shell, so you cannot ask questions: decide within the brief and list your assumptions in the report."
+elif [[ "$engine" == claude && "$role" == scout && "${SQUAD_WORKER_CLAUDE_TOOLS:-}" != *Bash* ]]; then
+  questions="- You have no shell, so you cannot ask questions: report what you found and note any ambiguities or gaps."
 else
   questions="- If the brief is ambiguous or you find a better technical approach, ask before guessing: \`$ask_command --to $manager_id \"your question\"\` waits for the answer (up to 5 minutes). Ask another worker the same way (\`squad agents\` in $workspace_root lists them).
 - Between major steps, run \`$ask_command --check\` and answer other workers' questions with \`$ask_command --reply <id> \"answer\"\`."
+fi
+if [[ "$role" == scout ]]; then
+  rules="- Read-only exploration: do not edit files, create files, commit, push, or run mutating commands.
+- Use targeted glob/grep searches and bounded reads; summarize findings instead of pasting large file dumps.
+$questions
+- Never read or print secrets, credentials, tokens, or \`.env\` files.
+- If something blocks you or is ambiguous, note the gap clearly instead of guessing.
+- Your final message is the report for $manager_id, at most 30 lines: exact \`path:line\` locations, relevant symbols/patterns, build/test commands if asked, and open gaps."
+else
+  rules="- Do only what the task asks and touch only the files it assigns you; other workers may be editing other files at the same time.
+- Hold the bar of a senior engineer at a top technology company: secure by default (no secrets in code, validate input, least privilege), efficient, simple to maintain and extend, consistent with the surrounding code, and accessible, platform-consistent UI (Apple Human Interface Guidelines, Material Design) when the task has UI.
+$questions
+- Do not commit, push, or delete unrelated files.
+- Use only the tools you were given. Never read credentials or tokens from configuration files; if a tool you need is missing, stop and report it.
+- If something blocks you, stop and explain it in the report instead of guessing.
+- Your final message is the report for $manager_id, at most 15 lines: result, files changed, verification you ran and its outcome, assumptions, open issues."
 fi
 # shellcheck disable=SC2034 # read by lib/engines/*.sh
 prompt="You are $worker_id, a $role worker in a squad led by $manager_id. You run once, without a human at the keyboard.
@@ -1346,13 +1500,7 @@ ${previous_context:+$previous_context
 $brief
 
 ## Rules
-- Do only what the task asks and touch only the files it assigns you; other workers may be editing other files at the same time.
-- Hold the bar of a senior engineer at a top technology company: secure by default (no secrets in code, validate input, least privilege), efficient, simple to maintain and extend, consistent with the surrounding code, and accessible, platform-consistent UI (Apple Human Interface Guidelines, Material Design) when the task has UI.
-$questions
-- Do not commit, push, or delete unrelated files.
-- Use only the tools you were given. Never read credentials or tokens from configuration files; if a tool you need is missing, stop and report it.
-- If something blocks you, stop and explain it in the report instead of guessing.
-- Your final message is the report for $manager_id, at most 15 lines: result, files changed, verification you ran and its outcome, assumptions, open issues."
+$rules"
 
 output_directory=".squad/workers"
 mkdir -p "$output_directory"
