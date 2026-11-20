@@ -72,7 +72,7 @@ The command runs in the worktree after the worker finishes; the result is in the
 
 For an exact, unique task entry in the plan, use `--task [ID]` (defaults to the worker ID) instead of a brief; it also includes Acceptance. `--retry-escalate` retries a verification failure once at the next mapped tier when the current tier is explicit. `--merge-if-green` requires a low-risk plan and `--verify`, and still enforces scope and review gates. Review the resulting report and diff.
 
-In the orchestration view, use `c` for cards, `j`/`k` to select, `i` for details, `d`/`r` for diff/report, `s` then `y` to stop, and `m` for a monitor. `v` filters Flow; `e` expands earlier worker rows. `squad-devkit --stats [--days N]` summarizes recent runs; `--doctor --split-test` checks a split. Set `SQUAD_DEVKIT_NOTIFY=0` to disable desktop notifications.
+In the orchestration view, use `c` for cards, `w` for the swarm layout (`--layout g2`), `j`/`k` to select, `i` for details, `d`/`r` for diff/report, `s` then `y` to stop, and `m` for a monitor. `v` filters Flow; `e` expands earlier worker rows. `squad-devkit --stats [--days N]` summarizes recent runs; `--doctor --split-test` checks a split. Set `SQUAD_DEVKIT_NOTIFY=0` to disable desktop notifications.
 
 Every manager worker must open a live split monitor before its engine starts. Never disable panes or use a headless override. If the split fails, report the failure and fix the terminal or use tmux; do not retry hidden.
 
