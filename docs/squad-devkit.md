@@ -743,6 +743,17 @@ The squad deck is a small Claude Code mod that docks a live dashboard of your wo
 
 `squad-devkit` starts the Claude Code manager with `--plugin-dir <devkit>/mods/squad-deck` when Claude Code is 2.1.289 or later (the mod API is early access and moves between releases; a version that cannot be read turns the deck off). Turn it off with `SQUAD_DEVKIT_DECK=0` or `deck=off` in `~/.config/squad-devkit/config`; `squad-devkit --doctor` prints `Deck: on|off (<reason>)`.
 
+**Install as a plugin.** `scripts/install-devkit.sh` adds this repository as a Claude Code marketplace named `squad-devkit` and installs `squad-deck@squad-devkit` at user scope (Claude Code 2.1.289 or later; `--no-deck` skips it, and a failure is a warning). By hand:
+
+```bash
+claude plugin marketplace add <path to squad-devkit>
+claude plugin install squad-deck@squad-devkit --scope user
+```
+
+The marketplace is a folder with a relative `source`, so the plugin is read in place from the repository: `git pull` updates it. Every new Claude Code session then has the deck; a session that is already running needs `/reload-plugins`. When the plugin is installed, the launcher does not add `--plugin-dir` (it would load twice) and `squad-devkit --doctor` prints `Deck: on (installed plugin squad-deck@<marketplace>)`.
+
+A session counts as a squad session when `SQUAD_MANAGER_ID` or `SQUAD_DEVKIT_WORKSPACE` is set, or its directory has a `.squad/workers` folder. Only a squad session opens the pane, runs the refresh timer, sets the status line and draws the band. Any other session only gets `/deck`, and `/deck open` still works there.
+
 What it shows:
 
 - **Pane `squad`**: one card per worker of this session (runs that started at or after `SQUAD_DEVKIT_SESSION_START`, the newest status per worker id, at most the 30 newest files): a header with state, id, engine·model and role; elapsed time, tokens in/out, verify and verdict; and a dim activity line. The activity of a running worker is its last tool or text, taken from the last 16 KB of its log (claude stream-json, OpenCode json, or the last line otherwise). Below the cards sit permission chips (allowed, asked and denied checks of this session, per file, shell and other tool) and the last five Bash commands with secrets redacted (Bearer and Authorization values, `*_TOKEN=`/`*_KEY=`/`*_SECRET=`/`PASSWORD=` values, GitHub, OpenAI-style, AWS, Slack and Telegram tokens, JWTs, PEM blocks). ANSI and control characters are stripped from everything it draws.

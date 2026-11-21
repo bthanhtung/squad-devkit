@@ -80,6 +80,22 @@ printf 'deck=off\n' >"$SQUAD_DEVKIT_CONFIG"
 [[ "$("$devkit" --doctor 2>&1 || true)" == *'Deck: off (deck=off in config)'* ]] || fail
 rm "$SQUAD_DEVKIT_CONFIG"
 
+# Installed as a plugin: it loads by itself, so no --plugin-dir (it would load twice).
+fake_cli claude '2.1.328 (Claude Code)'
+mkdir -p "$HOME/.claude/plugins"
+installed_file="$HOME/.claude/plugins/installed_plugins.json"
+printf '{"version":2,"plugins":{"other@market":[{"scope":"user"}],"squad-deck@squad-devkit":[{"scope":"user"}]}}\n' >"$installed_file"
+[[ "$(launch claude)" != *'--plugin-dir'* ]] || fail
+[[ "$("$devkit" --doctor 2>&1 || true)" == *'Deck: on (installed plugin squad-deck@squad-devkit)'* ]] || fail
+# A config directory without it: back to --plugin-dir.
+mkdir -p "$temp_directory/other-config/plugins"
+printf '{"version":2,"plugins":{"other@market":[{"scope":"user"}]}}\n' >"$temp_directory/other-config/plugins/installed_plugins.json"
+[[ "$(CLAUDE_CONFIG_DIR="$temp_directory/other-config" launch claude)" == *"$deck_flag"* ]] || fail
+# An installed plugin does not override an opt-out.
+[[ "$(SQUAD_DEVKIT_DECK=0 "$devkit" "$project_directory" --manager claude --dry-run)" != *'--plugin-dir'* ]] || fail
+: >"$installed_file"
+[[ "$(launch claude)" == *"$deck_flag"* ]] || fail
+
 # Only the claude manager gets the mod.
 rm "$test_bin/claude"
 fake_cli codex '2.1.328'

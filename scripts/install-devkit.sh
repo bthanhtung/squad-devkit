@@ -2,12 +2,13 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib/squad-jq.sh"
 source "$script_dir/lib/squad-tmux-launcher-helpers.sh"
 source "$script_dir/lib/squad-devkit-agents.sh"
 
 usage() {
   cat <<'EOF'
-Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill] [--build-squad] [--with-tokeneconomizer]
+Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill] [--no-deck] [--build-squad] [--with-tokeneconomizer]
 
 Link squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask,
 squad-telegram, and squad-tokeneconomizer into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
@@ -31,6 +32,11 @@ It also installs the squad-devkit skill for Claude Code (~/.claude/skills) and
 Codex (~/.codex/skills) as a link to skills/squad-devkit in this repository, so
 any session can delegate to workers and `git pull` keeps the skill current;
 --no-skill skips it. An existing non-link directory there is left untouched.
+
+With Claude Code 2.1.289 or later, it also installs the squad deck (a live worker
+dashboard, mods/squad-deck) as a user-scope plugin read from this repository, so
+every manager session has it after /reload-plugins; --no-deck skips it. A failure
+there is a warning and never fails the install.
 EOF
 }
 
@@ -38,6 +44,7 @@ manager_client=""
 no_prompt=0
 configure_hud=1
 install_skill=1
+install_deck=1
 build_squad=0
 with_tokeneconomizer=0
 while (( $# > 0 )); do
@@ -54,6 +61,7 @@ while (( $# > 0 )); do
     --no-prompt) no_prompt=1 ;;
     --no-hud) configure_hud=0 ;;
     --no-skill) install_skill=0 ;;
+    --no-deck) install_deck=0 ;;
     --build-squad) build_squad=1 ;;
     --with-tokeneconomizer) with_tokeneconomizer=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -128,7 +136,7 @@ ensure_squad() {
       archive_url="$base_url/$archive_name"
       checksums_url="$base_url/SHA256SUMS"
 
-      tmp_dir="$(mktemp -d)"
+      tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/squad-install.XXXXXX")"
       if curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS" 2>/dev/null && \
          curl -fsSL "$archive_url" -o "$tmp_dir/$archive_name" 2>/dev/null; then
         local checksum_line expected_hash actual_hash
@@ -223,6 +231,48 @@ if (( install_skill == 1 )); then
     ln -sfn "$skill_source" "$target"
     printf 'Skill: linked %s\n' "$target"
   done
+fi
+
+# The squad deck, as a user-scope plugin read in place from this repository.
+# Every failure here is a warning: the deck is optional.
+if (( install_deck == 1 )); then
+  deck_claude="$(command -v claude 2>/dev/null || true)"
+  deck_root="$(cd "$script_dir/.." && pwd)"
+  deck_plugins="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins"
+  deck_version=""
+  [[ -z "$deck_claude" ]] || deck_version="$("$deck_claude" --version 2>/dev/null | head -n 1 || true)"
+  deck_parts="$(printf '%s' "$deck_version" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')"
+  if [[ -z "$deck_claude" ]]; then
+    :
+  elif [[ -z "$deck_parts" ]]; then
+    printf 'Deck: skipped (could not read the Claude Code version)\n'
+  else
+    read -r deck_major deck_minor deck_patch <<<"$deck_parts"
+    # shellcheck disable=SC2154 # set in lib/squad-devkit-agents.sh
+    IFS=. read -r need_major need_minor need_patch <<<"$deck_min_claude_version"
+    if (( 10#$deck_major * 1000000000 + 10#$deck_minor * 1000000 + 10#$deck_patch < need_major * 1000000000 + need_minor * 1000000 + need_patch )); then
+      printf 'Deck: skipped (Claude Code %s.%s.%s is older than %s)\n' "$deck_major" "$deck_minor" "$deck_patch" "$deck_min_claude_version"
+    else
+      deck_done=""
+      if [[ -f "$deck_plugins/known_marketplaces.json" ]] &&
+        squad_jq -e 'has("squad-devkit")' "$deck_plugins/known_marketplaces.json" >/dev/null 2>&1; then
+        deck_done="marketplace squad-devkit already added"
+      elif "$deck_claude" plugin marketplace add "$deck_root" >/dev/null 2>&1; then
+        deck_done="added marketplace squad-devkit"
+      else
+        printf 'Deck: warning: could not add the squad-devkit marketplace; run: claude plugin marketplace add %s\n' "$deck_root" >&2
+      fi
+      if [[ -n "$deck_done" ]]; then
+        if deck_key="$(deck_installed_plugin)"; then
+          printf 'Deck: %s, %s already installed\n' "$deck_done" "$deck_key"
+        elif "$deck_claude" plugin install squad-deck@squad-devkit --scope user >/dev/null 2>&1; then
+          printf 'Deck: %s, installed squad-deck@squad-devkit (user scope); run /reload-plugins in a running session\n' "$deck_done"
+        else
+          printf 'Deck: warning: could not install squad-deck; run: claude plugin install squad-deck@squad-devkit --scope user\n' >&2
+        fi
+      fi
+    fi
+  fi
 fi
 case ":$PATH:" in
   *":$bin_directory:"*) ;;
