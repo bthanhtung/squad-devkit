@@ -376,6 +376,86 @@ for cols in 80 120; do
   done <<< "$default_out"
 done
 
+# Swarm owns its complete frame and remains bounded at narrow/wide sizes.
+for cols in 80 100 140 180; do
+  swarm="$(COLUMNS=$cols LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
+  assert_max_width "$swarm" "$cols" "g2 COLUMNS=$cols"
+  for label in 'SQUAD-DEVKIT ORCHESTRATION' 'task layer' '» delegate to workers' '▼' 'back to' 'session log' 'workers [' 'Fixing issues' '■ manager · lead'; do
+    grep -Fq "$label" <<< "$swarm" || { echo "FAIL: g2 missing $label" >&2; exit 1; }
+  done
+  for wid in dev-1 test-1 dev-2 done-1; do
+    grep -Fq "$wid" <<< "$swarm" || { echo "FAIL: g2 missing $wid" >&2; exit 1; }
+  done
+  printf '%s\n' "$swarm" > "$tmp/g2-${cols}.txt"
+done
+short_swarm="$(COLUMNS=80 LINES=24 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
+for label in 'dev-1 [running]' 'back to' 'session log' 'workers ['; do
+  grep -Fq "$label" <<< "$short_swarm" || { echo "FAIL: compact g2 missing $label" >&2; exit 1; }
+done
+assert_max_width "$short_swarm" 80 'g2 LINES=24'
+(( $(printf '%s\n' "$short_swarm" | wc -l) <= 24 )) || { echo 'FAIL: compact g2 exceeds height' >&2; exit 1; }
+split_swarm="$(COLUMNS=108 LINES=31 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
+for label in 'back to' 'session log' 'workers ['; do
+  grep -Fq "$label" <<< "$split_swarm" || { echo "FAIL: compact g2 missing $label" >&2; exit 1; }
+done
+grep -Eq '│ +dev-1 \[running\] +│' <<< "$split_swarm" || { echo 'FAIL: compact g2 lost worker cards' >&2; exit 1; }
+assert_max_width "$split_swarm" 108 'g2 108x31'
+narrow_swarm="$(COLUMNS=54 LINES=24 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
+(( $(grep -Ec '^│.*\[(running|completed|failed|asking|stopped|lost)\].*│' <<< "$narrow_swarm") >= 2 )) || {
+  echo 'FAIL: narrow g2 did not wrap worker cards' >&2
+  exit 1
+}
+grep -Fq 'back to' <<< "$narrow_swarm"
+assert_max_width "$narrow_swarm" 54 'g2 54x24'
+mkdir -p "$tmp/g2-finished"
+for worker in a b c; do
+  printf 'worker=%s\nstate=completed\nstarted=%s\n' "$worker" "$since" > "$tmp/g2-finished/$worker.status"
+done
+swarm_arrows=() branch_tracks=() merge_tracks=()
+for phase in 0 3; do
+  animated="$(COLUMNS=140 LINES=80 SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_ORCHESTRATION_FRAME=$phase \
+    /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-finished")"
+  review_row="$(grep -F 'back to' <<< "$animated")"
+  if [[ "$review_row" == *'"◀'* || "$review_row" == *'╌"'* || "$review_row" == *'●"'* ]]; then
+    echo 'FAIL: g2 review arrow leaks quotes' >&2
+    exit 1
+  fi
+  swarm_arrows[$phase]="$(sed -nE 's/.*(◀[╌●]+).*/\1/p' <<< "$animated")"
+  branch_tracks[$phase]="$(grep -oE '┌[─●┬┴┼]*●[─●┬┴┼]*┐' <<< "$animated" || true)"
+  merge_tracks[$phase]="$(grep -oE '└[─●┬┴┼]*●[─●┬┴┼]*┘' <<< "$animated" || true)"
+done
+if [[ "${swarm_arrows[0]}" != ◀╌*●* || "${swarm_arrows[3]}" != ◀●╌* ]]; then
+  echo 'FAIL: g2 review pulse must travel toward the left arrowhead' >&2
+  exit 1
+fi
+if [[ -z "${branch_tracks[0]}" || -z "${branch_tracks[3]}" || "${branch_tracks[0]}" == "${branch_tracks[3]}" ||
+      -z "${merge_tracks[0]}" || -z "${merge_tracks[3]}" || "${merge_tracks[0]}" == "${merge_tracks[3]}" ]]; then
+  echo 'FAIL: g2 branch and merge pulses must move during review' >&2
+  exit 1
+fi
+mkdir -p "$tmp/g2-one"
+cp "$workers_dir/dev-1-2.status" "$tmp/g2-one/"
+one_swarm="$(COLUMNS=140 LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-one")"
+grep -Fq 'Fixing issues' <<< "$one_swarm" || { echo 'FAIL: single g2 card missing title' >&2; exit 1; }
+assert_max_width "$one_swarm" 140 'g2 single worker'
+mkdir -p "$tmp/g2-mixed"
+cat > "$tmp/g2-mixed.md" <<'PLAN'
+## Tasks
+- launched (codex, dev): active
+- finished (codex, dev): done
+- pending (codex, dev): waiting
+PLAN
+for wid in launched finished; do
+  state=running; [[ "$wid" != finished ]] || state=completed
+  printf 'worker=%s\nstate=%s\npid=%s\nstarted=%s\nplan=%s\n' "$wid" "$state" "$$" "$now" "$tmp/g2-mixed.md" > "$tmp/g2-mixed/$wid.status"
+done
+mixed_swarm="$(COLUMNS=140 LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-mixed")"
+for label in 'tasks 3' 'tasks [ 1/3 done ]' '1.00 done' '0.50 run' '0.00 wait'; do
+  grep -Fq "$label" <<< "$mixed_swarm" || { echo "FAIL: mixed g2 tasks missing $label" >&2; exit 1; }
+done
+mkdir -p "$tmp/g2-empty"
+COLUMNS=140 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-empty" >/dev/null
+
 # ==============================================================================
 # A. Graph layout (--layout graph)
 # ==============================================================================
