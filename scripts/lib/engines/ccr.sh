@@ -29,9 +29,11 @@ ensure_ccr_server() {
 }
 
 engine_ccr_build_command() {
-  # Reviewers run in place on the project, so they get no edit tools.
+  # Reviewers and scouts run in place on the project, so they get no edit tools.
   local default_tools=Read,Edit,Write,Glob,Grep
-  [[ "${role:-}" != reviewer ]] || default_tools=Read,Glob,Grep
+  case "${role:-}" in
+    reviewer|scout) default_tools=Read,Glob,Grep ;;
+  esac
   local tools="${SQUAD_WORKER_CCR_TOOLS:-$default_tools}"
   engine_command=(claude -p --strict-mcp-config --disable-slash-commands --no-session-persistence
     --tools "$tools" --allowedTools "$tools" --permission-mode acceptEdits

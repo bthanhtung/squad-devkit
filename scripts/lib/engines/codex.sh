@@ -67,8 +67,8 @@ engine_codex_build_command() {
   if [[ "$sandbox_mode" == 0 ]]; then
     sandbox_arguments=(--sandbox danger-full-access)
   fi
-  # Reviewers run in place on the project, so they get no edit tools.
-  if [[ "${role:-}" == reviewer ]]; then
+  # Reviewers and scouts run in place on the project, so they get no edit tools.
+  if [[ "${role:-}" == reviewer || "${role:-}" == scout ]]; then
     sandbox_arguments=(--sandbox read-only)
   fi
   if [[ "$yolo" == 1 ]]; then

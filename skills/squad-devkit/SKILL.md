@@ -50,12 +50,13 @@ Workers see only the brief, so make it complete.
 
 ## Plans and approvals
 
-- Every worker run needs `--plan .squad/plans/<name>.md`, validated: sections
+- Every editing or post-plan worker run needs `--plan .squad/plans/<name>.md`, validated: sections
   Triage, Goal, Perspectives, Tasks, Acceptance; Triage lines `Risk`,
   `Complexity` (low|moderate|high) and `squad-route`
   (`not configured` is fine; the installer links `squad-route`); all five
   perspective labels. Copy `templates/devkit/plan.md.example`. Show the human
-  the plan summary before starting workers.
+  the plan summary before starting workers. Read-only `--role scout` runs may
+  omit `--plan` to explore the codebase before planning.
 - Small follow-ups: add a `## Follow-up: <name>` section to the existing plan.
   `--no-plan "<reason>"` is only for genuine emergencies; the reason is
   recorded in the status file and report.
@@ -90,8 +91,11 @@ claude > codex > opencode > grok > ccr.
 | Low-risk work or a second opinion (experimental) | `--engine opencode` or `grok` |
 | Docs and small exact edits | `--engine ccr` (cheap, file tools only, no shell) |
 
-Roles: `--role dev|tester|reviewer|researcher` (reviewers and researchers read
-the project directly instead of using a worktree). `--project <path>` points a
+Roles: `--role dev|tester|reviewer|researcher|scout` (reviewers, scouts, and researchers read
+the project directly instead of using a worktree; reviewers and scouts are
+read-only at the engine level, and `--role scout` omits `--plan` and `--engine`
+to auto-pick the configured or cheapest fast read-only model such as `haiku`,
+`ccr`, or a configured `fast` / `SQUAD_WORKER_SCOUT_*` target). `--project <path>` points a
 worker at a repository; omit it for log checks and reports in the workspace.
 
 ## Review, merge, and housekeeping
