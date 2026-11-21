@@ -55,6 +55,40 @@ validate_yolo_client() {
   esac
 }
 
+deck_min_claude_version="2.1.289"
+
+# Decides whether the manager loads the squad deck mod (mods/squad-deck). Prints
+# the reason and returns 0 when it does, 1 when it does not. $1 is the claude
+# binary. Any failure to read the version means off.
+deck_plugin_check() {
+  local binary="${1:-}" root version found
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  if [[ "${SQUAD_DEVKIT_DECK:-}" == 0 ]]; then
+    printf 'SQUAD_DEVKIT_DECK=0'; return 1
+  fi
+  if [[ "$(devkit_config_get deck)" == off ]]; then
+    printf 'deck=off in config'; return 1
+  fi
+  if [[ ! -d "$root/mods/squad-deck" ]]; then
+    printf 'mods/squad-deck not found'; return 1
+  fi
+  if [[ -z "$binary" || ! -x "$binary" ]]; then
+    printf 'claude is not installed'; return 1
+  fi
+  version="$("$binary" --version 2>/dev/null | head -n 1)" || version=""
+  found="$(printf '%s' "$version" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')"
+  if [[ -z "$found" ]]; then
+    printf 'could not read the Claude Code version'; return 1
+  fi
+  local major minor patch need_major need_minor need_patch
+  read -r major minor patch <<<"$found"
+  IFS=. read -r need_major need_minor need_patch <<<"$deck_min_claude_version"
+  if (( 10#$major * 1000000000 + 10#$minor * 1000000 + 10#$patch < need_major * 1000000000 + need_minor * 1000000 + need_patch )); then
+    printf 'Claude Code %s.%s.%s is older than %s' "$major" "$minor" "$patch" "$deck_min_claude_version"; return 1
+  fi
+  printf 'mods/squad-deck, Claude Code %s.%s.%s' "$major" "$minor" "$patch"
+}
+
 # Prints the interactive command that starts a manager. The instructions go
 # to the system prompt where the CLI supports it (Claude Code, Codex), so the
 # chat shows only the human's message; other CLIs receive them as the first
@@ -84,6 +118,10 @@ manager_start_command() {
         arguments+=(--permission-mode "$permission_mode")
       fi
       arguments+=(--append-system-prompt "$instructions")
+      # The squad deck mod: an observe-only worker dashboard in this session.
+      if deck_plugin_check "$binary" >/dev/null; then
+        arguments+=(--plugin-dir "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/mods/squad-deck")
+      fi
       if [[ -n "${4:-}" ]]; then
         arguments+=(--settings "$4")
       fi

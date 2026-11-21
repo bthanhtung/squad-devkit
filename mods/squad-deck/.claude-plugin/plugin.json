@@ -1,0 +1,5 @@
+{
+  "name": "squad-deck",
+  "version": "0.1.0",
+  "description": "A live, observe-only dashboard of squad-devkit workers docked in the manager's Claude Code terminal."
+}
