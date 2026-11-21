@@ -15,9 +15,10 @@ before anything reaches your repository.
 
 - **Fewer tokens.** Workers start only when there is work, so nothing polls while idle.
 - **Parallel and safe.** Each editing worker gets its own git worktree and branch.
-- **Verified before merge.** The manager reads the diff and reruns the checks.
+- **See every worker live.** A deck inside the Claude Code manager shows each worker's state, model, tokens and current step. It opens when a worker runs, and each tab shows only its own workers.
+- **Verified before merge.** The manager reads the diff and reruns the checks. Time limits and stall detection report failures back.
+- **Steer from your phone.** A Telegram bot reaches every running manager.
 - **Your choice of engine.** Claude, Codex, OpenCode, Grok and ccr.
-- **Nothing hangs.** Time limits and stall detection report failures back.
 
 <p align="center">
   <img src="./assets/squad-devkit-demo.gif" alt="Three squad workers run in parallel, each in its own git worktree with a live monitor pane; their changes are then merged and the tests pass" width="860" />
@@ -34,6 +35,12 @@ squad-devkit "your request"
 ```
 
 Needs macOS or Linux, bash, git, one manager CLI (such as `claude`) and one worker engine. Make sure `~/.local/bin` is on your `PATH`. Run `squad-devkit --doctor` to check your setup.
+
+## See your squad
+
+- **Squad deck.** A dashboard docks in the Claude Code manager and opens by itself while workers run. Use `/deck open` or `/deck close`. Set `SQUAD_DEVKIT_DECK=0` to turn it off. See [squad deck](./docs/squad-devkit.md#squad-deck).
+- **Orchestration pane.** Switch between the `g` graph and the `w` swarm layout (Graph v2). See [watching workers](./docs/squad-devkit.md#watching-workers).
+- **Phone.** Run `squad-devkit telegram setup`, then steer your managers from Telegram. See [Telegram remote](./docs/squad-devkit.md#telegram-remote).
 
 ## How it works
 

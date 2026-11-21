@@ -18,6 +18,7 @@ import {
 
 const STATUS = [
   'worker=deck-1',
+  'manager=manager-2',
   'engine=opencode',
   'model=opencode-go/deepseek-v4-pro',
   'actual_model=unknown',
@@ -42,6 +43,7 @@ const status = (id: string, state: string, started: number, extra = '') =>
 test('a complete status file is parsed', () => {
   const run = parseStatus(STATUS)
   expect(run?.id).toBe('deck-1')
+  expect(run?.manager).toBe('manager-2')
   expect(run?.engine).toBe('opencode')
   expect(run?.model).toBe('opencode-go/deepseek-v4-pro')
   expect(run?.state).toBe('running')

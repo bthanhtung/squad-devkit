@@ -83,6 +83,7 @@ export function parseStatus(text: string, fallbackId = ''): Run | null {
     value !== undefined && new RegExp(`^[a-z_-]{1,${max}}$`).test(value) ? value : other
   return {
     id,
+    manager: clean(f.manager ?? '', 40),
     engine: clean(f.engine ?? '', 20),
     model: clean(actual ?? '', 40),
     role: clean(f.role ?? '', 24),
