@@ -47,6 +47,111 @@ mkdir -p "$workers_dir"
 now="$(date +%s)"
 since=$(( now - 600 ))
 
+# Mission data is available without rendering a view.
+(
+  mkdir -p "$tmp/mission"
+  cat > "$tmp/mission-plan.md" <<'EOF'
+## Tasks
+- a (codex balanced, dev): root. Depends on: none
+- b (codex fast, tester): child. Depends on: a
+- c (codex balanced, dev): child. Depends on: a
+EOF
+  cat > "$tmp/mission-report" <<'EOF'
+Changed: 4 file(s), +409 -2
+Knowledge: injected n1 n2
+EOF
+  cat > "$tmp/mission/a.status" <<EOF
+worker=a
+started=$since
+state=completed
+plan=$tmp/mission-plan.md
+worktree=$tmp/mission
+gates=lint:pass
+loop_iter=2
+loop_max=3
+attempt=4
+cost_usd=1.25
+cost_status=estimated
+plan_task=a
+sandbox=workspace
+report=$tmp/mission-report
+model_tier=balanced
+verdict=pass
+EOF
+  export SQUAD_ORCHESTRATION_TEST_SOURCE=1
+  source "$root/scripts/squad-orchestration.sh" --once "$tmp/mission"
+  set -e
+  load_data
+  [[ "${W_GATES[0]} ${W_LOOP_ITER[0]}/${W_LOOP_MAX[0]} ${W_ATTEMPT[0]}" == 'lint:pass 2/3 4' ]]
+  [[ "${W_COST[0]} ${W_COST_STATUS[0]} ${W_PLAN_TASK[0]} ${W_SANDBOX[0]} ${W_MODEL_TIER[0]} ${W_VERDICT[0]}" == '1.25 estimated a workspace balanced pass' ]]
+  load_report_facts 0
+  [[ "$REPLY_CHANGED" == '4 file(s), +409 -2' && "$REPLY_NOTES" == 'n1 n2' ]]
+  worker_next_action 0; [[ "$REPLY" == merge ]]
+  W_ASKING[0]=1; worker_next_action 0; [[ "$REPLY" == answer ]]
+  W_ASKING[0]=0; W_VERIFY[0]=timeout; worker_next_action 0; [[ "$REPLY" == fix ]]
+  W_VERIFY[0]=''; W_STATE[0]=lost; worker_next_action 0; [[ "$REPLY" == resume ]]
+  W_STATE[0]=running; worker_next_action 0; [[ "$REPLY" == wait ]]
+  W_STATE[0]=completed; W_MERGE_STATE[0]=merged; worker_next_action 0; [[ "$REPLY" == done ]]
+  W_REPORT[0]="$tmp/missing"; load_report_facts 0; [[ -z "$REPLY_CHANGED$REPLY_NOTES" ]]
+  parse_plan_tasks "$tmp/mission-plan.md"
+  [[ "${T_ID[*]}" == 'a b c' && "${T_DEPS[*]}" == ' a a' ]]
+  [[ "${T_ENGINE[1]} ${T_TIER[1]} ${T_ROLE[1]}" == 'codex fast tester' ]]
+  plan_task_depth; [[ "${T_DEPTH[*]}" == '0 1 1' ]]
+  T_DEPS=("b" "a" "unknown"); plan_task_depth
+  [[ "${T_DEPTH[*]}" == '2 2 0' ]]
+  # Render the real loaded facts, including unknown cost and an unanswered message.
+  layout=g2; selected_id=a; W_VERIFY[0]=fail; W_MERGE_STATE[0]=''
+  W_COST[0]=1.25; W_COST_STATUS[0]=estimated; W_GATES[0]='lint:pass,tests:fail'
+  W_REPORT[0]="$tmp/mission-report"; W_SCOPE_VIOLATION[0]=''; W_ASKING[0]=0
+  H_TS=('2026-11-14T07:05:00Z'); H_FROM=(a); H_TO=(manager); H_TYPE=(QUESTION); H_BODY=('QUESTION: unblock me')
+  build_g2_frame 240 80 ""
+  mission="${FRAME_TPL[0]}"
+  for expected in 'manager · lead' 'before a plan' 'swarming workers' 'last advice:' 'YOU · owner' 'main session' '✓ Plan' 'PLAN DAG' 'DATA FLOW > a' 'notes 2 injected' 'loop 2/3' 'lint ✓,tests ✗' '$1.25 (est)' 'fix round: squad-worker a' '07:05 a→manager ? unblock me'; do
+    [[ "$mission" == *"$expected"* ]] || { echo "FAIL: mission missing $expected" >&2; exit 1; }
+  done
+  W_COST_STATUS[0]=unknown; W_ASKING[0]=1
+  build_g2_frame 240 80 ""; mission="${FRAME_TPL[0]}"
+  [[ "$mission" == *'cost unknown'* && "$mission" != *'$0'* && "$mission" == *'waiting on you: a'* && "$mission" == *'answer: squad send … a'* ]]
+  W_ASKING[0]=0; W_VERIFY[0]=''; W_MERGE_STATE[0]=merged
+  W_NAME+=(b scout); W_PLAN_NAME+=("${W_PLAN_NAME[0]}" other); W_PLAN_PATH+=("${W_PLAN_PATH[0]}" ''); W_PLAN_TASK+=(b '')
+  W_STATE+=(running completed); W_STARTED+=("$since" "$since"); W_LOOP_ITER+=('' ''); W_LOOP_MAX+=('' '')
+  W_ASKING+=(0 0); W_VERIFY+=('' ''); W_WORKTREE+=('' ''); W_MERGE_STATE+=('' merged)
+  build_g2_frame 240 80 ""; mission="${FRAME_TPL[0]}"
+  [[ "$mission" == *'b ● running ◀─ a'* && "$mission" == *'other: scout ✓merged'* ]]
+  [[ "$mission" == *'tasks 1 running / 1 done of 3'* && "$mission" != *'a ✓merged ─▶'* ]]
+  W_LOOP_MAX[0]=''; W_LOOP_ITER[0]=0; W_GATES[0]=''
+  H_TYPE=(done failed stopped brief QUESTION); H_BODY=('completed task 67130000-0000-0000-0000-000000000000 Report: /Users/private/report verify pass' 'failed task /tmp/report' 'stopped task' 'Build UI /Users/private/file' 'question /tmp/private 67130000-0000-0000-0000-000000000000')
+  H_TS=(x x x x x); H_FROM=(a a a a a); H_TO=(manager manager manager manager manager)
+  build_g2_frame 240 80 ""; mission="${FRAME_TPL[0]}"
+  [[ "$mission" != *'loop 0/0'* && "$mission" != *'gates none'* && "$mission" != *'\,'* ]]
+  for expected in '✓ done · verify pass' '✗ failed' '■ stopped' '▸ brief:'; do [[ "$mission" == *"$expected"* ]]; done
+  previews="${mission#*CONVERSATION}"
+  [[ "$previews" != *'/Users/'* && "$previews" != *'/tmp/'* && "$previews" != *'67130000-0000-0000-0000-000000000000'* ]]
+  # c is waiting on b, rather than the already merged a.
+  sed 's/child. Depends on: a/child. Depends on: b/' "$tmp/mission-plan.md" > "$tmp/mission-plan.tmp"
+  # Keep b depending on a and c depending on b.
+  sed 's/- b (codex fast, tester): child. Depends on: b/- b (codex fast, tester): child. Depends on: a/' "$tmp/mission-plan.tmp" > "$tmp/mission-plan.md"
+  build_g2_frame 240 80 ""
+  [[ "${FRAME_TPL[0]}" == *'c ○ blocked by b'* ]]
+  plan_path="${W_PLAN_PATH[0]}"
+  plan_hash="$(printf '%s' "$plan_path" | shasum -a 256)"; plan_hash="${plan_hash%% *}"
+  mkdir -p "$WS_ROOT/.squad/run-plan/$plan_hash.lock"
+  build_g2_frame 240 80 ""; [[ "${FRAME_TPL[0]}" == *'▸ run-plan'* ]]
+  for size in '80 22' '40 18' '120 38'; do
+    set -- $size; build_g2_frame "$1" "$2" ""
+    raw_rows=0
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      raw_rows=$(( raw_rows + 1 )); display_width "$row"; [[ "$DW" -le "$1" ]]
+    done <<< "${FRAME_TPL[0]}"
+    [[ "$raw_rows" -le "$2" ]] || { echo "FAIL: mission $size has $raw_rows rows" >&2; exit 1; }
+    clamp_frame "${FRAME_TPL[0]}" "$1" 2147483647 0 "$2"
+    [[ "$CLAMP_ROWS" -le "$2" ]]
+    while IFS= read -r row; do display_width "$row"; [[ "$DW" -le "$1" ]]; done <<< "$REPLY"
+  done
+  build_g2_frame 80 20 ""; [[ "${FRAME_TPL[0]}" == *'NEXT'* ]]
+)
+
 # Find a dead PID for the lost worker fixture
 dead_pid=99999
 while kill -0 "$dead_pid" 2>/dev/null; do
@@ -213,7 +318,11 @@ assert_utf8() {
 }
 
 # ==============================================================================
-# A0. Default layout (--once) is minimal Apple-style list
+# A0. Mission is the default; legacy layouts remain explicitly available
+default_g2_out="$(COLUMNS=140 LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --once "$tmp/empty")"
+grep -Fq 'PLAN DAG' <<< "$default_g2_out" || { echo 'FAIL: default layout is not g2' >&2; exit 1; }
+
+# A1. Explicit list layout (--once) is minimal Apple-style list
 # ==============================================================================
 list_tmp="$tmp/list_fixture"
 list_workers="$list_tmp/.squad/workers"
@@ -311,9 +420,9 @@ HEOF"
 
 for cols in 80 120; do
   default_out="$(COLUMNS="$cols" SQUAD_MANAGER_ID=manager-2 SQUAD_ORCHESTRATION_HISTORY_CMD="$list_hist" \
-    "$root/scripts/squad-orchestration.sh" --once "$list_workers")"
+    "$root/scripts/squad-orchestration.sh" --layout list --once "$list_workers")"
 
-  echo "=== Default (list) output under COLUMNS=$cols ==="
+  echo "=== Explicit list output under COLUMNS=$cols ==="
   printf '%s\n' "$default_out"
   echo "================================================="
 
@@ -392,7 +501,7 @@ done
 for cols in 80 100 140 180; do
   swarm="$(COLUMNS=$cols LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
   assert_max_width "$swarm" "$cols" "g2 COLUMNS=$cols"
-  for label in 'YOU · owner' 'SQUAD-DEVKIT ORCHESTRATION' 'task layer' '» delegate to workers' '▼' 'back to' 'session log' 'workers [' 'Fixing issues' '■ manager · lead'; do
+  for label in 'SQUAD-DEVKIT ORCHESTRATION' 'PLAN DAG' 'DATA FLOW' 'CONVERSATION' 'waiting on you:' 'done '; do
     grep -Fq "$label" <<< "$swarm" || { echo "FAIL: g2 missing $label" >&2; exit 1; }
   done
   for wid in dev-1 test-1 dev-2 done-1; do
@@ -401,70 +510,72 @@ for cols in 80 100 140 180; do
   printf '%s\n' "$swarm" > "$tmp/g2-${cols}.txt"
 done
 short_swarm="$(COLUMNS=80 LINES=24 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
-for label in 'dev-1 [running]' 'back to' 'session log' 'workers ['; do
+for label in 'dev-1' 'NEXT' 'CONVERSATION' 'done '; do
   grep -Fq "$label" <<< "$short_swarm" || { echo "FAIL: compact g2 missing $label" >&2; exit 1; }
 done
 assert_max_width "$short_swarm" 80 'g2 LINES=24'
 (( $(printf '%s\n' "$short_swarm" | wc -l) <= 24 )) || { echo 'FAIL: compact g2 exceeds height' >&2; exit 1; }
 split_swarm="$(COLUMNS=108 LINES=31 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
-for label in 'back to' 'session log' 'workers ['; do
+for label in 'PLAN DAG' 'CONVERSATION' 'done '; do
   grep -Fq "$label" <<< "$split_swarm" || { echo "FAIL: compact g2 missing $label" >&2; exit 1; }
 done
-grep -Eq '│ +dev-1 \[running\] +│' <<< "$split_swarm" || { echo 'FAIL: compact g2 lost worker cards' >&2; exit 1; }
+grep -Eq '│ +(> )?dev-1.*│' <<< "$split_swarm" || { echo 'FAIL: compact g2 lost worker cards' >&2; exit 1; }
 assert_max_width "$split_swarm" 108 'g2 108x31'
 narrow_swarm="$(COLUMNS=54 LINES=24 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
-(( $(grep -Ec '^│.*\[(running|completed|failed|asking|stopped|lost)\].*│' <<< "$narrow_swarm") >= 2 )) || {
-  echo 'FAIL: narrow g2 did not wrap worker cards' >&2
-  exit 1
-}
-grep -Fq 'YOU · owner' <<< "$narrow_swarm"
-grep -Fq 'back to' <<< "$narrow_swarm"
+grep -Fq 'dev-1' <<< "$narrow_swarm"
+grep -Fq 'CONVERSATION' <<< "$narrow_swarm"
 assert_max_width "$narrow_swarm" 54 'g2 54x24'
+# Swarm prioritizes actionable workers and collapses merged/discarded runs.
+mkdir -p "$tmp/g2-decisions" "$tmp/g2-worktree"
+printf '## Tasks\n- asker (codex, dev): question\n' > "$tmp/newest-plan.md"
+printf '## Tasks\n- oldtask (codex, dev): old\n' > "$tmp/older-plan.md"
+cat > "$tmp/g2-decisions/ask.status" <<EOF
+worker=asker
+state=running
+pid=$$
+started=$now
+title=Investigate issue
+plan=$tmp/newest-plan.md
+owned=src/a.sh,src/b.sh
+EOF
+cat > "$tmp/g2-decisions/fail.status" <<EOF
+worker=badverify
+state=completed
+verify=timeout
+started=$since
+title=Verify change
+plan=$tmp/older-plan.md
+EOF
+cat > "$tmp/g2-decisions/ready.status" <<EOF
+worker=ready
+state=completed
+verify=pass
+worktree=$tmp/g2-worktree
+started=$since
+title=Ship change
+owned=src/a.sh,src/b.sh
+EOF
+printf 'worker=scout\nstate=completed\nstarted=%s\n' "$since" > "$tmp/g2-decisions/scout.status"
+printf 'worker=scope\nstate=failed\nscope_violation=src/x\nstarted=%s\n' "$since" > "$tmp/g2-decisions/scope.status"
+printf 'worker=active\nstate=running\npid=%s\nstarted=%s\ntokens_in=1000\n' "$$" "$(( now - 1 ))" > "$tmp/g2-decisions/active.status"
+printf 'worker=idle-worker\nstate=running\npid=%s\nstarted=%s\nlog=%s\ntokens_in=2000\n' "$$" "$since" "$tmp/g2-idle.log" > "$tmp/g2-decisions/idle.status"
+touch "$tmp/g2-idle.log"
+python3 -c 'import os, sys; t = int(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$tmp/g2-idle.log" "$since"
+for wid in merged discarded; do
+  printf 'worker=%s\nstate=completed\n%s=yes\nstarted=%s\n' "$wid" "$wid" "$since" > "$tmp/g2-decisions/$wid.status"
+done
+for f in "$tmp/g2-decisions"/*.status; do printf 'manager=manager-2\n' >> "$f"; done
+qtime="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+hist="printf '%s\\n' '* [$qtime] asker -> manager-2: QUESTION: Need input' '* [$qtime] manager-2 -> badverify: ANSWER: Retry now'"
+decisions="$(SQUAD_MANAGER_ID=manager-2 SQUAD_ORCHESTRATION_NOW="$now" SQUAD_ORCHESTRATION_HISTORY_CMD="$hist" COLUMNS=80 LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$tmp/g2-decisions")"
+for label in 'Investigate issue' '? waiting on you' '? Need input' '↳ Retry now' 'newest-plan' 'verify fail' 'ready to merge' 'done 3:' 'scout'; do
+  grep -Fq "$label" <<< "$decisions" || { echo "FAIL: g2 decisions missing $label" >&2; exit 1; }
+done
+assert_max_width "$decisions" 80 'g2 decisions'
 mkdir -p "$tmp/g2-finished"
 for worker in a b c; do
   printf 'worker=%s\nstate=completed\nstarted=%s\n' "$worker" "$since" > "$tmp/g2-finished/$worker.status"
 done
-swarm_arrows=() branch_tracks=() merge_tracks=()
-for phase in 0 3; do
-  animated="$(COLUMNS=140 LINES=80 SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_ORCHESTRATION_FRAME=$phase \
-    /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-finished")"
-  review_row="$(grep -F 'back to' <<< "$animated")"
-  if [[ "$review_row" == *'"◀'* || "$review_row" == *'╌"'* || "$review_row" == *'●"'* ]]; then
-    echo 'FAIL: g2 review arrow leaks quotes' >&2
-    exit 1
-  fi
-  swarm_arrows[$phase]="$(sed -nE 's/.*(◀[╌●]+).*/\1/p' <<< "$animated")"
-  branch_tracks[$phase]="$(grep -oE '┌[─●┬┴┼]*●[─●┬┴┼]*┐' <<< "$animated" || true)"
-  merge_tracks[$phase]="$(grep -oE '└[─●┬┴┼]*●[─●┬┴┼]*┘' <<< "$animated" || true)"
-done
-if [[ "${swarm_arrows[0]}" != ◀╌*●* || "${swarm_arrows[3]}" != ◀●╌* ]]; then
-  echo 'FAIL: g2 review pulse must travel toward the left arrowhead' >&2
-  exit 1
-fi
-if [[ -n "${branch_tracks[0]}${branch_tracks[3]}${merge_tracks[0]}${merge_tracks[3]}" ]]; then
-  echo 'FAIL: g2 rails must not pulse during review' >&2
-  exit 1
-fi
-mkdir -p "$tmp/g2-merged" "$tmp/g2-running"
-for worker in a b c; do
-  printf 'worker=%s\nstate=completed\nmerged=yes\nstarted=%s\n' "$worker" "$since" > "$tmp/g2-merged/$worker.status"
-  printf 'worker=%s\nstate=running\npid=%s\nstarted=%s\n' "$worker" "$$" "$now" > "$tmp/g2-running/$worker.status"
-done
-for phase in 0 3; do
-  merged_frames[$phase]="$(COLUMNS=140 LINES=80 SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_ORCHESTRATION_FRAME=$phase \
-    /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-merged")"
-  running_frame="$(COLUMNS=140 LINES=80 SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_ORCHESTRATION_FRAME=$phase \
-    /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-running")"
-  running_rails[$phase]="$(grep -oE '┌[─●┬┴┼]*●[─●┬┴┼]*┐' <<< "$running_frame" || true)"
-  running_merges[$phase]="$(grep -oE '└[─●┬┴┼]*●[─●┬┴┼]*┘' <<< "$running_frame" || true)"
-done
-[[ "${merged_frames[0]}" == "${merged_frames[3]}" ]] || { echo 'FAIL: completed g2 frames differ' >&2; exit 1; }
-grep -Fq '▶ Done' <<< "${merged_frames[0]}" || { echo 'FAIL: g2 missing Done step' >&2; exit 1; }
-grep -Fq '▶ Workers' <<< "$running_frame" || { echo 'FAIL: g2 missing Workers step' >&2; exit 1; }
-[[ -n "${running_rails[0]}" && -n "${running_rails[3]}" && "${running_rails[0]}" != "${running_rails[3]}" &&
-   -n "${running_merges[0]}" && -n "${running_merges[3]}" && "${running_merges[0]}" != "${running_merges[3]}" ]] || {
-  echo 'FAIL: g2 running rail pulses must move' >&2; exit 1
-}
 mkdir -p "$tmp/g2-one"
 cp "$workers_dir/dev-1-2.status" "$tmp/g2-one/"
 one_swarm="$(COLUMNS=140 LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-one")"
@@ -482,7 +593,7 @@ for wid in launched finished; do
   printf 'worker=%s\nstate=%s\npid=%s\nstarted=%s\nplan=%s\n' "$wid" "$state" "$$" "$now" "$tmp/g2-mixed.md" > "$tmp/g2-mixed/$wid.status"
 done
 mixed_swarm="$(COLUMNS=140 LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-mixed")"
-for label in 'tasks 3' 'tasks [ 1/3 done ]' '1.00 done' '0.50 run' '0.00 wait'; do
+for label in 'launched ● running' 'finished ✓merged' 'pending ○ ready'; do
   grep -Fq "$label" <<< "$mixed_swarm" || { echo "FAIL: mixed g2 tasks missing $label" >&2; exit 1; }
 done
 mkdir -p "$tmp/g2-empty"
@@ -1974,7 +2085,7 @@ plan=/path/to/plan-auto.md
 EOF
 
 # 1. --once output unchanged (no countdown text)
-once_out="$(SQUAD_MANAGER_ID=m-auto "$root/scripts/squad-orchestration.sh" --once "$autoclose_dir")"
+once_out="$(SQUAD_MANAGER_ID=m-auto "$root/scripts/squad-orchestration.sh" --layout list --once "$autoclose_dir")"
 if grep -qE "closing in|All done · closing" <<< "$once_out"; then
   echo "FAIL: --once output contained countdown text" >&2
   exit 1
@@ -1989,7 +2100,7 @@ SQUAD_ORCHESTRATION_INTERVAL=1 \
 SQUAD_ORCHESTRATION_FPS=10 \
 SQUAD_MANAGER_ID=m-auto \
 SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
-  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_1" 2>&1 &
+  "$root/scripts/squad-orchestration.sh" --layout list "$autoclose_dir" >"$ac_out_1" 2>&1 &
 ac_pid_1="$!"
 echo "$ac_pid_1" > "$autoclose_dir/.orchestration-m-m_auto.pid"
 
@@ -2043,7 +2154,7 @@ SQUAD_ORCHESTRATION_INTERVAL=1 \
 SQUAD_ORCHESTRATION_FPS=10 \
 SQUAD_MANAGER_ID=m-auto \
 SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
-  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_run" 2>&1 &
+  "$root/scripts/squad-orchestration.sh" --layout list "$autoclose_dir" >"$ac_out_run" 2>&1 &
 ac_pid_run="$!"
 
 sleep 3
@@ -2063,7 +2174,7 @@ SQUAD_ORCHESTRATION_INTERVAL=1 \
 SQUAD_ORCHESTRATION_FPS=10 \
 SQUAD_MANAGER_ID=m-auto \
 SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
-  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_zero" 2>&1 &
+  "$root/scripts/squad-orchestration.sh" --layout list "$autoclose_dir" >"$ac_out_zero" 2>&1 &
 ac_pid_zero="$!"
 
 sleep 3
@@ -2082,7 +2193,7 @@ SQUAD_ORCHESTRATION_INTERVAL=1 \
 SQUAD_ORCHESTRATION_FPS=10 \
 SQUAD_MANAGER_ID=m-auto \
 SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
-  "$root/scripts/squad-orchestration.sh" "$autoclose_dir" >"$ac_out_dyn" 2>&1 &
+  "$root/scripts/squad-orchestration.sh" --layout list "$autoclose_dir" >"$ac_out_dyn" 2>&1 &
 ac_pid_dyn="$!"
 
 sleep 1
@@ -2131,7 +2242,7 @@ SQUAD_ORCHESTRATION_INTERVAL=1 \
 SQUAD_ORCHESTRATION_FPS=10 \
 SQUAD_MANAGER_ID=m-x \
 SQUAD_DEVKIT_MANAGER_WRAPPER_PID="$$" \
-  "$root/scripts/squad-orchestration.sh" "$ac_empty_dir" >"$ac_out_empty" 2>&1 &
+  "$root/scripts/squad-orchestration.sh" --layout list "$ac_empty_dir" >"$ac_out_empty" 2>&1 &
 ac_pid_empty="$!"
 echo "$ac_pid_empty" > "$ac_empty_dir/.orchestration-m-m_x.pid"
 
@@ -2313,7 +2424,7 @@ TEST_ACTION_DIR="$tmp/actions" TEST_ACTION_LOG="$tmp/action.log" \
 [[ ! -e "$tmp/hostile" ]]
 for width in 80 60 18; do
   detail_out="$(COLUMNS="$width" SQUAD_ORCHESTRATION_SWITCH_LAYOUT=j,i \
-    "$root/scripts/squad-orchestration.sh" --once "$tmp/interaction")"
+    "$root/scripts/squad-orchestration.sh" --layout list --once "$tmp/interaction")"
   assert_max_width "$detail_out" "$width" "details COLUMNS=$width"
   [[ "$detail_out" != *$'\033'* ]]
 done
@@ -2381,7 +2492,7 @@ check_panel_frame() {
 
 for panel_locale in en_US.UTF-8 C; do
   COLUMNS=40 LINES=12 LC_ALL="$panel_locale" SQUAD_MANAGER_ID=manager-2 SQUAD_ORCHESTRATION_HISTORY_CMD="$panel_hist" \
-    bash "$orch_under_test" --once "$panel_workers" >"$tmp/panel_frame.out"
+    bash "$orch_under_test" --layout list --once "$panel_workers" >"$tmp/panel_frame.out"
   check_panel_frame "panel frame LC_ALL=$panel_locale" "$tmp/panel_frame.out"
 done
 

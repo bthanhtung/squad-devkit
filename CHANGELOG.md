@@ -10,6 +10,8 @@ releases.
 - Removed agy as a worker engine: Antigravity blocks CLI calls from other AI agents. agy remains available as a manager. A saved `workers=` or `SQUAD_DEVKIT_WORKERS` that names agy is ignored with a one-line note; `squad-worker --engine agy` and `squad-devkit --workers agy` exit 2. Sub-managers run on `claude` or `codex`, and their children default to `opencode`.
 
 ### Behaviour changes
+- The swarm view uses plan Goal titles, labeled outcome colors and a completion count; card row 5 prioritizes scope violations, questions/answers, activity/tokens, then ownership.
+- The default swarm view (`w`) keeps its original manager/owner frame while integrating a nonduplicating plan DAG, selected worker data flow and summarised conversation; task counts exclude workers outside the active plan.
 - High-risk or high-complexity plans require an approved strong reviewer run on the plan before editing workers launch; attempt 3 prints a strong reviewer diagnosis command.
 - Manager instructions put the per-session manager ID in a short final block, so manager tabs share the prompt cache instead of each writing ~20k tokens of fresh cache on the first turn.
 - Reviewer workers are read-only at the engine level (Claude/ccr without Edit/Write, Codex `--sandbox read-only`, OpenCode `--agent plan`); they run in place on the project, so a prompt alone was not enough.

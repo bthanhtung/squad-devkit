@@ -62,7 +62,7 @@ Live terminal orchestration view showing manager and worker flow.
 
   --once               Render one frame without escape codes and exit
   --since EPOCH        Show runs started at or after EPOCH (default: $SQUAD_DEVKIT_SESSION_START or 0)
-  --layout LAYOUT      Layout to render: list, graph, g2, cards, pipeline, or tree (default: $SQUAD_ORCHESTRATION_LAYOUT or list)
+  --layout LAYOUT      Layout to render: list, graph, g2, cards, pipeline, or tree (default: $SQUAD_ORCHESTRATION_LAYOUT or g2)
   --root ID            Start zoomed into sub-manager ID (Esc disabled)
   --flow-filter MODE   Flow filter: all, questions, or failures (default: $SQUAD_ORCHESTRATION_FLOW_FILTER or all)
   --all-managers       Show every manager grouped by manager
@@ -70,7 +70,7 @@ Live terminal orchestration view showing manager and worker flow.
   -h, --help           Show this help
 
 Interactive keys:
-  g / w / c / t / Tab      Switch layout; p pins, f focuses, h expands history
+  o / g / w / c / t / Tab      Switch layout; p pins, f focuses, h expands history
   v                    Cycle Flow filter (all -> questions -> failures)
   e                    Toggle expanding '+N earlier' worker rows
   1-9 / z / Esc        Zoom into sub-manager / cycle / unzoom
@@ -85,7 +85,7 @@ EOF
 
 once=0
 since="${SQUAD_DEVKIT_SESSION_START:-0}"
-layout="${SQUAD_ORCHESTRATION_LAYOUT:-list}"
+layout="${SQUAD_ORCHESTRATION_LAYOUT:-g2}"
 flow_filter="${SQUAD_ORCHESTRATION_FLOW_FILTER:-all}"
 expand_earlier=0
 [[ "${SQUAD_ORCHESTRATION_EXPAND:-0}" == "1" ]] && expand_earlier=1
@@ -951,6 +951,7 @@ parse_plan_tasks() {
   local deps_re='[Dd][Ee][Pp][Ee][Nn][Dd][Ss] [Oo][Nn]:(.*)'
   local paren_re='\([^)]*\)' sentence_re='\.[[:space:]]+.*$'
   REPLY=""
+  T_ID=() T_DEPS=() T_ENGINE=() T_TIER=() T_ROLE=() T_DEPTH=()
   [[ -f "$plan_file" && -r "$plan_file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line//$'\r'/}"
@@ -965,7 +966,14 @@ parse_plan_tasks() {
     (( in_tasks == 1 )) || continue
     [[ "$line" =~ $task_re ]] || continue
     tid="${BASH_REMATCH[1]}" meta="${BASH_REMATCH[2]}" after="${BASH_REMATCH[3]}"
-    eng="${meta%%[,;]*}"
+    local task_meta="${meta%%[,;]*}" tier="" role=""
+    eng="${task_meta%%[[:space:]]*}"
+    if [[ "$task_meta" == *[[:space:]]* ]]; then
+      tier="${task_meta#*${eng}}"; tier="${tier#"${tier%%[![:space:]]*}"}"
+    fi
+    if [[ "$meta" == *,* ]]; then
+      role="${meta#*,}"; role="${role#"${role%%[![:space:]]*}"}"; role="${role%"${role##*[![:space:]]}"}"
+    fi
     eng="${eng#"${eng%%[![:space:]]*}"}"
     eng="${eng%"${eng##*[![:space:]]}"}"
     [[ "$eng" =~ ^[A-Za-z0-9_-]+$ ]] || eng=""
@@ -986,8 +994,51 @@ parse_plan_tasks() {
         deps+="${deps:+, }$dep"
       done
     fi
+    T_ID+=("$tid"); T_DEPS+=("${deps//,/}"); T_ENGINE+=("$eng"); T_TIER+=("$tier"); T_ROLE+=("$role")
     REPLY+="$tid"$'\t'"$eng"$'\t'"$deps"$'\n'
   done < "$plan_file"
+}
+
+plan_task_depth() {
+  local n=${#T_ID[@]} i j dep pass depth
+  T_DEPTH=()
+  for (( i=0; i<n; i++ )); do T_DEPTH[$i]=0; done
+  for (( pass=0; pass<n; pass++ )); do
+    for (( i=0; i<n; i++ )); do
+      for dep in ${T_DEPS[$i]}; do
+        for (( j=0; j<n; j++ )); do
+          if [[ "$dep" == "${T_ID[$j]}" ]]; then
+            depth=$(( T_DEPTH[j] + 1 ))
+            (( depth < n )) || depth=$(( n - 1 ))
+            (( depth <= T_DEPTH[i] )) || T_DEPTH[$i]=$depth
+          fi
+        done
+      done
+    done
+  done
+}
+
+load_report_facts() {
+  local path="${W_REPORT[$1]:-}" line
+  REPLY_CHANGED="" REPLY_NOTES=""
+  [[ -f "$path" && -r "$path" ]] || return 0
+  line="$(grep -m 1 '^Changed: ' "$path" 2>/dev/null || true)"
+  REPLY_CHANGED="${line#Changed: }"
+  line="$(grep -m 1 '^Knowledge: injected ' "$path" 2>/dev/null || true)"
+  REPLY_NOTES="${line#Knowledge: injected }"
+}
+
+worker_next_action() {
+  local i="$1"
+  REPLY=""
+  if [[ "${W_ASKING[$i]:-0}" == 1 ]]; then REPLY=answer
+  elif [[ "${W_VERIFY[$i]:-}" == fail || "${W_VERIFY[$i]:-}" == timeout || "${W_STATE[$i]:-}" == failed ]]; then REPLY=fix
+  elif [[ "${W_STATE[$i]:-}" == lost ]]; then REPLY=resume
+  elif [[ "${W_MERGE_STATE[$i]:-}" == merged || -n "${W_MERGED[$i]:-}" ]]; then REPLY=done
+  elif [[ "${W_STATE[$i]:-}" == completed && -n "${W_WORKTREE[$i]:-}" && "${W_MERGE_STATE[$i]:-}" != discarded && -z "${W_DISCARDED[$i]:-}" ]]; then REPLY=merge
+  elif [[ "${W_STATE[$i]:-}" == running ]]; then REPLY=wait
+  elif [[ "${W_STATE[$i]:-}" == completed ]]; then REPLY=done
+  fi
 }
 
 WS_ROOT="$(resolve_workspace_root "$workers_dir")"
@@ -997,6 +1048,17 @@ SINCE_HHMM="$(format_time "$since")"
 
 # Cached data arrays populated by load_data
 W_NAME=()
+W_OWNED=()
+W_VERDICT=()
+W_REPORT=()
+W_SANDBOX=()
+W_PLAN_TASK=()
+W_COST_STATUS=()
+W_COST=()
+W_ATTEMPT=()
+W_LOOP_MAX=()
+W_LOOP_ITER=()
+W_GATES=()
 W_STARTED=()
 W_FINISHED=()
 W_PLAN_NAME=()
@@ -1098,7 +1160,18 @@ C_LAST_TYPE=() C_LAST_TS=() C_ASKING=() C_ASK_TS=() C_ASK_H_IDX=()
 load_data() {
   base_frame_valid=0
   W_NAME=()
-  W_STARTED=()
+  W_OWNED=()
+  W_VERDICT=()
+  W_REPORT=()
+  W_SANDBOX=()
+  W_PLAN_TASK=()
+  W_COST_STATUS=()
+  W_COST=()
+  W_ATTEMPT=()
+  W_LOOP_MAX=()
+  W_LOOP_ITER=()
+  W_GATES=()
+W_STARTED=()
   W_FINISHED=()
   W_PLAN_NAME=()
   W_PLAN_PATH=()
@@ -1182,7 +1255,17 @@ load_data() {
   local raw_worker=() raw_started=() raw_finished=() raw_plan=() raw_state=()
   local raw_pids=() raw_engine=() raw_model=() raw_tok=() raw_worktree=()
   local raw_status=() raw_log=() raw_tier=() raw_verify=() raw_scope=() raw_merged=() raw_discarded=()
-  local raw_role=() raw_parent=() raw_depth=() raw_mgr=() raw_round=() raw_title=() raw_act=()
+  local raw_gates=()
+  local raw_loop_iter=()
+  local raw_loop_max=()
+  local raw_attempt=()
+  local raw_cost=()
+  local raw_cost_status=()
+  local raw_plan_task=()
+  local raw_sandbox=()
+  local raw_report=()
+  local raw_verdict=()
+  local raw_role=() raw_parent=() raw_depth=() raw_mgr=() raw_round=() raw_title=() raw_act=() raw_owned=()
 
   local status_file line k v
   if [[ -d "$workers_dir" ]]; then
@@ -1190,13 +1273,23 @@ load_data() {
       [[ -e "$status_file" ]] || continue
       local f_worker="" f_started="" f_finished="" f_plan="" f_state="" f_pid=""
       local f_engine="" f_model="" f_tok_in="" f_tok_out="" f_tokens="" f_worktree=""
-      local f_role="" f_parent="" f_depth="" f_manager="" f_title="" f_act=""
+      local f_role="" f_parent="" f_depth="" f_manager="" f_title="" f_act="" f_owned=""
+      local f_gates=""
+      local f_loop_iter=""
+      local f_loop_max=""
+      local f_attempt=""
+      local f_cost=""
+      local f_cost_status=""
+      local f_plan_task=""
+      local f_sandbox=""
+      local f_report=""
+      local f_verdict=""
       local f_tier="" f_verify="" f_scope="" f_merged="" f_discarded="" f_log=""
       while IFS= read -r line || [[ -n "$line" ]]; do
         [[ "$line" == *=* ]] || continue
         k="${line%%=*}"
         case "$k" in
-          worker|started|finished|plan|state|pid|engine|model|model_tier|verify|scope_violation|merged|discarded|log|tokens_in|tokens_out|tokens|worktree|role|parent|depth|manager|title|activity) ;;
+          worker|started|finished|plan|state|pid|engine|model|model_tier|gates|loop_iter|loop_max|attempt|cost_usd|cost_status|plan_task|sandbox|report|verdict|verify|scope_violation|merged|discarded|log|tokens_in|tokens_out|tokens|worktree|role|parent|depth|manager|title|activity|owned) ;;
           *) continue ;;
         esac
         sanitize_text "${line#*=}"
@@ -1226,6 +1319,17 @@ load_data() {
           manager) f_manager="$v" ;;
           title)   f_title="$v" ;;
           activity) f_act="$v" ;;
+          gates) f_gates="$v" ;;
+          loop_iter) f_loop_iter="$v" ;;
+          loop_max) f_loop_max="$v" ;;
+          attempt) f_attempt="$v" ;;
+          cost_usd) f_cost="$v" ;;
+          cost_status) f_cost_status="$v" ;;
+          plan_task) f_plan_task="$v" ;;
+          sandbox) f_sandbox="$v" ;;
+          report) f_report="$v" ;;
+          verdict) f_verdict="$v" ;;
+          owned) f_owned="$v" ;;
         esac
       done < "$status_file"
 
@@ -1279,14 +1383,23 @@ load_data() {
         raw_discarded[$found_idx]="$f_discarded"
         raw_title[$found_idx]="$f_title"
         raw_act[$found_idx]="$f_act"
+        raw_owned[$found_idx]="$f_owned"
+        raw_verdict[$found_idx]="$f_verdict"
+        raw_report[$found_idx]="$f_report"
+        raw_sandbox[$found_idx]="$f_sandbox"
+        raw_plan_task[$found_idx]="$f_plan_task"
+        raw_cost_status[$found_idx]="$f_cost_status"
+        raw_cost[$found_idx]="$f_cost"
+        raw_attempt[$found_idx]="$f_attempt"
+        raw_loop_max[$found_idx]="$f_loop_max"
+        raw_loop_iter[$found_idx]="$f_loop_iter"
+        raw_gates[$found_idx]="$f_gates"
         prev_started[$found_idx]=-1
         prev_state[$found_idx]=""
         prev_verify[$found_idx]=""
         prev_scope[$found_idx]=""
       else
         raw_round[$found_idx]=$(( raw_round[$found_idx] + 1 ))
-        [[ -z "$f_title" ]] || raw_title[$found_idx]="$f_title"
-        [[ -z "$f_act" ]] || raw_act[$found_idx]="$f_act"
         if [[ -n "$f_parent" && -z "${raw_parent[$found_idx]}" ]]; then
           raw_parent[$found_idx]="$f_parent"
         fi
@@ -1300,6 +1413,19 @@ load_data() {
           prev_verify[$found_idx]="${raw_verify[$found_idx]}"
           prev_scope[$found_idx]="${raw_scope[$found_idx]}"
           raw_started[$found_idx]="$f_started"
+          raw_title[$found_idx]="$f_title"
+          raw_act[$found_idx]="$f_act"
+          raw_owned[$found_idx]="$f_owned"
+        raw_verdict[$found_idx]="$f_verdict"
+        raw_report[$found_idx]="$f_report"
+        raw_sandbox[$found_idx]="$f_sandbox"
+        raw_plan_task[$found_idx]="$f_plan_task"
+        raw_cost_status[$found_idx]="$f_cost_status"
+        raw_cost[$found_idx]="$f_cost"
+        raw_attempt[$found_idx]="$f_attempt"
+        raw_loop_max[$found_idx]="$f_loop_max"
+        raw_loop_iter[$found_idx]="$f_loop_iter"
+        raw_gates[$found_idx]="$f_gates"
           raw_finished[$found_idx]="$f_finished"
           raw_plan[$found_idx]="$f_plan"
           raw_state[$found_idx]="$f_state"
@@ -1472,6 +1598,17 @@ load_data() {
       W_MERGED[$w_idx]="${raw_merged[$ri]}"
       W_DISCARDED[$w_idx]="${raw_discarded[$ri]}"
       W_TITLE[$w_idx]="${raw_title[$ri]:-}"
+      W_GATES[$w_idx]="${raw_gates[$ri]:-}"
+      W_LOOP_ITER[$w_idx]="${raw_loop_iter[$ri]:-}"
+      W_LOOP_MAX[$w_idx]="${raw_loop_max[$ri]:-}"
+      W_ATTEMPT[$w_idx]="${raw_attempt[$ri]:-}"
+      W_COST[$w_idx]="${raw_cost[$ri]:-}"
+      W_COST_STATUS[$w_idx]="${raw_cost_status[$ri]:-}"
+      W_PLAN_TASK[$w_idx]="${raw_plan_task[$ri]:-}"
+      W_SANDBOX[$w_idx]="${raw_sandbox[$ri]:-}"
+      W_REPORT[$w_idx]="${raw_report[$ri]:-}"
+      W_VERDICT[$w_idx]="${raw_verdict[$ri]:-}"
+      W_OWNED[$w_idx]="${raw_owned[$ri]:-}"
       W_PREV_STATE[$w_idx]="${prev_state[$ri]:-}"
       prev_state[$w_idx]="${prev_state[$ri]}"
       prev_verify[$w_idx]="${prev_verify[$ri]}"
@@ -5227,40 +5364,73 @@ g2_bp() { trunc_str "$3" $(( bw - 4 )); pad_str "$REPLY" $(( bw - 4 )); g2_emit 
 # Plain, width-exact card row r (0 top .. 6 bottom, -1 compact) for worker i; sets CELLC/CELLB.
 g2_cell() {
   local r="$1" i="$2" iw=$(( cw - 4 )) s="${W_STATE[$2]:-}" t="" bwid off L e right ro=""
-  CELLC="$c_running"; CELLB=""
-  case "$s" in completed) CELLC="$c_completed";; failed|lost) CELLC="$c_failed";; stopped) CELLC="$c_stopped";; esac
-  if [[ "${W_ASKING[$i]:-0}" == 1 ]]; then s="asking"; CELLC="$c_asking"; fi
+  resolve_worker_state "$i"
+  CELLC="$ST_COLOR"; CELLB=""
+  s="$ST_PLAIN"
+  case "${W_STATE[$i]}" in pending|running|completed|failed|lost|stopped) s="${s#* }";; esac
+  [[ "${W_VERIFY[$i]:-}" != fail && "${W_VERIFY[$i]:-}" != timeout ]] || s="verify fail"
+  [[ "$CELLC" != "@@ASK_CLR@@" ]] || CELLC="$c_asking"
+  if [[ "${W_ASKING[$i]:-0}" == 1 ]]; then s="? waiting on you"; CELLC="$c_asking"
+  elif [[ "${W_MERGE_STATE[$i]:-}" == merged ]]; then s="done"; CELLC="$c_completed"
+  elif [[ "${W_STATE[$i]}" == completed && -n "${W_WORKTREE[$i]:-}" && "${W_VERIFY[$i]:-}" != fail && "${W_VERIFY[$i]:-}" != timeout && "${W_MERGE_STATE[$i]:-}" != discarded ]]; then
+    s="ready to merge"; CELLC="$c_asking"
+  fi
   case "$r" in
     0) g2_rep "─" $(( cw - 2 )); REPLY="┌${REPLY}┐"; return;;
     6) g2_rep "─" $(( cw - 2 )); REPLY="└${REPLY}┘"; return;;
     -1)
       trunc_str "${W_NAME[$i]}" $(( iw - ${#s} - 3 ))
-      t="${REPLY} [$s]"; CELLB="$bold";;
-    1) t="${W_NAME[$i]}"; CELLB="$bold";;
-    2) fmt_short_model "${W_MODEL[$i]:-}" $(( iw - ${#s} - 5 )); t="$REPLY [ $s ]";;
+      t="${REPLY} [$s]"; [[ "${W_NAME[$i]}" != "$selected_id" ]] || t="> $t"; CELLB="$bold";;
+    1) t="${W_NAME[$i]}"; [[ "$t" != "$selected_id" ]] || t="> $t"; CELLB="$bold";;
+    2) if (( ${#s} + 4 >= iw )); then t="$s"
+       else fmt_short_model "${W_MODEL[$i]:-}" $(( iw - ${#s} - 5 )); t="$REPLY [ $s ]"; fi;;
     3)
       bwid=$(( iw - 6 )); (( bwid >= 2 )) || bwid=2
       e="${W_ELAPSED[$i]:-}"; right="     "
       [[ "$e" =~ ^[0-9]+$ ]] && printf -v right '%02d:%02d' $(( e / 60 )) $(( e % 60 ))
-      if [[ "$s" == completed ]]; then g2_rep "█" "$bwid"; t="${REPLY}  100%"
-      elif [[ "$s" == running ]]; then
+      if [[ "${W_STATE[$i]}" == completed && "$CELLC" != "$c_failed" ]]; then g2_rep "█" "$bwid"; t="${REPLY}  100%"
+      elif [[ "${W_STATE[$i]}" == running ]]; then
         L=$(( bwid / 4 )); (( L >= 2 )) || L=2; off=$(( cf * (bwid - L) / 3 ))
         g2_rep "▒" "$off"; t="$REPLY"; g2_rep "█" "$L"; t+="$REPLY"; g2_rep "▒" $(( bwid - off - L )); t+="$REPLY $right"
       else g2_rep "▒" "$bwid"; t="$REPLY $right"; fi;;
-    4) t="${W_ACTIVITY[$i]:-${W_TITLE[$i]:-}}";;
+    4) t="${W_TITLE[$i]:-${W_ACTIVITY[$i]:-}}";;
     5)
-      case "$s" in running) t="… running";; completed) t="✓ done";; *) t="… $s";; esac
-      if [[ "$s" == running || "$s" == asking ]]; then
-        if [[ "$s" == running ]] && (( W_IS_STALE[i] == 1 )); then
-          fmt_elapsed_short "${W_OUT_AGE[$i]}"
-          t="idle $REPLY"
+      t="${W_OWNED[$i]:-}"
+      [[ -z "$t" ]] || t="owns: ${t//,/, }"
+      local h
+      for (( h=${#H_TS[@]}-1; h>=0; h-- )); do
+        if [[ "${H_TYPE[$h]}" == QUESTION && "${H_FROM[$h]}" == "${W_NAME[$i]}" ]]; then
+          clean_msg_preview QUESTION "${H_BODY[$h]}"; t="? $REPLY"; break
+        elif [[ "${H_TYPE[$h]}" == ANSWER && "${H_TO[$h]}" == "${W_NAME[$i]}" ]]; then
+          clean_msg_preview ANSWER "${H_BODY[$h]}"; t="↳ $REPLY"; break
         fi
-        fmt_human_count "${W_TOK[$i]:-0}"; t="$t · $REPLY tok"
-      fi
-      case "${W_VERIFY[$i]:-}" in pass) t="✓ verify pass";; fail|FAIL) t="✗ verify fail";; esac
-      case "${W_SCOPE_VIOLATION[$i]:-}" in 1|true|yes) t="✗ scope violation";; esac;;
+      done
+      if [[ -n "${W_SCOPE_VIOLATION[$i]:-}" ]]; then
+        t="✗ scope violation"
+      elif (( h < 0 )) && [[ "${W_STATE[$i]}" == running ]]; then
+        t="… running"
+        if (( W_IS_STALE[i] == 1 )); then
+          fmt_elapsed_short "${W_OUT_AGE[$i]}"; t="idle $REPLY"
+        fi
+        if (( ${W_TOK[$i]:-0} > 0 )); then
+          fmt_human_count "${W_TOK[$i]}"; t+=" · $REPLY tok"
+        fi
+      fi;;
   esac
   trunc_str "$t" "$iw"; center_str "$REPLY" "$iw"; REPLY="│ ${REPLY} │"
+}
+
+g2_done_line() {
+  local count=${#done_ids[@]} text="done ${#done_ids[@]}:" id remaining=0
+  (( count > 0 )) || return 0
+  for id in "${done_ids[@]}"; do
+    remaining=$(( remaining + 1 ))
+    if (( ${#text} + 1 + ${#id} + 2 + ${#count} > fw )); then
+      text+=" +$(( count - remaining + 1 ))"; break
+    fi
+    text+=" $id"
+  done
+  g2_emit 0 "$c_completed" "$text"
 }
 
 # One rail row across the card centres: dir u (branch) or d (merge).
@@ -5299,6 +5469,7 @@ g2_rail() {
 g2_flow() {
   local cf="$1" i j k r s lw bwid val frac bar label tx st="" cells
   local labels=() states=() maxrows=4 tcount sh
+  local n="$grid_n"
   flow=(); g2_pre=""
   local stems=(│ │ │ │)
   if (( use_anim == 1 )) && [[ "$g2_step" == workers ]]; then stems[$cf]="●"; fi
@@ -5317,14 +5488,11 @@ g2_flow() {
   if (( compact == 1 )); then
     g2_emit 0 "$c_manager" "YOU · owner"
     g2_emit 0 "$c_manager" "$MANAGER_ID · main session · $manager_tier"
-    g2_emit 0 "$c_completed" "$plan · task layer · tasks $tt"
-    if (( lines >= 26 )); then
-      for (( i=0; i<tt && i<2; i++ )); do
-        g2_emit 0 "$c_completed" "${g2_task_ids[$i]} · ${g2_task_states[$i]}"
-      done
-      (( tt <= 2 )) || g2_emit 0 "$dim" "+$(( tt - 2 )) more tasks"
-    fi
-    g2_emit 0 "" "» delegate to workers · ${dispatch:-$engine} «"
+    g2_emit 0 "$c_completed" "PLAN DAG"
+    for tx in "${dag[@]}"; do g2_emit 0 "$c_completed" "$tx"; done
+    g2_emit 0 "" "DATA FLOW > ${selected_id:-no worker}"
+    for tx in "${data[@]}"; do g2_emit 0 "" "$tx"; done
+    if (( lines < 24 )); then g2_emit 0 "$dim" "… press w for swarm"; return; fi
     if (( n == 0 )); then
       g2_emit 0 "$dim" "No workers yet · waiting for dispatch"
     else
@@ -5334,7 +5502,7 @@ g2_flow() {
       cw=$(( (fw + 1) / cards - 1 ))
       (( cw <= 34 )) || cw=34
       # Leave room for review and a count if the last row cannot fit.
-      visible=$(( (lines - frame_overhead - ${#flow[@]} - 3) / 3 * cards ))
+      visible=$(( (lines - frame_overhead - ${#flow[@]} - 3 - (${#done_ids[@]} > 0)) / 3 * cards ))
       (( visible >= cards )) || visible=$cards
       (( visible <= n )) || visible=$n
       for (( start=0; start<visible; start+=cards )); do
@@ -5343,7 +5511,7 @@ g2_flow() {
         for card_row in 0 -1 6; do
           cells=""
           for (( i=start; i<end; i++ )); do
-            g2_cell "$card_row" "$i"
+            g2_cell "$card_row" "${grid[$i]}"
             cells+="${cells:+ }${CELLC}${CELLB}${REPLY}${reset}"
           done
           g2_emit 0 "" "$cells"
@@ -5353,6 +5521,7 @@ g2_flow() {
         g2_emit 0 "$dim" "+$(( n - visible )) more workers"
       fi
     fi
+    g2_done_line
     g2_emit 0 "$c_manager" "◀╌╌╌╌╌ back to $MANAGER_ID · review"
     g2_emit 0 "$c_manager" "verify $passed/$checked · scope $scope · merge ${merge:-unavailable}"
     return
@@ -5368,38 +5537,16 @@ g2_flow() {
   g2_bc "$c_manager" "┆" "effort ■■■■■ $manager_tier"
   tx="[verify $passed/$checked ✓"; [[ -z "$tokh" ]] || tx+=" · $tokh tok"; g2_bc "$c_manager" "┆" "$tx]"
   g2_top "$c_manager" "┄" "└" "┘"
-  g2_emit "$cc" "$c_manager" "${stems[0]}"; g2_emit "$cc" "$c_manager" "▼"
+  (( lines <= 48 )) || g2_emit "$cc" "$c_manager" "${stems[0]}"
+  g2_emit "$cc" "$c_manager" "▼"
 
-  tcount=${#g2_task_ids[@]}
-  labels=(${g2_task_ids[@]+"${g2_task_ids[@]}"})
-  states=(${g2_task_states[@]+"${g2_task_states[@]}"})
-  g2_top "$c_completed" "─" "┌" "┐"
-  g2_blr "$c_completed" "│" "$plan · task layer" "tasks $tcount"
-  lw=4
-  for (( i=0; i<tcount && i<maxrows; i++ )); do (( ${#labels[$i]} <= lw )) || lw=${#labels[$i]}; done
-  (( lw <= 12 )) || lw=12
-  bwid=$(( bw - 4 - lw - 11 )); (( bwid >= 4 )) || bwid=4
-  for (( i=0; i<tcount && i<maxrows; i++ )); do
-    case "${states[$i]}" in
-      completed) frac=$bwid; val="1.00 done";;
-      running) frac=$(( bwid / 2 )); val="0.50 run";;
-      failed|lost|stopped) frac=0; val="0.00 fail";;
-      *) frac=0; val="0.00 wait";;
-    esac
-    g2_rep "█" "$frac"; bar="$REPLY"; g2_rep "▒" $(( bwid - frac )); bar+="$REPLY"
-    trunc_str "${labels[$i]}" "$lw"; pad_str "$REPLY" "$lw"; label="$REPLY"
-    printf -v val '%9s' "$val"
-    g2_bp "$c_completed" "│" "$label $bar $val"
-  done
-  (( tcount <= maxrows )) || g2_bc "$c_completed" "│" "+$(( tcount - maxrows )) more"
-  tx="verify → runs in code"; (( n == 0 )) || tx+=" · split → $n workers"
-  g2_bc "$c_completed" "│" "$tx"
+  g2_rep "─" $(( bw - 12 )); g2_emit "$bl" "$c_completed" "┌ PLAN DAG ${REPLY}┐"
+  for tx in "${dag[@]}"; do g2_bp "$c_completed" "│" "$tx"; done
   g2_top "$c_completed" "─" "└" "┘"
-  g2_emit "$cc" "" "${stems[1]}"; g2_emit "$cc" "" "▼"
-  g2_top "" "─" "┌" "┐"
-  tx="» delegate to workers · ${dispatch:-$engine}"
-  if [[ -z "$dispatch" && -n "$tokh" ]]; then tx+=" [ $tokh tok swarm ]"; fi
-  g2_bc "" "│" "$tx «"
+  (( lines <= 48 )) || g2_emit "$cc" "" "${stems[1]}"
+  g2_emit "$cc" "" "▼"
+  tx=" DATA FLOW > ${selected_id:-no worker} "; g2_rep "─" $(( bw - 2 - ${#tx} )); g2_emit "$bl" "" "┌${tx}${REPLY}┐"
+  for tx in "${data[@]}"; do g2_bp "" "│" "$tx"; done
   g2_top "" "─" "└" "┘"
   g2_emit "$cc" "$c_running" "${stems[2]}"
 
@@ -5416,7 +5563,7 @@ g2_flow() {
       cnt=$(( total_shown - start )); (( cnt <= per )) || cnt=$per
       for (( r=0; r<=6; r++ )); do
         cells=""; mb=$(( m0 + (per - cnt) * (cw + 1) / 2 ))
-        for (( i=start; i<start+cnt; i++ )); do g2_cell "$r" "$i"; cells+="${cells:+ }${CELLC}${CELLB}${REPLY}${reset}"; done
+        for (( i=start; i<start+cnt; i++ )); do g2_cell "$r" "${grid[$i]}"; cells+="${cells:+ }${CELLC}${CELLB}${REPLY}${reset}"; done
         g2_emit "$mb" "" "$cells"
       done
     done
@@ -5427,6 +5574,7 @@ g2_flow() {
     show=$show_save; ccs=("${ccs_save[@]}")
     g2_emit "$cc" "$c_running" "${stems[3]}"; g2_emit "$cc" "$c_running" "▼"
   fi
+  g2_done_line
   g2_top "$c_manager" "┄" "┌" "┐"
   if (( bl >= 4 )); then
     g2_rep "╌" $(( bl - 1 ))
@@ -5457,6 +5605,7 @@ build_g2_frame() {
   local flow=() g2_side=() side=() headers=() legend="" legendw="" seen="|" lcount=0 key
   local bw bl cc g2_pre="" compact=0 show per cw m0 ccs=() iw pin1 pin2 mm wm
   local g2_step="done" g2_step_index=4 needs_review=0 active_workers=0
+  local grid=() done_ids=() grid_n=0 rank wi
   local CELLC CELLB g2_task_ids=() g2_task_states=() parsed_tasks="" task_line task_id task_state
   for (( i=nh-1; i>=0; i-- )); do
     if [[ "${H_FROM[$i]}" == "$MANAGER_ID" && "${H_TYPE[$i]}" == brief ]]; then
@@ -5465,12 +5614,34 @@ build_g2_frame() {
       break
     fi
   done
-  if (( ${#P_NAME[@]} > 0 )); then
-    plan="${P_NAME[0]}"
-    if [[ -n "${P_FILE[0]:-}" && -r "${P_FILE[0]}" ]]; then
-      parse_plan_tasks "${P_FILE[0]}"; parsed_tasks="$REPLY"
-    fi
+  local swarm_header="" dag=() data=() conversation=()
+  swarm_facts "$columns" "$lines"
+  local newest=-1
+  for (( i=0; i<n; i++ )); do
+    if (( newest < 0 )); then newest=$i
+    elif (( W_STARTED[i] > W_STARTED[newest] )); then newest=$i; fi
+  done
+  if (( newest >= 0 )); then
+    plan="${W_PLAN_NAME[$newest]:-No plan}"
+    resolve_plan_file "${W_PLAN_PATH[$newest]:-}"
+    if [[ -n "$REPLY" ]]; then parse_plan_tasks "$REPLY"; parsed_tasks="$REPLY"; fi
   fi
+  for rank in 0 1 2 3 4; do
+    for (( i=0; i<n; i++ )); do
+      case "${W_MERGE_STATE[$i]:-}" in merged|discarded) (( rank != 0 )) || done_ids+=("${W_NAME[$i]}"); continue;; esac
+      if [[ "${W_STATE[$i]}" == completed && -z "${W_WORKTREE[$i]:-}" && "${W_VERIFY[$i]:-}" != fail && "${W_VERIFY[$i]:-}" != timeout ]]; then
+        (( rank != 0 )) || done_ids+=("${W_NAME[$i]}")
+        continue
+      fi
+      wi=4
+      if [[ "${W_ASKING[$i]:-0}" == 1 ]]; then wi=0
+      elif [[ "${W_STATE[$i]}" == failed || "${W_STATE[$i]}" == lost || "${W_VERIFY[$i]:-}" == fail || "${W_VERIFY[$i]:-}" == timeout ]]; then wi=1
+      elif [[ "${W_STATE[$i]}" == completed && -n "${W_WORKTREE[$i]:-}" ]]; then wi=2
+      elif [[ "${W_STATE[$i]}" == running ]]; then wi=3; fi
+      (( wi != rank )) || grid+=("$i")
+    done
+  done
+  grid_n=${#grid[@]}
   if [[ -n "$parsed_tasks" ]]; then
     while IFS= read -r task_line; do
       task_id="${task_line%%$'\t'*}"; [[ -n "$task_id" ]] || continue
@@ -5539,7 +5710,7 @@ build_g2_frame() {
   fi
   display_width "$legendw"
   if (( DW < columns )); then g2_sp $(( (columns - DW) / 2 )); headers[1]="${REPLY}${legend}"; else clamp_line "$legend" "$columns"; headers[1]="$REPLY"; fi
-  headers[2]="$rule_line"
+  headers[2]="$swarm_header"
 
   if (( columns >= 100 )); then sw=$(( columns / 4 )); (( sw >= 26 )) || sw=26; fw=$(( columns - sw - gap )); fi
   bw=$(( fw * 2 / 3 )); (( bw >= 40 )) || bw=$fw
@@ -5547,7 +5718,7 @@ build_g2_frame() {
   (( bw % 2 == 1 )) || bw=$(( bw - 1 ))
   cc=$(( fw / 2 )); bl=$(( cc - bw / 2 )); (( bl >= 0 )) || bl=0
   per=$(( (fw + 1) / 25 )); (( per >= 1 )) || per=1
-  show=$n; (( show <= per )) || show=$per
+  show=$grid_n; (( show <= per )) || show=$per
   if (( show > 0 )); then
     cw=$(( (fw + 1) / show - 1 )); (( cw <= 34 )) || cw=34; (( cw >= 12 )) || cw=12
     m0=$(( (fw - (show * cw + show - 1)) / 2 )); (( m0 >= 0 )) || m0=0
@@ -5556,8 +5727,12 @@ build_g2_frame() {
 
   local header_count=3
   (( lines >= 16 )) || header_count=1
-  local frame_overhead=$(( header_count + 4 - once ))
+  local frame_overhead=$(( header_count + 5 - once ))
   g2_flow 0
+  if (( ${#flow[@]} + frame_overhead > lines && lines >= 40 )); then
+    # Keep the frame at medium heights by dropping the optional outside-plan summary.
+    if [[ "${dag[$(( ${#dag[@]} - 1 ))]}" == other:* ]]; then unset 'dag[$(( ${#dag[@]} - 1 ))]'; g2_flow 0; fi
+  fi
   if (( ${#flow[@]} + frame_overhead > lines )); then
     compact=1
     sw=0
@@ -5619,7 +5794,7 @@ build_g2_frame() {
   (( once == 0 )) || stream="once"
   for (( i=nh-log_count; i<nh; i++ )); do (( ${#H_FROM[$i]} <= fromw )) || fromw=${#H_FROM[$i]}; done
   (( fromw <= 12 )) || fromw=12
-  text=" session log [ stream: $stream ] "; display_width "$text"; g2_rep "─" $(( columns - DW > 0 ? columns - DW : 0 ))
+  text=" CONVERSATION [ stream: $stream ] "; display_width "$text"; g2_rep "─" $(( columns - DW > 0 ? columns - DW : 0 ))
   [[ "$g2_step" != done ]] || text="${text//§/✓}"
   local loghead="${text//§/@@SPIN@@}${dim}${REPLY}${reset}"
   fmt_human_count "${TOTAL_TOKENS:-0}"; local status_tokens="$REPLY"
@@ -5656,20 +5831,12 @@ build_g2_frame() {
       clamp_line "$text" "$columns"; frame+="$REPLY"$'\n'
     done
     clamp_line "$loghead" "$columns"; frame+="$REPLY"$'\n'
-    for (( i=nh-log_count; i<nh; i++ )); do
-      rfc3339_to_hhmm "${H_TS[$i]}"; tm="$REPLY"; ss="00"
-      [[ "${H_TS[$i]}" =~ T[0-9][0-9]:[0-9][0-9]:([0-9][0-9]) ]] && ss="${BASH_REMATCH[1]}"
-      tm="${tm}:${ss}"; tag="${H_TYPE[$i]}"
-      room=$(( columns - 2 - 8 - 2 - fromw - 2 - ${#tag} - 2 ))
-      (( room >= 8 )) || { tag=""; room=$(( columns - 2 - 8 - 2 - fromw - 2 )); }
-      (( room >= 1 )) || room=1
-      sanitize_text "${H_BODY[$i]}"; trunc_str "$REPLY" "$room"; pad_str "$REPLY" "$room"; text="$REPLY"
-      trunc_str "${H_FROM[$i]}" "$fromw"; pad_str "$REPLY" "$fromw"; fr="$REPLY"
-      fc="$c_running"; [[ "${H_FROM[$i]}" != "$MANAGER_ID" ]] || fc="$c_manager"
-      nb=""; prefix="  "
-      if (( i == nh - 1 )); then nb="$bold"; prefix="› "; fi
-      clamp_line "${nb}${prefix}${tm}${reset}  ${fc}${nb}${fr}${reset}  ${nb}${text}${reset}  ${dim}${tag}${reset}" "$columns"
-      frame+="$REPLY"$'\n'
+    local conv_start=$(( ${#conversation[@]} - 1 - log_count ))
+    (( conv_start >= 0 )) || conv_start=0
+    for (( i=conv_start; i<${#conversation[@]}; i++ )); do
+      text="${conversation[$i]}"
+      if [[ -n "$selected_id" && ( "$text" == *" ${selected_id}→"* || "$text" == *"→$selected_id "* ) ]]; then text="${bold}$text${reset}"; fi
+      clamp_line "$text" "$columns"; frame+="$REPLY"$'\n'
     done
     clamp_line "$status" "$columns"; frame+="$REPLY"$'\n'
     if (( once == 0 )); then
@@ -5680,6 +5847,171 @@ build_g2_frame() {
     fi
     FRAME_TPL[$f]="$frame"
   done
+}
+
+# Swarm facts use the existing worker, plan and history data.
+swarm_state() {
+  local i="$1"
+  worker_next_action "$i"
+  case "$REPLY" in
+    answer) REPLY='? waiting on you';;
+    fix) if [[ "${W_VERIFY[$i]:-}" == fail || "${W_VERIFY[$i]:-}" == timeout ]]; then REPLY='✗ verify fail'; else REPLY='✗ failed'; fi;;
+    merge) REPLY='◆ ready to merge';;
+    done) REPLY='✓merged';;
+    wait) REPLY='● running'; [[ -z "${W_LOOP_MAX[$i]:-}" ]] || REPLY+=" loop ${W_LOOP_ITER[$i]}/${W_LOOP_MAX[$i]:-?}";;
+    *) REPLY="○ ${W_STATE[$i]:-ready}";;
+  esac
+}
+
+swarm_preview() {
+  local type="$1" body="$2"
+  case "$type" in
+    done|completed) REPLY='done'; case "$body" in *[Vv]erify*pass*) REPLY+=' · verify pass';; *[Vv]erify*fail*) REPLY+=' · verify fail';; esac;;
+    failed) REPLY='failed';;
+    stopped) REPLY='stopped';;
+    brief) REPLY="brief: $body";;
+    *) clean_msg_preview "$type" "$body";;
+  esac
+  REPLY="$(printf '%s' "$REPLY" | sed -E 's/[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}//g; s@/[^[:space:]]*@@g; s/[[:space:]]+/ /g')"
+}
+
+swarm_facts() {
+  local columns="$1" lines="$2" mw="$1" n=${#W_NAME[@]} i j d newest=-1 plan='No plan' path='' mode=manual
+  local running=0 done=0 known=0 unknown=0 estimated=0 sum=0 cost='' text='' state='' dep blocked found
+  local waiting='' other='' maxdepth=0 rank wi urgent=-1
+  for (( i=0; i<n; i++ )); do
+    if (( newest < 0 )) || (( W_STARTED[i] > W_STARTED[newest] )); then newest=$i; fi
+    [[ "${W_STATE[$i]}" != running ]] || running=$(( running + 1 ))
+    [[ "${W_STATE[$i]}" != completed ]] || done=$(( done + 1 ))
+    if [[ "${W_COST_STATUS[$i]:-}" != unknown && "${W_COST[$i]:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      sum="$(awk -v a="$sum" -v b="${W_COST[$i]}" 'BEGIN {printf "%.4f",a+b}')"; known=$(( known + 1 ))
+      [[ "${W_COST_STATUS[$i]}" != estimated ]] || estimated=1
+    else unknown=$(( unknown + 1 )); fi
+    [[ "${W_ASKING[$i]:-0}" != 1 ]] || waiting+="${waiting:+, }${W_NAME[$i]}"
+    wi=4; worker_next_action "$i"
+    case "$REPLY" in answer) wi=0;; fix|resume) wi=1;; merge) wi=2;; wait) wi=3;; esac
+    if (( urgent < 0 || wi < rank )); then urgent=$i; rank=$wi; fi
+  done
+  if (( newest >= 0 )); then
+    plan="${W_PLAN_NAME[$newest]:-No plan}"; resolve_plan_file "${W_PLAN_PATH[$newest]:-}"; path="$REPLY"
+  fi
+  T_ID=(); T_DEPS=(); T_DEPTH=()
+  if [[ -n "$path" ]]; then
+    parse_plan_tasks "$path"; plan_task_depth
+    local sha=''
+    if command -v shasum >/dev/null 2>&1; then sha="$(printf '%s' "$path" | shasum -a 256)"; sha="${sha%% *}"; fi
+    [[ -z "$sha" || ! -e "$WS_ROOT/.squad/run-plan/$sha.lock" ]] || mode=run-plan
+  fi
+  if (( known > 0 )); then cost="\$$sum"; (( estimated == 0 )) || cost+=' est'; (( unknown == 0 )) || cost+=" (+$unknown unknown)"
+  else cost='cost unknown'; fi
+  running=0; done=0
+  for (( j=0; j<${#T_ID[@]}; j++ )); do
+    found=-1
+    for (( i=0; i<n; i++ )); do
+      if [[ "${W_PLAN_NAME[$i]:-}" == "$plan" && "${W_PLAN_TASK[$i]:-${W_NAME[$i]}}" == "${T_ID[$j]}" ]]; then
+        if (( found < 0 )) || (( W_STARTED[i] > W_STARTED[found] )); then found=$i; fi
+      fi
+    done
+    if (( found >= 0 )); then
+      [[ "${W_STATE[$found]}" != running ]] || running=$(( running + 1 ))
+      [[ "${W_STATE[$found]}" != completed ]] || done=$(( done + 1 ))
+    fi
+  done
+  fmt_human_count "${TOTAL_TOKENS:-0}"
+  clamp_line "$plan ▸ $mode · tasks $running running / $done done of ${#T_ID[@]} · $cost · $REPLY tok" "$columns"
+  swarm_header="$REPLY"
+  for (( i=0; i<${#T_ID[@]}; i++ )); do (( T_DEPTH[i] <= maxdepth )) || maxdepth=${T_DEPTH[$i]}; done
+  for (( d=0; d<=maxdepth; d++ )); do
+    text=''
+    for (( j=0; j<${#T_ID[@]}; j++ )); do
+      (( T_DEPTH[j] == d )) || continue
+      state='○ ready'; found=-1
+      for (( i=0; i<n; i++ )); do
+        if [[ "${W_PLAN_NAME[$i]:-}" == "$plan" && "${W_PLAN_TASK[$i]:-${W_NAME[$i]}}" == "${T_ID[$j]}" ]]; then found=$i; fi
+      done
+      if (( found >= 0 )); then swarm_state "$found"; state="$REPLY"
+      else
+        for dep in ${T_DEPS[$j]}; do
+          blocked=1
+          for (( i=0; i<n; i++ )); do
+            if [[ "${W_PLAN_TASK[$i]:-${W_NAME[$i]}}" == "$dep" && "${W_PLAN_NAME[$i]:-}" == "$plan" ]]; then
+              worker_next_action "$i"; [[ "$REPLY" != done ]] || blocked=0
+            fi
+          done
+          if (( blocked )); then state="○ blocked by $dep"; break; fi
+        done
+      fi
+      local node="${T_ID[$j]} $state"
+      [[ -z "${T_DEPS[$j]}" ]] || node+=" ◀─ ${T_DEPS[$j]}"
+      if [[ -n "$text" ]] && (( ${#text} + ${#node} + 4 > columns - 4 )); then dag+=("$text"); text=''; fi
+      text+="${text:+ · }$node"
+    done
+    [[ -z "$text" ]] || { dag+=("$text"); }
+  done
+  for (( i=0; i<n; i++ )); do
+    found=0
+    for dep in ${T_ID[@]+"${T_ID[@]}"}; do [[ "${W_PLAN_TASK[$i]:-${W_NAME[$i]}}" != "$dep" || "${W_PLAN_NAME[$i]:-}" != "$plan" ]] || found=1; done
+    if (( found == 0 )); then swarm_state "$i"; other+="${other:+ · }${W_NAME[$i]} $REPLY"; fi
+  done
+  (( ${#dag[@]} > 0 )) || dag=('No plan tasks available')
+  local dagmax=4; (( lines >= 24 )) || dagmax=3
+  [[ -z "$other" ]] || dag+=("other: $other")
+  if (( ${#dag[@]} > dagmax )); then dag=("${dag[@]:0:$(( dagmax - 1 ))}" "+$(( ${#dag[@]} - dagmax + 1 )) rows${other:+ · other: $other}"); fi
+  if [[ -z "$selected_id" && $urgent -ge 0 ]]; then selected_id="${W_NAME[$urgent]}"; fi
+  selection_sync
+  i=$selected_index
+  if (( i >= 0 )); then
+    load_report_facts "$i"
+    local changed="${REPLY_CHANGED:-No change report}" notes="$REPLY_NOTES" count=0 first='' file gates="${W_GATES[$i]:-}" scope=ok action
+    for file in $notes; do count=$(( count + 1 )); done
+    text="IN   ${W_TITLE[$i]:-No title}"
+    selected_field plan_sha256; local shortsha="${REPLY:0:4}"
+    text+=" · plan ${W_PLAN_NAME[$i]:-none} @${shortsha:-????} task ${W_PLAN_TASK[$i]:-${W_NAME[$i]}}"; local input="$text"
+    local owned="${W_OWNED[$i]:-}"; owned="${owned//,/ }"; local files=0
+    for file in $owned; do [[ -n "$first" ]] || first="$file"; files=$(( files + 1 )); done
+    text="owns ${first:-none}"; (( files <= 1 )) || text+=" +$(( files - 1 ))"
+    data+=("$input · $text · notes $count injected")
+    local run_model="${W_MODEL[$i]:-${W_MODEL_TIER[$i]:-}}"
+    trunc_str "$run_model" 18; run_model="$REPLY"
+    text="attempt ${W_ATTEMPT[$i]:-1}"
+    [[ -z "${W_LOOP_MAX[$i]:-}" ]] || text+=" loop ${W_LOOP_ITER[$i]:-0}/${W_LOOP_MAX[$i]}"
+    [[ -z "${W_SANDBOX[$i]:-}" ]] || text+=" ${W_SANDBOX[$i]}"
+    local run="RUN  ${W_ENGINE[$i]:-unknown} $run_model $text"
+    gates="${gates//:pass/ ✓}"; gates="${gates//:fail/ ✗}"; gates="${gates//:skip/ –}"
+    [[ -z "$gates" ]] || run+=" · gates $gates"
+    data+=("$run")
+    case "${W_SCOPE_VIOLATION[$i]:-}" in ''|0|false|no) ;; *) scope=violation;; esac
+    local output="OUT  $changed · scope $scope · verdict ${W_VERDICT[$i]:-unknown}"
+    cost='cost unknown'
+    if [[ "${W_COST_STATUS[$i]:-unknown}" != unknown && -n "${W_COST[$i]:-}" ]]; then
+      text=reported; [[ "${W_COST_STATUS[$i]}" != estimated ]] || text=est
+      cost="\$${W_COST[$i]} ($text)"
+    fi
+    fmt_human_count "${W_TOK[$i]:-0}"; data+=("$output · $cost · $REPLY tokens")
+    worker_next_action "$i"; action="$REPLY"
+    case "$action" in
+      answer) text="answer: squad send … ${W_NAME[$i]}";;
+      fix) text="fix round: squad-worker ${W_NAME[$i]} …";;
+      resume) text="squad-worker --resume ${W_NAME[$i]}";;
+      merge) text="review diff (d), then squad-worker --merge ${W_NAME[$i]}";;
+      wait|done) text="$action";; *) text='No action available';;
+    esac
+    data+=("NEXT $text")
+  else data=('IN   No workers yet' 'RUN  Waiting for dispatch' 'OUT  No report yet' 'NEXT wait'); fi
+  local nh=${#H_TS[@]} budget start glyph colour
+  budget=$(( lines - 3 ))
+  (( columns < 100 )) || budget=$(( ${#data[@]} - 1 ))
+  (( budget >= 0 )) || budget=0
+  start=$(( nh - budget )); (( start >= 0 )) || start=0
+  for (( j=start; j<nh; j++ )); do
+    case "${H_TYPE[$j]}" in QUESTION|question) glyph='?';; ANSWER|answer) glyph='↳';; done) glyph='✓';; failed) glyph='✗';; stopped) glyph='■';; *) glyph='▸';; esac
+    rfc3339_to_hhmm "${H_TS[$j]}"; text="$REPLY ${H_FROM[$j]}→${H_TO[$j]} $glyph "
+    swarm_preview "${H_TYPE[$j]}" "${H_BODY[$j]}"; text+="$REPLY"
+    conversation+=("$text")
+  done
+  (( nh > 0 )) || conversation+=('No messages yet')
+  conversation+=("waiting on you: ${waiting:-none}")
+  return 0
 }
 
 build_base_frame_templates() {
@@ -6083,7 +6415,15 @@ source "$script_dir/lib/squad-notify.sh"
 source "$script_dir/lib/squad-panes.sh"
 
 selection_sync() {
-  local i
+  local i rank=5 wi best=-1
+  if [[ "$layout" == g2 && -z "$selected_id" ]]; then
+    for (( i=0; i<TOTAL_WORKERS; i++ )); do
+      worker_next_action "$i"; wi=4
+      case "$REPLY" in answer) wi=0;; fix|resume) wi=1;; merge) wi=2;; wait) wi=3;; esac
+      if (( wi < rank )); then rank=$wi; best=$i; fi
+    done
+    (( best < 0 )) || selected_id="${W_NAME[$best]}"
+  fi
   selected_index=-1
   for (( i=0; i<TOTAL_WORKERS; i++ )); do
     [[ -z "$zoom_target" || "${W_PARENT[$i]}" == "$zoom_target" || "${W_NAME[$i]}" == "$zoom_target" ]] || continue
@@ -6183,6 +6523,7 @@ panel_key() {
         fi
       else
         i=$(( selected_index + step ))
+        if [[ "$layout" == g2 ]] && (( TOTAL_WORKERS > 0 )); then i=$(( (i + TOTAL_WORKERS) % TOTAL_WORKERS )); fi
         while (( i >= 0 && i < TOTAL_WORKERS )); do
           if [[ -z "$zoom_target" || "${W_PARENT[$i]}" == "$zoom_target" || "${W_NAME[$i]}" == "$zoom_target" ]]; then
             selected_id="${W_NAME[$i]}"; break
@@ -6252,6 +6593,7 @@ build_frame_templates() {
   terminal_columns; local cache_columns="$REPLY"
   terminal_lines; local cache_lines="$REPLY"
   local render_key="$layout:$cache_columns:$cache_lines:$zoom_target:$focus:$history_expanded:$flow_filter:$expand_earlier:$AUTO_CLOSE_PINNED:$AUTO_CLOSE_COUNTING:$AUTO_CLOSE_REMAINING"
+  [[ "$layout" != g2 ]] || render_key+=":$selected_id"
   if (( details_open == 0 && history_open == 0 )); then
     if [[ "${base_render_key:-}" != "$render_key" ]]; then base_frame_valid=0; fi
     base_render_key="$render_key"
@@ -6348,6 +6690,8 @@ build_frame_templates() {
 }
 
 # One-shot execution mode
+if [[ "${SQUAD_ORCHESTRATION_TEST_SOURCE:-0}" == 1 ]]; then return 0; fi
+
 if (( once == 1 )) || { [[ ! -t 1 ]] && [[ "${SQUAD_ORCHESTRATION_LIVE:-0}" != 1 ]]; }; then
   load_data
   build_frame_templates

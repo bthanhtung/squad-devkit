@@ -114,6 +114,12 @@ for run in range(3):
         view = View(workspace)
         try:
             print(f'run {run + 1}')
+            view.key(b'w', b'PLAN DAG', .6)
+            view.key(b'j', b'DATA FLOW > dev-1', .6)
+            view.key(b'k', b'DATA FLOW > dev-0', .6)
+            view.key(b'w', b'worker', .6)
+            view.key(b'c', b'dev-0', .6)
+            view.key(b'g', b'> dev-0 ', .6)
             view.key(b'j', b'> dev-1 ', .3)
             details = view.key(b'i', b'worker: dev-1', .6)
             # Independent fixture values catch details opening for the wrong selection.
@@ -179,10 +185,10 @@ with tempfile.TemporaryDirectory(prefix='orch-g2-') as tmp:
     first_worker.with_suffix('.live').write_text('tokens_in=1200\nactivity=Running checks\n')
     view = View(workspace, 'list')
     try:
-        frame = view.key(b'w', b'task layer', 1)
+        frame = view.key(b'w', b'PLAN DAG', 1)
         assert b'[c] cards' in frame and b'[g] graph' in frame and b'[w] swarm' in frame
-        assert b'dev-0: brief AAA' in frame
-        selected = next(line for line in frame.splitlines() if b'> dev-0 ' in line)
+        assert 'manager→dev-0 ▸ brief: brief AAA'.encode() in frame
+        selected = next(line for line in frame.splitlines() if b'> dev-0 ' in line and b'elapsed ' in line)
         assert all(field in selected for field in (b'elapsed ', b'output ', b'1k tok', b'Running checks'))
         first_worker.with_suffix('.live').write_text('tokens_in=2400\nactivity=Checking results\n')
         view.frame(lambda f: any(
@@ -190,11 +196,11 @@ with tempfile.TemporaryDirectory(prefix='orch-g2-') as tmp:
             for line in f.splitlines()
         ), 4)
         view.key(b'g', b'> dev-0 ', 1)
-        view.key(b'w', b'task layer', 1)
+        view.key(b'w', b'PLAN DAG', 1)
         view.key(b'c', b'Legend:', 1)
-        view.key(b'w', b'task layer', 1)
+        view.key(b'w', b'PLAN DAG', 1)
         view.key(b'g', b'> dev-0 ', 1)
-        view.key(b'\t', b'task layer', 1)
+        view.key(b'\t', b'PLAN DAG', 1)
         view.quit()
     finally:
         view.close()

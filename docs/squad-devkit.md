@@ -670,7 +670,7 @@ In a manager session, `orchestration` is the default view: the first worker open
 
 The pane shows only that manager's workers and messages. Status files carry a `manager=<id>` key; when `SQUAD_MANAGER_ID` is known, a worker is shown only if its `manager=` matches, or its `parent=` chain reaches such a worker. Legacy status files without `manager=` are hidden (they appear only with `--all-managers` / key `a`, grouped under the manager inferred from the history). Messages are kept only when their sender or recipient is the manager or a shown worker.
 
-The default `graph` layout is a lifecycle flow chart, top to bottom:
+The default `g2` swarm view (`w`) shows the active plan DAG with text states and dependency arrows, a worker card grid and `done N:` summary, the selected worker’s IN → RUN → OUT → NEXT data flow, and a conversation timeline with unanswered questions. Use `j`/`k` to cycle workers; the initial selection prioritizes questions, failures and merge reviews. The existing model legend, manager sidebar, owner/session boxes, worker cards, review return and status footer remain. The header counts active-plan tasks; each DAG task appears once with dependency references. Short panes use compact cards; below 24 rows, the DAG is limited to three rows and the data flow takes priority over cards and conversation. System conversation messages are summarised without UUIDs or absolute paths. `c` opens cards and `g` opens graph. Use `--layout list` or `SQUAD_ORCHESTRATION_LAYOUT=list` for the list view. The `graph` layout is a lifecycle flow chart, top to bottom:
 
 1. **Header**: `● manager-2 · claude  ·  plan <active plan>  ·  ●2 running ✓5 ✗1  ·  12m  1.2M tok` (the engine comes from `SQUAD_DEVKIT_MANAGER_CLIENT`).
 2. **Main lane** for the most recent plan: the manager node, then numbered worker nodes (`01`, `02`, ...) in start order, joined by edges labelled with the last verb (`brief`, `fix`, `ask`, `answer`, `done`, `failed`). Each node shows `NN name`, `role · model` and a status chip (`● running 3m`, `✓ done`, `✗ failed`, `? waiting`). Nodes wrap to further rows when the pane is narrow (it works from 48 columns up and uses up to about 160). A sub-manager's children appear as an indented mini-row under it (`└ 01 child · ✓`).
@@ -683,6 +683,12 @@ The default `graph` layout is a lifecycle flow chart, top to bottom:
 Keys: `l` (or Tab) cycles layouts and `g` / `w` / `c` / `t` pick graph, swarm (`--layout g2`), cards or tree directly; `p` pins the pane (cancels auto-close); `a` toggles all managers (`--all-managers`); `h` expands or collapses the older-plans list; `f` toggles focus (present) mode, which shows only the header, the main lane and the waiting group at full height (`--focus` starts in it, including with `--once`). The `pipeline` and `tree` layouts keep their previous look with the same manager scoping. `--once` prints one frame without escape codes.
 
 The swarm layout (`--layout g2`, key `w`) shows the manager’s latest brief, plan tasks, worker activity, tokens and review status. Cards wrap to fit the pane. Short panes use compact cards, and `j`/`k` shows live details for the selected worker. Set `SQUAD_ORCHESTRATION_ANIMATE=0` to disable motion.
+
+In the swarm view, task titles come from the plan's `Goal:` line and the active
+plan is the newest orchestration run. Outcome colours are paired with text
+labels for clarity, and `done N:` reports completion. Card row 5 prioritizes
+scope violations, then questions and answers, then running/idle state and
+tokens, then ownership.
 
 The `cards` layout (`--layout cards`, key `c`) shows live activity and output age, stale workers, waiting age, model tier, verification failures, merge state, scope violations and the reason for another round. Live token counts and activity are updated while a worker runs when log output changes; missing live data is simply unavailable. Cards grow with the pane width. Cards, tree and pipeline show plan task progress and token totals; unlaunched tasks appear as pending with `after <id>` dependencies. Missing or older plan/status fields are accepted.
 
