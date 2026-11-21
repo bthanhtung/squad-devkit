@@ -10,7 +10,7 @@ usage() {
   cat <<'EOF'
 Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill] [--no-deck] [--build-squad] [--with-tokeneconomizer]
 
-Link squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask,
+Link squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-learn, squad-ask,
 squad-telegram, and squad-tokeneconomizer into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
 and choose the manager CLI. Claude Code is the default when installed; without
 it, the installer asks which installed CLI should manage and saves the answer.
@@ -211,10 +211,11 @@ ln -sfn "$script_dir/squad-worker.sh" "$bin_directory/squad-worker"
 ln -sfn "$script_dir/squad-worker-monitor.sh" "$bin_directory/squad-monitor"
 ln -sfn "$script_dir/squad-orchestration.sh" "$bin_directory/squad-orchestration"
 ln -sfn "$script_dir/squad-route.sh" "$bin_directory/squad-route"
+ln -sfn "$script_dir/squad-learn.sh" "$bin_directory/squad-learn"
 ln -sfn "$script_dir/squad-ask.sh" "$bin_directory/squad-ask"
 ln -sfn "$script_dir/squad-telegram.sh" "$bin_directory/squad-telegram"
 ln -sfn "$script_dir/squad-tokeneconomizer.sh" "$bin_directory/squad-tokeneconomizer"
-printf 'Linked squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask, squad-telegram, and squad-tokeneconomizer into %s\n' "$bin_directory"
+printf 'Linked squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-learn, squad-ask, squad-telegram, and squad-tokeneconomizer into %s\n' "$bin_directory"
 
 # The skill is a link into this repository, so pulling updates it.
 if (( install_skill == 1 )); then

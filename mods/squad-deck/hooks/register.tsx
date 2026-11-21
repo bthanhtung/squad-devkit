@@ -29,7 +29,7 @@ const MAX_TAILS = 8
 const LAYOUTS = ['auto', 'compact', 'wide', 'mini']
 
 // Change a tag when the shape of a value changes: an older one reads as the initial.
-const runs = atom({ plugin: 'squad-deck', key: 'runs' } as const, [], { shape: 'runs-1' })
+const runs = atom({ plugin: 'squad-deck', key: 'runs' } as const, [], { shape: 'runs-2' })
 const now = atom({ plugin: 'squad-deck', key: 'now' } as const, 0)
 const since = atom({ plugin: 'squad-deck', key: 'since' } as const, 0)
 const isDocked = atom({ plugin: 'squad-deck', key: 'isDocked' } as const, false)

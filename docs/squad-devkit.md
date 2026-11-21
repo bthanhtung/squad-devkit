@@ -294,6 +294,9 @@ Reviewer and scout workers are read-only at the engine level: Claude reviewers d
 | `--budget-tokens N` | Token budget cap for sub-manager branch (default 600000) |
 | `--max-children N` | Maximum children for a sub-manager (1–6, default 3) |
 | `--tree` | Show worker hierarchy and branch token totals (`--json` for JSON) |
+| `--loop N` | Retry failed verification gates up to N times (1–5); requires `--verify` or at least one `--gate` |
+| `--gate NAME=CMD` | Add a named acceptance command; repeatable |
+| `--expect-file PATH` | Require a changed artifact; repeatable |
 
 `Risk: high` plans refuse launches below `--model-tier strong` unless
 `--tier-reason "REASON"` is supplied. The reason is recorded as
@@ -319,6 +322,17 @@ approach.
 
 The report is printed on stdout and saved to `.squad/workers/<id>-<time>.md`,
 with the engine log and a `.status` file (state, pid, tokens) beside it.
+Each planned run also saves `plan_snapshot` and its `plan_sha256` in status, with
+its snapshot beside the run artifacts. Fix rounds snapshot the current plan and
+report `plan changed since attempt N` when its hash differs from the previous
+attempt. Status records reasoning tokens separately as `tokens_reasoning`
+without changing the `tokens_out` total. Cost is `reported` when the engine
+provides it, otherwise `estimated` from a matching model price, or `unknown`;
+unknown cost is not recorded as zero. Configure model prices in
+`.squad/prices.json` using `templates/devkit/prices.json.example` as a guide.
+Prices are USD per million tokens, with `input`, `cached_input`, and `output`
+rated separately. `squad-devkit --stats` includes a Cost column and counts
+unknown runs explicitly.
 `squad task list` shows every task with its summary. A worker that fails, runs
 past its time limit, or produces no output for `SQUAD_WORKER_STALL` minutes
 (default 10) is stopped, tells the manager what happened, and exits non-zero,
@@ -399,6 +413,45 @@ manager context: `--manager`, `SQUAD_MANAGER_ID`, or `SQUAD_WORKER_REQUIRE_PLAN=
 `SQUAD_WORKER_REQUIRE_PLAN=0` turns the requirement off.
 
 **Plan tasks and automation.** `squad-worker ID --plan FILE --task [ID]` uses the exact, unique, nonempty task entry in `## Tasks` and the plan's Acceptance section as the brief; omit the task ID to use the worker ID. Entries start with `- ID` or `### ID`. Missing or duplicate IDs are rejected, and `--task` cannot be combined with `--brief` or `--brief-file`.
+
+**Gate retries.** `--gate NAME=CMD` adds a named acceptance command and
+`--expect-file PATH` requires a changed artifact. Repeat either option as
+needed. `--loop N` (1–5) repeats the run after a failed gate or `--verify`, up
+to N iterations. A loop requires at least one gate or `--verify`.
+
+**Run a task plan.** `squad-worker --run-plan PLAN --manager ID` schedules the
+plan's task rows; `--dry-run` previews, `--jobs N` sets concurrency, `--retry
+ID` retries selected tasks, `--max-launches N` caps launches, and
+`--merge-if-green` merges tasks after successful verification and gates. Each
+task row must provide `ID (ENGINE TIER, ROLE): brief`, where tier is
+`fast|balanced|strong`, plus `Files:` (except reviewers), `Depends on:` with
+comma-separated task IDs or `none`, and optional `Verify: `COMMAND``. IDs and
+dependencies are validated before launch; cycles are rejected.
+
+**Recovery.** `squad-worker --resume ID` resumes a lost run after ownership is
+confirmed. `--engine-alive FILE` reports engine liveness (exit 0 means alive
+or unknown; exit 1 means dead). Status includes host and engine identity so
+ownership on another host or an uncertain engine is treated as `unknown`; do
+not resume or reclaim it as `lost` until its owner is known.
+
+**Run evaluation.** `squad-devkit --eval [--days N] [RUN]` scores completed
+runs with weighted control, latency, token, recovery, and delivery dimensions.
+The passing threshold is 70. The report suggests which practice to improve.
+`--days` selects the history window (default 30).
+
+**Approved team knowledge.** `squad-learn propose --title T --paths GLOBS
+[--file F]`, `list`, `show ID`, `approve ID`, `reject ID`, `enable`, and
+`disable` manage notes proposed by workers. Approved notes live outside the
+project and worktrees in the user configuration's `knowledge/<project-hash>/approved`
+directory; pending notes stay under `.squad/knowledge/pending`. Approval and
+enable/disable require an interactive TTY and explicit `yes`. Only enabled,
+approved notes matching a worker's owned paths are injected as untrusted
+reference data that cannot override its brief, plan, or role.
+
+The knowledge-store threat model assumes the same OS user controls workers and
+the store. It prevents accidental or LLM-driven drift, not a malicious local
+process. While the store is enabled, workers without a write sandbox are
+refused; unknown host or engine ownership also blocks unsafe store operations.
 
 `--retry-escalate` is opt-in: only a failed verification triggers one retry at the next mapped tier for the same engine, using the verification log tail for repair. It requires an explicitly selected current tier; strong or an unavailable next mapping leaves the result as-is. Engine failures and verification timeouts do not trigger a retry. `--merge-if-green` requires `--verify` and a low-risk plan; it merges only after verification passes and the scope and review gates pass, without an override.
 
@@ -948,6 +1001,8 @@ Regenerate with `vhs scripts/demo/<name>.tape`.
 
 Environment variables that tune a run. Related settings appear in the sections above.
 
+`.squad/prices.json` optionally sets per-model USD prices per million tokens; copy `templates/devkit/prices.json.example` and fill its `input`, `cached_input`, and `output` rates. Missing prices leave cost `unknown`.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `SQUAD_DEVKIT_MANAGER` | saved choice, else `claude` | Manager CLI for a run (`--manager`) |
@@ -964,6 +1019,7 @@ Environment variables that tune a run. Related settings appear in the sections a
 | `SQUAD_WORKER_SCOUT_ENGINE` / `SQUAD_WORKER_SCOUT_MODEL` | unset | Explicit engine (and optional model) used when `--role scout` omits `--engine` |
 | `SQUAD_WORKER_SCOUT_TIMEOUT` | `10` | Default timeout in minutes for `--role scout` workers |
 | `SQUAD_WORKER_VIEW` | `orchestration` (manager) / `panes` (direct) | Worker progress view: `orchestration` (one live flow view) or `panes` (one split per worker; `--view`, or `view=` in config) |
+| `SQUAD_LEARN_LOCK_TIMEOUT` | `60` | Seconds to wait for the approved knowledge-store lock |
 | `SQUAD_WORKER_VERIFY_TIMEOUT` | `10` | Minutes allowed for `--verify` |
 | `SQUAD_WORKER_REPORT_LINES` | `40` | Maximum report lines printed by a worker |
 | `SQUAD_ORCHESTRATION_HOLD` | `SQUAD_WORKER_PANE_HOLD`, else `60` | Seconds before an idle orchestration pane closes itself (`0` = never) |

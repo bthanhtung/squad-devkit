@@ -290,6 +290,11 @@ last_status() { ls -t .squad/workers/"$1"-*.status | head -n 1; }
 SQUAD_MANAGER_ID=manager "$worker" p-1 --engine grok --no-worktree --plan .squad/plans/ok.md --brief 'Plan run' >"$tmp/out"
 status_file="$(last_status p-1)"
 grep -qx "plan=$tmp/ws/.squad/plans/ok.md" "$status_file" || fail "plan= missing"
+snapshot="$(sed -n 's/^plan_snapshot=//p' "$status_file")"
+hash="$(sed -n 's/^plan_sha256=//p' "$status_file")"
+cmp "$snapshot" .squad/plans/ok.md || fail "snapshot differs"
+[[ "$hash" == "$(shasum -a 256 "$snapshot" | awk '{print $1}')" ]] || fail "snapshot hash"
+
 ! grep -q '^plan_override=.' "$status_file" || fail "unexpected override"
 grep -q "^Plan: $tmp/ws/.squad/plans/ok.md\$" "$tmp/out" || fail "report header"
 grep -q "^Plan: $tmp/ws/.squad/plans/ok.md\$" "${status_file%.status}.md" || fail "report file header"
@@ -356,6 +361,21 @@ run_edit() { # run_edit ID PLAN EDIT [ROLE]
   FAKE_EDIT="$3" "$worker" "$1" --engine grok --worktree --project "$repo" --plan "$2" ${tier_args[@]+"${tier_args[@]}"} \
     ${4:+--role "$4"} --brief 'Edit' >/dev/null
 }
+# Each fix round freezes its own plan and reports changes to the manager.
+cp .squad/plans/ok.md .squad/plans/fix.md
+FAKE_EDIT="src/app.txt=first" "$worker" snapshot-fix --engine grok --worktree --project "$repo" --plan .squad/plans/fix.md --brief $'Model selection: fast\nGoal: Keep this title' >/dev/null
+grep -qx 'title=Keep this title' "$(last_status snapshot-fix)" || fail "default goal title"
+first_status="$(last_status snapshot-fix)"
+first_snapshot="$(sed -n 's/^plan_snapshot=//p' "$first_status")"
+printf '\nChanged for the next attempt.\n' >>.squad/plans/fix.md
+FAKE_EDIT="src/app.txt=second" "$worker" snapshot-fix --engine grok --worktree --project "$repo" --plan .squad/plans/fix.md --brief Edit >"$tmp/out" 2>"$tmp/err"
+second_status="$(last_status snapshot-fix)"
+grep -qx 'title=Keep this title' "$second_status" || fail "fix round title inheritance"
+grep -Fq "Note: plan changed since attempt 1 (snapshot: $first_snapshot)" "$tmp/err" || fail "missing plan change warning"
+grep -Fq "Note: plan changed since attempt 1 (snapshot: $first_snapshot)" "${second_status%.status}.md" || fail "missing plan change report"
+! cmp -s "$first_snapshot" "$(sed -n 's/^plan_snapshot=//p' "$second_status")" || fail "fix snapshot unchanged"
+"$worker" --discard snapshot-fix >/dev/null
+
 # Sensitive path, low-risk plan: refused, then overridden.
 run_edit m-1 .squad/plans/ok.md "netlify.toml=[headers]"
 expect_exit 3 'merging m-1 needs a review: patch touches netlify.toml' "$worker" --merge m-1

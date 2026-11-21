@@ -1,9 +1,10 @@
 // Pure helpers of the squad deck: parsing, redaction, formatting. No `$` here,
 // so every function is testable on its own.
 
-import type { Kind, Perms, Run, Verdict } from '../types'
+import type { Kind, Perms, Run as BaseRun, Verdict } from '../types'
 
-export type { Kind, Perms, Run, Verdict }
+export type { Kind, Perms, Verdict }
+export type Run = BaseRun & { worktree?: string; merged?: boolean; discarded?: boolean }
 
 export const MAX_RUNS = 30
 export const TAIL_BYTES = 16384
@@ -96,6 +97,9 @@ export function parseStatus(text: string, fallbackId = ''): Run | null {
     isScopeViolation: (f.scope_violation ?? '') !== '',
     log: f.log ?? '',
     activity: '',
+    worktree: f.worktree ?? '',
+    merged: (f.merged ?? '') !== '',
+    discarded: (f.discarded ?? '') !== '',
   }
 }
 
@@ -112,6 +116,23 @@ export function pickRuns(runs: Run[], since: number): Run[] {
   return [...newest.values()].sort(
     (a, b) => rank(a) - rank(b) || b.started - a.started || a.id.localeCompare(b.id),
   )
+}
+
+/** Actionable latest runs, ordered by urgency and recency. */
+export function needsYou(runs: Run[]) {
+  const items: { run: Run; kind: 'failed' | 'verify' | 'merge'; reason: string; action: string }[] = []
+  for (const run of pickRuns(runs, 0)) {
+    if (run.state === 'running') continue
+    if (['failed', 'stopped', 'lost', 'timeout', 'error'].includes(run.state)) {
+      items.push({ run, kind: 'failed', reason: run.state, action: 'rerun or split' })
+    } else if (run.verify === 'fail' || run.verify === 'timeout') {
+      items.push({ run, kind: 'verify', reason: `verify ${run.verify}`, action: 'fix or discard' })
+    } else if (run.state === 'completed' && !!run.worktree && !run.merged && !run.discarded) {
+      items.push({ run, kind: 'merge', reason: 'ready to merge', action: `review diff, then squad-worker --merge ${run.id}` })
+    }
+  }
+  const rank = { failed: 0, verify: 1, merge: 2 }
+  return items.sort((a, b) => rank[a.kind] - rank[b.kind] || b.run.started - a.run.started || a.run.id.localeCompare(b.run.id))
 }
 
 // --- Activity -------------------------------------------------------------

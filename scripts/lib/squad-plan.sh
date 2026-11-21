@@ -307,3 +307,15 @@ plan_task() {
     }
   '
 }
+
+# The complete entry, including routing metadata, is the DAG run identity.
+plan_task_entry() {
+  plan_section "$1" Tasks | TASK_ID="$2" awk '
+    /^- / || /^### / {
+      line=$0; sub(/^(- |### )/, "", line)
+      sub(/[ \t:(].*$/, "", line)
+      inside=(line == ENVIRON["TASK_ID"])
+    }
+    inside { print }
+  '
+}

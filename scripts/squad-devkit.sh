@@ -60,6 +60,7 @@ Without an objective the manager opens an interactive chat and asks for one firs
   --doctor      Diagnose environment: core tools, manager, worker engines, optional integrations, and multiplexer/panes
   --split-test  With --doctor, open and verify a monitor split
   --stats       Show run statistics for the last 30 days (--days N)
+  --eval [RUN]  Score finished worker runs for the last 30 days (--days N)
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
   --tmux        Run the manager in a tmux session; re-running attaches to it
                 (or set SQUAD_DEVKIT_BACKEND=here|ghostty|tmux)
@@ -103,6 +104,7 @@ setup=0
 doctor=0
 split_test=0
 stats=0
+eval_runs=0
 stats_days=30
 devkit_action=""
 seen_positional=0
@@ -146,6 +148,7 @@ while (( $# > 0 )); do
     --clean-all) clean_only=2; reload_passthrough_args+=("$1") ;;
     --setup) setup=1; reload_passthrough_args+=("$1") ;;
     --stats) stats=1 ;;
+    --eval) eval_runs=1 ;;
     --split-test) split_test=1 ;;
     --days)
       if (( $# < 2 )) || [[ ! "$2" =~ ^[0-9]+$ ]] || (( ${#2} > 5 )); then echo "Invalid --days value" >&2; exit 2; fi
@@ -227,7 +230,7 @@ while (( $# > 0 )); do
     --version) printf 'squad-devkit %s\n' "$devkit_version"; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
-      if (( seen_positional == 0 )) && [[ -z "$devkit_action" && ! -d "$1" ]] &&
+      if (( seen_positional == 0 && ! eval_runs )) && [[ -z "$devkit_action" && ! -d "$1" ]] &&
         [[ "$1" == update || "$1" == reload || "$1" == restart ]]; then
         if [[ "$1" == update ]]; then
           devkit_action=update
@@ -728,6 +731,12 @@ run_doctor() {
 }
 
 if (( split_test && ! doctor )); then echo '--split-test requires --doctor' >&2; exit 2; fi
+if (( eval_runs )); then
+  if [[ -n "$objective" ]]; then echo "Only one run name is allowed" >&2; exit 2; fi
+  source "$script_dir/lib/squad-eval.sh"
+  squad_eval "$stats_days" "$project_directory"
+  exit $?
+fi
 if (( stats )); then
   cutoff=$(( $(date +%s) - 10#$stats_days * 86400 ))
   stats_workspace="${SQUAD_DEVKIT_PROJECT_ROOT:-}"
@@ -747,10 +756,10 @@ if (( stats )); then
     FNR == 1 { if (NR > 1) record(); split("", v) }
     { pos=index($0,"="); if (pos) v[substr($0,1,pos-1)]=substr($0,pos+1) }
     END { if (NR) record(); if (!total) { print "no runs"; exit }
-      print "ENGINE   TIER       RUNS FIRST_PASS AVG_ROUNDS TOKENS AVG_DURATION"
+      print "ENGINE   TIER       RUNS FIRST_PASS AVG_ROUNDS TOKENS AVG_DURATION COST"
       for (k in count) keys[++n]=k
       for (i=2; i<=n; i++) { key=keys[i]; j=i-1; while (j>0 && keys[j]>key) { keys[j+1]=keys[j]; j-- } keys[j+1]=key }
-      for (i=1; i<=n; i++) { k=keys[i]; fp=first[k] ? sprintf("%.1f%%", pass[k]*100/first[k]) : "-"; printf "%-8s %-10s %4d %10s %10.2f %6.0f %11.1fs\n", engine[k], tier[k], count[k], fp, count[k]/workers[k], tokens[k], durations[k] ? seconds[k]/durations[k] : 0 }
+      for (i=1; i<=n; i++) { k=keys[i]; fp=first[k] ? sprintf("%.1f%%", pass[k]*100/first[k]) : "-"; cost=known[k] ? sprintf("$%.4f", costs[k]) : "unknown"; if (known[k] && unknown[k]) cost=cost sprintf(" (+%d unknown)", unknown[k]); printf "%-8s %-10s %4d %10s %10.2f %6.0f %11.1fs %s\n", engine[k], tier[k], count[k], fp, count[k]/workers[k], tokens[k], durations[k] ? seconds[k]/durations[k] : 0, cost }
     }
     function record(  k,w) {
       if (v["started"] !~ /^[0-9]+$/ || v["started"]+0 < cutoff) return
@@ -758,6 +767,7 @@ if (( stats )); then
       tier[k]=v["model_tier"] == "" ? "-" : v["model_tier"]
       count[k]++; total++; w=k SUBSEP v["worker"]; if (!seen[w]++) workers[k]++
       if (v["attempt"] == "1") { first[k]++; if (v["state"] == "completed" && v["verify"] != "fail" && v["verify"] != "timeout") pass[k]++ }
+      if (v["cost_status"] ~ /^(reported|estimated)$/ && v["cost_usd"] ~ /^[0-9]+([.][0-9]+)?$/) { known[k]++; costs[k]+=v["cost_usd"] } else unknown[k]++
       tokens[k]+=(v["tokens_in"]+0)-(v["tokens_cached"]+0)+(v["tokens_out"]+0)
       if (v["finished"] ~ /^[0-9]+$/ && v["finished"]+0 >= v["started"]+0) { seconds[k]+=v["finished"]-v["started"]; durations[k]++ }
     }
