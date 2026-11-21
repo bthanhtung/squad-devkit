@@ -188,7 +188,7 @@ export const register: Register = on => {
     if (await isSquadSession($)) {
       await startedAt($)
       // Unasked, the engine seats it from 144 columns and otherwise leaves it waiting.
-      void $.ui.open({ id: PANE, title: 'squad' }).catch(() => undefined)
+      void $.ui.open({ id: PANE, title: 'squad', backgroundColor: 'transparent' }).catch(() => undefined)
       ensureTimer($)
       await refresh($, true)
     }
@@ -211,7 +211,7 @@ export const register: Register = on => {
     }
     if (verb === 'open') {
       ensureTimer($)
-      const opened = await $.ui.open({ id: PANE, title: 'squad' }).catch(() => undefined)
+      const opened = await $.ui.open({ id: PANE, title: 'squad', backgroundColor: 'transparent' }).catch(() => undefined)
       await refresh($, true)
 
       return { text: opened?.isPlaced === true ? 'Squad deck opened.' : 'Squad deck could not be placed here.' }
