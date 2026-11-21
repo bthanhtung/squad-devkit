@@ -49,7 +49,9 @@ const layout = atom({ plugin: 'squad-deck', key: 'layout' } as const, 'auto', {
 let timer: { cancel: () => void } | undefined
 let tick = 0
 let isBusy = false
-let shownStatus: string | undefined
+// null until the first refresh: a load starts with no status line shown, and the first
+// refresh must still call ui.status, so a line left by the previous load gets cleared.
+let shownStatus: string | undefined | null = null
 // Pane manners: /deck open pins it, a close by the person or /deck close holds it shut
 // until a run not seen before turns up, and it closes LINGER_MS after the last run stops.
 let isPinned = false

@@ -171,6 +171,12 @@ test('with no workers the status line is cleared and the band stays out of the w
   await ui.unmount()
 })
 
+test('an idle squad session clears the status line on its first refresh', async ($, on) => {
+  // A reload leaves the previous load's line on screen; the first refresh must clear it.
+  const calls = await boot($, on, {})
+  expect(calls.status).toEqual([undefined])
+})
+
 test('the band above the prompt shows the totals and the newest activity', async ($, on) => {
   await boot($, on, FILES, false, SQUAD_ENV, false, false)
   const band = await $.ui.mount({
