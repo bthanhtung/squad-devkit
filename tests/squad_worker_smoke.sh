@@ -496,6 +496,28 @@ grep -q '^<<<<<<< ' "$repo/app.txt"
 [[ "$("$worker" --discard wt-2)" == *'Discarded wt-2'* ]] || fail
 [[ "$("$worker" --merge wt-2 2>&1 || true)" == *'No worktree for wt-2'* ]] || fail
 
+# Orphan worktrees can be reused only when they have no changes.
+orphan_repo="$temp_directory/orphan-repo"
+mkdir -p "$orphan_repo"
+git -C "$orphan_repo" init -q
+printf 'base\n' >"$orphan_repo/base.txt"
+git -C "$orphan_repo" add base.txt
+git -C "$orphan_repo" -c user.name=t -c user.email=t@t commit -qm init
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Empty' >/dev/null
+orphan_path="$(ls -d "$PWD"/.squad/worktrees/orphan-repo-*/orphan-1)"
+rm .squad/workers/orphan-1-*.status
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Reuse' >/dev/null 2>"$temp_directory/orphan-error"
+grep -q 'squad-worker: reusing empty orphan worktree for orphan-1' "$temp_directory/orphan-error"
+grep -q '^attempt=1$' .squad/workers/orphan-1-*.status
+rm .squad/workers/orphan-1-*.status
+printf 'change\n' >"$orphan_path/change.txt"
+status=0
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Changed' >/dev/null 2>"$temp_directory/orphan-error" || status=$?
+[[ "$status" == 2 ]] || fail
+grep -Fq "squad-worker: orphan-1 has an orphan worktree with changes at $orphan_path but no run record; inspect it, then run squad-worker --discard orphan-1 (or --merge orphan-1)" "$temp_directory/orphan-error"
+"$worker" --discard orphan-1 --project "$orphan_repo" >/dev/null
+[[ ! -d "$orphan_path" && ! -e "$orphan_path.base" && -z "$(git -C "$orphan_repo" branch --list squad/orphan-1)" ]] || fail
+
 # Reviewers read the project directly; --no-worktree does the same for any role.
 "$worker" rev-1 --engine codex --role reviewer --project "$repo" --brief 'Review app.txt' >/dev/null
 grep -q "codex:exec --json --cd $(cd "$repo" && pwd) " "$WORKER_TEST_LOG"
