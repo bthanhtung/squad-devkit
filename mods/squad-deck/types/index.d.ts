@@ -3,6 +3,8 @@
 
 export type Run = {
   id: string
+  // The manager tab that started the run; empty when the file names none.
+  manager: string
   engine: string
   model: string
   role: string
@@ -35,6 +37,8 @@ declare module 'claude-code' {
       since: number
       // True while the pane is drawn, so the band above the prompt stays quiet.
       isDocked: boolean
+      // True while a run of this tab runs, or within a minute after the last one ended.
+      isActive: boolean
       perms: Shaped<Perms>
       commands: Shaped<string[]>
       layout: Shaped<Layout>

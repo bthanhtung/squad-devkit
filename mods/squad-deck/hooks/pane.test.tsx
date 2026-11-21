@@ -3,15 +3,15 @@ import { expect, mock, test } from 'claude-code/testing'
 const DIR = '/w/.squad/workers'
 const FILES: Record<string, string> = {
   'deck-1-1.status': [
-    'worker=deck-1', 'engine=opencode', 'model=opencode-go/glm-5.3', 'role=dev', 'state=running',
+    'worker=deck-1', 'manager=manager-1', 'engine=opencode', 'model=opencode-go/glm-5.3', 'role=dev', 'state=running',
     'started=1100', 'tokens_in=12345', 'tokens_out=900', `log=${DIR}/deck-1-1.log`,
   ].join('\n'),
   'rev-1-1.status': [
-    'worker=rev-1', 'engine=claude', 'model=sonnet', 'role=reviewer', 'state=completed',
+    'worker=rev-1', 'manager=manager-1', 'engine=claude', 'model=sonnet', 'role=reviewer', 'state=completed',
     'started=1050', 'finished=1090', 'verify=pass', 'verdict=approved', 'title=Review the deck',
   ].join('\n'),
-  'old-1-1.status': 'worker=old-1\nengine=claude\nstate=completed\nstarted=10\n',
-  'bad-1-1.status': 'worker=bad-1\nstate=failed\nstarted=1060\nscope_violation=src/x.ts\n',
+  'old-1-1.status': 'worker=old-1\nmanager=manager-1\nengine=claude\nstate=completed\nstarted=10\n',
+  'bad-1-1.status': 'worker=bad-1\nmanager=manager-1\nstate=failed\nstarted=1060\nscope_violation=src/x.ts\n',
 }
 const LOG =
   '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/src/app.ts"}}]}}\n'
@@ -24,18 +24,33 @@ const PANE = {
 } as const
 
 // Each hook here stands for the engine beneath the mod.
-type Calls = { tails: string[][]; status: (string | undefined)[]; opened: string[]; isDocked: boolean }
+type Calls = {
+  tails: string[][]
+  status: (string | undefined)[]
+  opened: string[]
+  closed: string[]
+  opens: any[]
+  isDocked: boolean
+  seats: boolean
+  rev: number // bumped when a status file changes, so its mtime moves
+}
 type Env = Record<string, string>
 const SQUAD_ENV: Env = { SQUAD_DEVKIT_SESSION_START: '1000', SQUAD_DEVKIT_WORKSPACE: '/w' }
 
-function engine(on: any, calls: Calls, files = FILES, env: Env = SQUAD_ENV, hasWorkersDir = false) {
+function engine(on: any, calls: Calls, files: Record<string, string> = FILES, env: Env = SQUAD_ENV, hasWorkersDir = false) {
   const clock = mock.clock(on, { now: 1_200_000 })
-  on('ui.close', () => ({ value: undefined }))
+  on('ui.close', (_: unknown, e: any) => (calls.closed.push(e.id), (calls.isDocked = false), { value: undefined }))
   on('command.register', () => ({ value: { command: 'deck' } }))
-  on('ui.open', (_: unknown, e: any) => (calls.opened.push(e.id), { value: { isPlaced: true } }))
+  on('ui.open', (_: unknown, e: any) => {
+    calls.opened.push(e.id)
+    calls.opens.push(e)
+    calls.isDocked = true
+
+    return { value: { isPlaced: calls.seats } }
+  })
   on('ui.panes', () => ({
     value: calls.isDocked
-      ? [{ id: 'squad-deck', title: 'squad', isShown: true, isFocused: false, isPlaced: true }]
+      ? [{ id: 'squad-deck', title: 'squad', isShown: true, isFocused: false, isPlaced: calls.seats }]
       : [],
   }))
   on('ui.status', (_: unknown, e: any) => (calls.status.push(e.text), { value: undefined }))
@@ -51,8 +66,8 @@ function engine(on: any, calls: Calls, files = FILES, env: Env = SQUAD_ENV, hasW
     throw new Error('ENOENT')
   })
   on('fs.list', (_: unknown, e: any) => ({
-    value: e.path === DIR
-      ? Object.keys(files).map((name, i) => ({ name, kind: 'file', size: 1, mtimeMs: 100 + i, isLink: false }))
+    value: e.path === DIR || e.path === '/elsewhere/.squad/workers'
+      ? Object.keys(files).map((name, i) => ({ name, kind: 'file', size: 1, mtimeMs: 100 + i + calls.rev, isLink: false }))
       : [],
   }))
   on('fs.read', (_: unknown, e: any) => ({ value: files[String(e.path).split('/').pop() ?? ''] ?? '' }))
@@ -66,17 +81,24 @@ function engine(on: any, calls: Calls, files = FILES, env: Env = SQUAD_ENV, hasW
   return clock
 }
 
-async function boot($: any, on: any, files = FILES, isDocked = true, env: Env = SQUAD_ENV, hasWorkersDir = false) {
-  const calls: Calls = { tails: [], status: [], opened: [], isDocked }
+async function boot(
+  $: any,
+  on: any,
+  files: Record<string, string> = FILES,
+  isDocked = true,
+  env: Env = SQUAD_ENV,
+  hasWorkersDir = false,
+  seats = true,
+) {
+  const calls: Calls = { tails: [], status: [], opened: [], closed: [], opens: [], isDocked, seats, rev: 0 }
   const clock = engine(on, calls, files, env, hasWorkersDir)
   await $.session.start({ cwd: '/elsewhere', surface: 'terminal', isInteractive: true })
 
-  return { ...calls, clock }
+  return Object.assign(calls, { clock })
 }
 
-test('the deck reads this session\'s workers, observes the manager and opens its pane', async ($, on) => {
+test('the deck reads this session\'s workers and observes the manager', async ($, on) => {
   const calls = await boot($, on)
-  expect(calls.opened).toContain('squad-deck')
   // Only the log of the running worker is read, and only its last 16 KB, without a shell.
   expect(calls.tails).toEqual([['tail', '-c', '16384', `${DIR}/deck-1-1.log`]])
   // old-1 started before the session; deck-1 runs, rev-1 is done, bad-1 failed.
@@ -150,7 +172,7 @@ test('with no workers the status line is cleared and the band stays out of the w
 })
 
 test('the band above the prompt shows the totals and the newest activity', async ($, on) => {
-  await boot($, on, FILES, false)
+  await boot($, on, FILES, false, SQUAD_ENV, false, false)
   const band = await $.ui.mount({
     plugin: 'squad-deck',
     component: 'AbovePrompt',
@@ -179,7 +201,8 @@ test('/deck opens, closes and sets the layout', async ($, on) => {
   expect(await run('layout mini')).toBe('Squad deck layout: mini.')
   expect(await run('layout huge')).toContain('Usage: /deck')
   expect(await run('close')).toBe('Squad deck closed.')
-  expect(calls.opened.length).toBeGreaterThan(1)
+  expect(calls.opened.length).toBeGreaterThan(0)
+  expect(calls.opens.every((one: any) => one.backgroundColor === 'transparent')).toBe(true)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 120 } })
   expect((await ui.findAll({ type: 'Text', text: /in \/ .* out/ })).length).toBe(0)
@@ -211,11 +234,129 @@ test('a session that is not a squad session only gets /deck', async ($, on) => {
 })
 
 test('a .squad/workers folder in the session directory makes it a squad session', async ($, on) => {
-  const calls = await boot($, on, FILES, true, {}, true)
+  const calls = await boot($, on, FILES, false, { SQUAD_DEVKIT_SESSION_START: '1000' }, true)
   expect(calls.opened).toContain('squad-deck')
 })
 
 test('SQUAD_MANAGER_ID alone makes it a squad session', async ($, on) => {
-  const calls = await boot($, on, FILES, true, { SQUAD_MANAGER_ID: 'manager-1' })
+  const calls = await boot($, on, FILES, false, {
+    SQUAD_MANAGER_ID: 'manager-1',
+    SQUAD_DEVKIT_SESSION_START: '1000',
+  })
   expect(calls.opened).toContain('squad-deck')
+})
+
+// --- Per tab, and open only while work runs --------------------------------
+
+const worker = (id: string, manager: string, state: string, started: number) =>
+  `worker=${id}\nmanager=${manager}\nengine=claude\nstate=${state}\nstarted=${started}\n`
+const drawPane = async ($: any) => {
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 60 } })
+  const drawn = JSON.stringify(await ui.drawn())
+  await ui.unmount()
+
+  return drawn
+}
+const TWO = {
+  'a-1-1.status': worker('a-1', 'manager-1', 'completed', 1100),
+  'b-1-1.status': worker('b-1', 'manager-2', 'completed', 1100),
+}
+
+test('each tab shows only the runs of its own manager', async ($, on) => {
+  await boot($, on, TWO, true, { ...SQUAD_ENV, SQUAD_MANAGER_ID: 'manager-1' })
+  const mine = await drawPane($)
+  expect(mine).toContain('a-1')
+  expect(mine).not.toContain('b-1')
+})
+
+test('the other manager sees only its own run', async ($, on) => {
+  await boot($, on, TWO, true, { ...SQUAD_ENV, SQUAD_MANAGER_ID: 'manager-2' })
+  const theirs = await drawPane($)
+  expect(theirs).toContain('b-1')
+  expect(theirs).not.toContain('a-1')
+})
+
+test('without a manager id both managers\' runs show', async ($, on) => {
+  await boot($, on, TWO, true, SQUAD_ENV)
+  const both = await drawPane($)
+  expect(both).toContain('a-1')
+  expect(both).toContain('b-1')
+})
+
+test('the 30-run cap counts only this tab\'s runs', async ($, on) => {
+  const files: Record<string, string> = { 'mine-1-1.status': worker('mine-1', 'manager-1', 'completed', 1100) }
+  // The other tab's files sort newer, so a cap before the filter would drop mine-1.
+  for (let i = 0; i < 40; i++) files[`z${i}-1-1.status`] = worker(`z${i}`, 'manager-2', 'completed', 1100)
+  await boot($, on, files, true, { ...SQUAD_ENV, SQUAD_MANAGER_ID: 'manager-1' })
+  expect(await drawPane($)).toContain('mine-1')
+})
+
+test('no pane opens at session start, and one opens once a run turns running', async ($, on) => {
+  const files = { 'a-1-1.status': worker('a-1', 'manager-1', 'completed', 1100) }
+  const calls = await boot($, on, files, false)
+  expect(calls.opened).toEqual([])
+  files['a-1-1.status'] = worker('a-1', 'manager-1', 'running', 1100)
+  calls.rev += 1
+  await calls.clock.advance(10_000)
+  expect(calls.opened).toEqual(['squad-deck'])
+  expect(calls.opens[0].backgroundColor).toBe('transparent')
+  // Still running: no second open.
+  await calls.clock.advance(10_000)
+  expect(calls.opened).toEqual(['squad-deck'])
+})
+
+test('the pane closes 60 s after the last run stops, and the status line clears', async ($, on) => {
+  const files = { 'a-1-1.status': worker('a-1', 'manager-1', 'running', 1100) }
+  const calls = await boot($, on, files, false)
+  expect(calls.opened).toEqual(['squad-deck'])
+  files['a-1-1.status'] = worker('a-1', 'manager-1', 'completed', 1100)
+  calls.rev += 1
+  await calls.clock.advance(30_000)
+  expect(calls.closed).toEqual([])
+  expect(calls.status.at(-1)).toBe('squad 0▶ 1✓ 0✗')
+  await calls.clock.advance(40_000)
+  expect(calls.closed).toEqual(['squad-deck'])
+  expect(calls.status.at(-1)).toBe(undefined)
+})
+
+test('a pane pinned by /deck open stays open when nothing runs', async ($, on) => {
+  const files = { 'a-1-1.status': worker('a-1', 'manager-1', 'running', 1100) }
+  const calls = await boot($, on, files, false)
+  await $.command.run({ command: 'deck', args: 'open' } as any)
+  files['a-1-1.status'] = worker('a-1', 'manager-1', 'completed', 1100)
+  calls.rev += 1
+  await calls.clock.advance(180_000)
+  expect(calls.closed).toEqual([])
+  // /deck close unpins and closes it.
+  await $.command.run({ command: 'deck', args: 'close' } as any)
+  expect(calls.closed).toEqual(['squad-deck'])
+})
+
+test('a pane the person closed reopens for a new run only', async ($, on) => {
+  const files: Record<string, string> = { 'a-1-1.status': worker('a-1', 'manager-1', 'running', 1100) }
+  const calls = await boot($, on, files, false)
+  expect(calls.opened).toEqual(['squad-deck'])
+  // The person's close mark: the pane is gone and this module did not close it.
+  calls.isDocked = false
+  await calls.clock.advance(20_000)
+  expect(calls.opened).toEqual(['squad-deck'])
+  files['b-1-1.status'] = worker('b-1', 'manager-1', 'running', 1150)
+  calls.rev += 1
+  await calls.clock.advance(10_000)
+  expect(calls.opened).toEqual(['squad-deck', 'squad-deck'])
+})
+
+test('the band and the status line are hidden while nothing runs', async ($, on) => {
+  const files = { 'a-1-1.status': worker('a-1', 'manager-1', 'completed', 1100) }
+  const calls = await boot($, on, files, false, SQUAD_ENV, false, false)
+  expect(calls.status.at(-1)).toBe(undefined)
+  const band = await $.ui.mount({
+    plugin: 'squad-deck',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    surface: 'terminal',
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 } },
+  } as any)
+  expect(await band.find({ type: 'Text', text: /done/ })).toBeUndefined()
+  await band.unmount()
 })

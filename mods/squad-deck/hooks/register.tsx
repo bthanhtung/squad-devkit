@@ -24,6 +24,7 @@ import { Band, Deck } from './view'
 
 const PANE = 'squad-deck'
 const EVERY_MS = 2000
+const LINGER_MS = 60_000 // the pane and the band stay this long after the last worker stops
 const IDLE_EVERY = 5 // while nothing is open and no worker is known: every 10 s
 const MAX_TAILS = 8
 const LAYOUTS = ['auto', 'compact', 'wide', 'mini']
@@ -33,6 +34,7 @@ const runs = atom({ plugin: 'squad-deck', key: 'runs' } as const, [], { shape: '
 const now = atom({ plugin: 'squad-deck', key: 'now' } as const, 0)
 const since = atom({ plugin: 'squad-deck', key: 'since' } as const, 0)
 const isDocked = atom({ plugin: 'squad-deck', key: 'isDocked' } as const, false)
+const isActive = atom({ plugin: 'squad-deck', key: 'isActive' } as const, false)
 const perms = atom({ plugin: 'squad-deck', key: 'perms' } as const, emptyPerms(), {
   shape: 'perms-1',
 })
@@ -48,6 +50,14 @@ let timer: { cancel: () => void } | undefined
 let tick = 0
 let isBusy = false
 let shownStatus: string | undefined
+// Pane manners: /deck open pins it, a close by the person or /deck close holds it shut
+// until a run not seen before turns up, and it closes LINGER_MS after the last run stops.
+let isPinned = false
+let isDismissed = false
+let hasRun = false
+let wasOpen = false
+let stoppedAt: number | undefined
+const seen = new Set<string>()
 const statuses = new Map<string, { mtimeMs: number; run: Run | null }>()
 // Whether this session is a squad session; decided once, on first need.
 let squadSession: Promise<boolean> | undefined
@@ -88,18 +98,24 @@ async function workersDir($: any): Promise<string> {
   return `${base.replace(/\/+$/, '')}/.squad/workers`
 }
 
-// The newest status per worker, newest MAX_RUNS files only.
-async function readRuns($: any, dir: string, session: number): Promise<Run[]> {
+// This tab's manager id; empty outside a squad-devkit tab, which then sees every run.
+async function managerId($: any): Promise<string> {
+  const id = await $.env.get('SQUAD_MANAGER_ID').catch(() => undefined)
+
+  return typeof id === 'string' ? id.trim() : ''
+}
+
+// The newest status per worker; of this tab's runs, the newest MAX_RUNS files only.
+async function readRuns($: any, dir: string, session: number, manager: string): Promise<Run[]> {
   const entries = await $.fs.list(dir).catch(() => [])
   const files = entries
     .filter((entry: any) => entry.kind === 'file' && entry.name.endsWith('.status'))
     .sort((a: any, b: any) => b.mtimeMs - a.mtimeMs)
-    .slice(0, MAX_RUNS)
-  const seen = new Set<string>()
+  const present = new Set<string>()
   const parsed = await Promise.all(
     files.map(async (file: any): Promise<Run | null> => {
       const path = `${dir}/${file.name}`
-      seen.add(path)
+      present.add(path)
       const hit = statuses.get(path)
       if (hit !== undefined && hit.mtimeMs === file.mtimeMs) return hit.run
       const text = await $.fs.read(path).catch(() => undefined)
@@ -110,12 +126,14 @@ async function readRuns($: any, dir: string, session: number): Promise<Run[]> {
       return run
     }),
   )
-  for (const path of [...statuses.keys()]) if (!seen.has(path)) statuses.delete(path)
+  for (const path of [...statuses.keys()]) if (!present.has(path)) statuses.delete(path)
 
-  return pickRuns(
-    parsed.filter((run): run is Run => run !== null),
-    session,
-  )
+  // The tab's filter comes before the cap, so the cap counts this tab's runs.
+  const mine = parsed
+    .filter((run): run is Run => run !== null && (manager === '' || run.manager === manager))
+    .slice(0, MAX_RUNS)
+
+  return pickRuns(mine, session)
 }
 
 // Only the last 16 KB of a log is read, and only from the workers directory.
@@ -132,28 +150,63 @@ async function addActivity($: any, dir: string, list: Run[]): Promise<void> {
   )
 }
 
+const PANE_ARGS = { id: PANE, title: 'squad', backgroundColor: 'transparent' } as const
+
 async function refresh($: any, isForced = false): Promise<void> {
   if (isBusy) return
   isBusy = true
   try {
     const panes = await $.ui.panes().catch(() => [])
+    const isOpen = panes.some((pane: any) => pane.id === PANE)
     const isUp = panes.some((pane: any) => pane.id === PANE && pane.isPlaced)
+    // A pane that was open and is gone without this module closing it was the person's doing
+    // (the ui.close hook sees the same, a tick sooner): unpin it, and wait for a new run.
+    if (wasOpen && !isOpen) {
+      isPinned = false
+      isDismissed = true
+    }
+    wasOpen = isOpen
     if ((await read($, isDocked)) !== isUp) await update($, isDocked, () => isUp)
     const before = await read($, runs)
-    // Calm when idle: no pane and no worker known, look every 10 s only.
+    // Calm when idle: no pane and no recent worker, look every 10 s only.
     tick += 1
-    if (!isForced && !isUp && before.length === 0 && tick % IDLE_EVERY !== 1) return
+    if (!isForced && !isOpen && !(await read($, isActive)) && tick % IDLE_EVERY !== 1) return
 
     const clock: number = await $.clock.now()
     const dir = await workersDir($)
-    const list = await readRuns($, dir, await startedAt($))
+    const list = await readRuns($, dir, await startedAt($), await managerId($))
     await addActivity($, dir, list)
-    const hasLive = list.some(run => run.state === 'running')
-    if (hasLive || JSON.stringify(list) !== JSON.stringify(before)) {
+    const running = list.filter(run => run.state === 'running')
+    const keys = running.map(run => `${run.id}@${run.started}`)
+    const hasFresh = keys.some(key => !seen.has(key))
+    for (const key of keys) seen.add(key)
+    if (hasFresh) isDismissed = false
+    if (running.length > 0) {
+      hasRun = true
+      stoppedAt = undefined
+    } else {
+      stoppedAt ??= clock
+    }
+    const isLingering = hasRun && stoppedAt !== undefined && clock - stoppedAt < LINGER_MS
+    const active = running.length > 0 || isLingering
+
+    if (running.length > 0 && !isOpen && !isDismissed) {
+      // Unasked, the engine seats it from 144 columns and otherwise leaves it waiting.
+      const opened = await $.ui.open(PANE_ARGS).catch(() => undefined)
+      wasOpen = opened !== undefined
+      if (opened?.isPlaced === true) await update($, isDocked, () => true)
+    } else if (running.length === 0 && isOpen && !isPinned && stoppedAt !== undefined && clock - stoppedAt >= LINGER_MS) {
+      wasOpen = false
+      await $.ui.close({ id: PANE }).catch(() => undefined)
+      await update($, isDocked, () => false)
+    }
+
+    if (running.length > 0 || JSON.stringify(list) !== JSON.stringify(before)) {
       await update($, runs, () => list)
       await update($, now, () => Math.floor(clock / 1000))
     }
-    const text = statusText(list)
+    if ((await read($, isActive)) !== active) await update($, isActive, () => active)
+    const text = active ? statusText(list) : undefined
     if (text !== shownStatus) {
       shownStatus = text
       $.ui.status(text)
@@ -187,8 +240,6 @@ export const register: Register = on => {
     })
     if (await isSquadSession($)) {
       await startedAt($)
-      // Unasked, the engine seats it from 144 columns and otherwise leaves it waiting.
-      void $.ui.open({ id: PANE, title: 'squad', backgroundColor: 'transparent' }).catch(() => undefined)
       ensureTimer($)
       await refresh($, true)
     }
@@ -200,6 +251,8 @@ export const register: Register = on => {
     const [first = '', arg = ''] = e.args.trim().split(/\s+/)
     const verb = first === '' ? 'open' : first
     if (verb === 'close') {
+      isPinned = false
+      isDismissed = true
       await $.ui.close({ id: PANE }).catch(() => undefined)
 
       return { text: 'Squad deck closed.' }
@@ -210,14 +263,26 @@ export const register: Register = on => {
       return { text: `Squad deck layout: ${arg}.` }
     }
     if (verb === 'open') {
+      isPinned = true
+      isDismissed = false
       ensureTimer($)
-      const opened = await $.ui.open({ id: PANE, title: 'squad', backgroundColor: 'transparent' }).catch(() => undefined)
+      const opened = await $.ui.open(PANE_ARGS).catch(() => undefined)
       await refresh($, true)
 
       return { text: opened?.isPlaced === true ? 'Squad deck opened.' : 'Squad deck could not be placed here.' }
     }
 
     return { text: 'Usage: /deck [open|close|layout auto|compact|wide|mini]' }
+  })
+
+  // The person closed the pane (its mark or Esc): unpin it, and keep it shut until a new run starts.
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE && e.origin.kind === 'person') {
+      isPinned = false
+      isDismissed = true
+    }
+
+    return next(e)
   })
 
   on('tool.check', async ($, e, next) => {
@@ -258,7 +323,9 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, runs)
-    if (e.props.hasSurvey || list.length === 0 || (await read($, isDocked))) return next(e)
+    if (e.props.hasSurvey || list.length === 0 || !(await read($, isActive)) || (await read($, isDocked))) {
+      return next(e)
+    }
 
     return Band($.ui.resolve(e), list)
   })

@@ -1,6 +1,6 @@
 {
   "name": "squad-deck",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A live, observe-only dashboard of squad-devkit workers docked in the manager's Claude Code terminal.",
   "author": { "name": "squad-devkit" }
 }
