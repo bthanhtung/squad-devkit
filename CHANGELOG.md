@@ -10,6 +10,7 @@ releases.
 - Removed agy as a worker engine: Antigravity blocks CLI calls from other AI agents. agy remains available as a manager. A saved `workers=` or `SQUAD_DEVKIT_WORKERS` that names agy is ignored with a one-line note; `squad-worker --engine agy` and `squad-devkit --workers agy` exit 2. Sub-managers run on `claude` or `codex`, and their children default to `opencode`.
 
 ### Behaviour changes
+- High-risk or high-complexity plans require an approved strong reviewer run on the plan before editing workers launch; attempt 3 prints a strong reviewer diagnosis command.
 - Manager instructions put the per-session manager ID in a short final block, so manager tabs share the prompt cache instead of each writing ~20k tokens of fresh cache on the first turn.
 - Reviewer workers are read-only at the engine level (Claude/ccr without Edit/Write, Codex `--sandbox read-only`, OpenCode `--agent plan`); they run in place on the project, so a prompt alone was not enough.
 - High-risk plans refuse launches below the strong tier unless `--tier-reason` is provided; children of sub-managers are exempt and record the reason in `tier_override`.
@@ -18,6 +19,7 @@ releases.
 - The manager prompt lists mapped models as text.
 
 ### Added
+- Pre-plan read-only `scout` role (`templates/devkit/scout.md`, `--role scout`) for offloading file discovery, symbol search, and codebase exploration to cheap models before writing a plan: exempt from the manager `--plan` requirement when no plan is given, runs without a worktree, enforces engine-level read-only limits (Claude/ccr `Read,Glob,Grep`, Codex `--sandbox read-only`, OpenCode `--agent plan`), defaults to a 10-minute timeout (`SQUAD_WORKER_SCOUT_TIMEOUT`), and auto-picks the cheapest configured/fast engine when `--engine` is omitted (configurable via `squad-devkit --scout ENGINE[:MODEL]`, `SQUAD_WORKER_SCOUT_ENGINE` / `SQUAD_WORKER_SCOUT_MODEL`, or `scout_engine=` / `scout_model=` in config).
 - Telegram remote (`squad-devkit telegram setup|start|stop|status|run`, `squad-telegram`): one bot controls every running manager from your phone (`/list`, `/to`, plain text, reply-to), with manager replies, worker results and waiting-for-input notices sent back. Only the paired private chat is served, phone text is stripped of control characters, and `SQUAD_DEVKIT_TELEGRAM=0` or a `telegram-exclude` / `TELEGRAM_EXCLUDE` path list keeps client workspaces off Telegram.
 - Orchestration cards show live activity, worker health and verification, merge and scope status; plan progress, Flow filters and worker details/actions make runs easier to inspect. Desktop completion notifications can be disabled with `SQUAD_DEVKIT_NOTIFY=0`.
 - Plan task briefs, opt-in verification retry escalation and gated automatic merging; run statistics and a doctor split test. Low-risk, low-complexity plans may omit Perspectives.

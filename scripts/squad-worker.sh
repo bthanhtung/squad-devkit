@@ -35,14 +35,14 @@ original_arguments=("$@")
 
 usage() {
   cat <<'EOF'
-Usage: squad-worker <worker-id> --engine ENGINE (--brief TEXT | --brief-file FILE | --task [ID])
+Usage: squad-worker <worker-id> [--engine ENGINE] (--brief TEXT | --brief-file FILE | --task [ID])
                     [--role ROLE] [--title TITLE] [--project DIR]
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
                     [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
                     [--plan FILE | --no-plan "REASON"] [--clone URL] [--init]
                     [--own PATHS] [--no-plan-context] [--parent ID]
                     [--budget-tokens N] [--max-children N]
-                    [--tier-reason REASON] [--verify COMMAND]
+                    [--tier-reason REASON] [--skip-plan-review REASON] [--verify COMMAND]
        squad-worker --list
        squad-worker --tree [--json]
        squad-worker --stop <worker-id|all>
@@ -65,7 +65,8 @@ Engines, most trusted first:
   ccr      Claude Code through claude-code-router: cheap model, file tools only
 
 Options:
-  --role ROLE        Role prompt from .squad/roles/ROLE.md (default: dev)
+  --engine ENGINE    Worker engine (optional with --role scout: uses configured or cheapest read-only engine)
+  --role ROLE        Role prompt from .squad/roles/ROLE.md (default: dev; scout is read-only, skips worktree, and may omit --plan)
   --title TITLE      Task title (default: first line of the brief)
   --task [ID]       Use exact plan task ID (default: worker ID) plus Acceptance; requires --plan
   --brief-file -     Read the brief from stdin
@@ -74,6 +75,7 @@ Options:
   --models           Print local model candidates as JSON; optional --engine/--project filters
   --model-tier TIER  fast|balanced|strong; requires a mapping (Claude aliases available)
   --tier-reason REASON  Allow a high-risk plan below strong tier; record why
+  --skip-plan-review REASON  Bypass the plan review gate; record why
   --retry-escalate   Retry a failed verification once at the next mapped tier
   --merge-if-green   Merge verified, in-scope changes on a low-risk plan
   --verify COMMAND   Run acceptance command after a completed worker
@@ -81,9 +83,9 @@ Options:
   --mcp NAME         codex only: keep this MCP server enabled (repeatable);
                      all others are disabled to keep the worker's context small
   --all-mcp          codex only: keep every configured MCP server
-  --timeout MINUTES  Stop the run after this long (default 45)
+  --timeout MINUTES  Stop the run after this long (default 45, or 10 for scout)
   --worktree         Work in an isolated git worktree (default in git repositories,
-                     except for the reviewer, researcher and security roles)
+                     except for the reviewer, researcher, scout and security roles)
   --no-worktree      Work directly in the project directory
   --yolo             Bypass permissions and sandbox (claude, codex only;
                      inherited from SQUAD_DEVKIT_YOLO=1)
@@ -128,7 +130,8 @@ default 10), SQUAD_WORKER_VIEW (orchestration or panes, default orchestration
 when managed, panes otherwise), SQUAD_WORKER_PANES=0,
 SQUAD_WORKER_PANE_HOLD (seconds a finished monitor pane stays open, default 60),
 SQUAD_WORKER_WORKTREE (auto, 1, or 0), SQUAD_WORKER_SANDBOX (1 or 0), SQUAD_WORKER_VERIFY_TIMEOUT (minutes, default 10),
-SQUAD_WORKER_REPORT_LINES (default 40).
+SQUAD_WORKER_REPORT_LINES (default 40), SQUAD_WORKER_SCOUT_ENGINE, SQUAD_WORKER_SCOUT_MODEL,
+SQUAD_WORKER_SCOUT_TIMEOUT (minutes, default 10).
 EOF
 }
 
@@ -143,9 +146,19 @@ task_mode=0
 task_id=""
 profile="${SQUAD_WORKER_CODEX_PROFILE:-}"
 model=""
+model_flag_set=0
 model_source=""
 model_tier=""
+tier_flag_set=0
+scout_model_applied=0
+scout_model_source=""
+scout_resolved_engine=""
+scout_resolved_tier=""
+scout_resolved_model=""
+scout_resolved_source=""
+scout_resolved_error=""
 tier_reason=""
+plan_review_override=""
 retry_escalate=0
 merge_if_green=0
 verify_command=""
@@ -170,6 +183,7 @@ verdict=""
 scope_violation=""
 project_directory=""
 timeout_minutes="${SQUAD_WORKER_TIMEOUT:-45}"
+timeout_flag_set=0
 stall_minutes="${SQUAD_WORKER_STALL:-10}"
 keep_mcp=()
 all_mcp=0
@@ -180,11 +194,11 @@ sandbox_mode="${SQUAD_WORKER_SANDBOX:-1}"
 sandbox_flag_set=""
 yolo="${SQUAD_DEVKIT_YOLO:-0}"
 view="${SQUAD_WORKER_VIEW:-}"
+if ! declare -f devkit_config_get >/dev/null 2>&1 && [[ -f "$script_dir/lib/squad-devkit-agents.sh" ]]; then
+  # shellcheck source=lib/squad-devkit-agents.sh
+  source "$script_dir/lib/squad-devkit-agents.sh"
+fi
 if [[ -z "$view" ]]; then
-  if ! declare -f devkit_config_get >/dev/null 2>&1 && [[ -f "$script_dir/lib/squad-devkit-agents.sh" ]]; then
-    # shellcheck source=lib/squad-devkit-agents.sh
-    source "$script_dir/lib/squad-devkit-agents.sh"
-  fi
   if declare -f devkit_config_get >/dev/null 2>&1; then
     view="$(devkit_config_get view)"
   elif [[ -f "${SQUAD_DEVKIT_CONFIG:-$HOME/.config/squad-devkit/config}" ]]; then
@@ -213,7 +227,7 @@ one_line_reason() {
 while (( $# > 0 )); do
   case "$1" in --models|--engine|--project) ;; *) catalog_incompatible=1 ;; esac
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own|--parent|--budget-tokens|--max-children|--tier-reason|--verify)
+    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own|--parent|--budget-tokens|--max-children|--tier-reason|--skip-plan-review|--verify)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -226,9 +240,10 @@ while (( $# > 0 )); do
         --brief) brief="$2" ;;
         --brief-file) brief_file="$2" ;;
         --profile) profile="$2" ;;
-        --model) model="$2" ;;
-        --model-tier) model_tier="$2" ;;
+        --model) model="$2"; model_flag_set=1 ;;
+        --model-tier) model_tier="$2"; tier_flag_set=1 ;;
         --tier-reason) tier_reason="$(one_line_reason --tier-reason "$2")" || exit 2 ;;
+        --skip-plan-review) plan_review_override="$(one_line_reason --skip-plan-review "$2")" || exit 2 ;;
         --verify) verify_command="$2" ;;
         --mcp) keep_mcp+=("$2") ;;
         --manager) manager_id="$2"; required_split=1; manager_flag_set=1 ;;
@@ -241,7 +256,7 @@ while (( $# > 0 )); do
         --budget-tokens) budget_tokens="$2" ;;
         --max-children) max_children="$2" ;;
         --project) project_directory="$2" ;;
-        --timeout) timeout_minutes="$2" ;;
+        --timeout) timeout_minutes="$2"; timeout_flag_set=1 ;;
         --stop) action=stop; stop_target="$2" ;;
         --merge) action=merge; stop_target="$2" ;;
         --discard) action=discard; stop_target="$2" ;;
@@ -365,6 +380,7 @@ find_workspace() {
   printf '%s\n' "$directory"
 }
 
+# shellcheck source=lib/squad-worker-model.sh
 source "$script_dir/lib/squad-worker-model.sh"
 
 if (( models == 1 )); then
@@ -584,16 +600,18 @@ scope_violations() {
 # verdict is changes_requested never counts; the newest such reviewer is left in
 # $review_blocker so the gate can say why. A reviewer without a verdict (older
 # runs, or a report that omits it) still counts, as before.
-review_exists() {
-  local target_status="$1" plan="$2" target_finished file finished state verdict newest=0 latest=""
+latest_plan_review() {
+  local target_status="$1" plan="$2" target_finished file finished state newest=0
+  latest_review=""
   review_blocker=""
   # A worker without a real plan cannot be reviewed against one.
   [[ -n "$plan" && "$plan" != none ]] || return 1
-  target_finished="$(status_get "$target_status" finished)"
+  target_finished=""
+  [[ -z "$target_status" ]] || target_finished="$(status_get "$target_status" finished)"
   target_finished="${target_finished:-0}"
   while IFS= read -r file; do
     [[ "$(status_get "$file" role)" == reviewer ]] || continue
-    [[ "$(status_get "$file" worker)" != "$(status_get "$target_status" worker)" ]] || continue
+    [[ -z "$target_status" || "$(status_get "$file" worker)" != "$(status_get "$target_status" worker)" ]] || continue
     [[ "$(status_get "$file" plan)" == "$plan" ]] || continue
     state="$(status_get "$file" state)"
     [[ "$state" == "completed" || "$state" == "done" ]] || continue
@@ -601,16 +619,21 @@ review_exists() {
     if [[ "$finished" =~ ^[0-9]+$ ]] && (( finished > target_finished )); then
       if (( finished > newest )); then
         newest="$finished"
-        latest="$file"
+        latest_review="$file"
       elif (( finished == newest )) && [[ "$(status_get "$file" verdict)" == changes_requested ]]; then
-        latest="$file"
+        latest_review="$file"
       fi
     fi
   done < <(ls -t .squad/workers/*.status 2>/dev/null)
-  [[ -n "$latest" ]] || return 1
-  verdict="$(status_get "$latest" verdict)"
+  [[ -n "$latest_review" ]]
+}
+
+review_exists() {
+  local verdict
+  latest_plan_review "$1" "$2" || return 1
+  verdict="$(status_get "$latest_review" verdict)"
   if [[ "$verdict" == changes_requested ]]; then
-    review_blocker="$(status_get "$latest" worker) ($(status_get "$latest" report))"
+    review_blocker="$(status_get "$latest_review" worker) ($(status_get "$latest_review" report))"
     return 1
   fi
   return 0
@@ -956,12 +979,59 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
   exit "$exit_status"
 fi
 
-if [[ -z "$worker_id" || -z "$engine" ]]; then
+scout_read_configured_target() {
+  cfg_scout_engine=""
+  cfg_scout_model=""
+  cfg_scout_source=""
+  if [[ -n "${SQUAD_WORKER_SCOUT_ENGINE:-}" ]]; then
+    cfg_scout_engine="$SQUAD_WORKER_SCOUT_ENGINE"
+    cfg_scout_model="${SQUAD_WORKER_SCOUT_MODEL:-}"
+    cfg_scout_source="scout-env"
+  elif [[ -n "${SQUAD_WORKER_SCOUT_MODEL:-}" ]]; then
+    echo 'SQUAD_WORKER_SCOUT_MODEL requires SQUAD_WORKER_SCOUT_ENGINE' >&2
+    exit 2
+  elif declare -f devkit_config_get >/dev/null 2>&1; then
+    cfg_scout_engine="$(devkit_config_get scout_engine)"
+    cfg_scout_model="$(devkit_config_get scout_model)"
+    cfg_scout_source="scout-config"
+    if [[ -z "$cfg_scout_engine" && -n "$cfg_scout_model" ]]; then
+      echo 'scout_model in config requires scout_engine' >&2
+      exit 2
+    fi
+  fi
+}
+
+scout_in_list() {
+  local item
+  for item in ${1//,/ }; do
+    [[ "$item" == "$2" ]] && return 0
+  done
+  return 1
+}
+
+scout_enabled_installed_engines() {
+  local allow="${SQUAD_DEVKIT_WORKERS:-}" deny="${SQUAD_DEVKIT_DISABLE_WORKERS:-}" eng
+  if [[ -z "$allow" ]] && declare -f devkit_config_get >/dev/null 2>&1; then
+    allow="$(devkit_config_get workers)"
+  fi
+  if [[ -z "$deny" ]] && declare -f devkit_config_get >/dev/null 2>&1; then
+    deny="$(devkit_config_get disabled_workers)"
+  fi
+  local clean_allow="" item
+  for item in ${allow//,/ }; do
+    [[ "$item" == agy ]] || clean_allow="${clean_allow:+$clean_allow,}$item"
+  done
+  for eng in claude codex opencode grok ccr; do
+    if [[ -n "$clean_allow" ]] && ! scout_in_list "$clean_allow" "$eng"; then continue; fi
+    if [[ -n "$deny" ]] && scout_in_list "$deny" "$eng"; then continue; fi
+    if command -v "$eng" >/dev/null 2>&1; then
+      printf '%s\n' "$eng"
+    fi
+  done
+}
+
+if [[ -z "$worker_id" ]]; then
   usage >&2
-  exit 2
-fi
-if [[ "$engine" == agy ]]; then
-  echo 'agy can no longer run as a worker: Antigravity blocks CLI calls from other AI agents. Use opencode, codex, claude, grok or ccr.' >&2
   exit 2
 fi
 if [[ ! "$worker_id" =~ $id_pattern ]]; then
@@ -970,6 +1040,72 @@ if [[ ! "$worker_id" =~ $id_pattern ]]; then
 fi
 if [[ ! "$role" =~ $id_pattern ]]; then
   echo "Invalid role: $role" >&2
+  exit 2
+fi
+
+if [[ "$role" == scout ]]; then
+  saved_ws="${workspace_root:-}"
+  workspace_root="$(find_workspace 2>/dev/null || true)"
+  cfg_scout_engine=""
+  cfg_scout_model=""
+  cfg_scout_source=""
+  scout_read_configured_target
+  if [[ -n "$cfg_scout_engine" ]]; then
+    if [[ "$cfg_scout_engine" == *:* ]]; then
+      echo "Unknown scout engine: $cfg_scout_engine (use claude, codex, opencode, grok, or ccr)" >&2
+      exit 2
+    fi
+    squad_worker_parse_scout_spec "$cfg_scout_engine${cfg_scout_model:+:$cfg_scout_model}" || exit 2
+  fi
+  if [[ -z "$engine" ]]; then
+    scout_candidates=()
+    while IFS= read -r scout_cand; do
+      [[ -n "$scout_cand" ]] && scout_candidates+=("$scout_cand")
+    done < <(scout_enabled_installed_engines)
+    if [[ -n "$cfg_scout_engine" && "$cfg_scout_source" == scout-config ]]; then
+      if ! command -v "$cfg_scout_engine" >/dev/null 2>&1 ||
+         ! _squad_engine_in_list "$cfg_scout_engine" ${scout_candidates[@]+"${scout_candidates[@]}"}; then
+        echo "Note: configured scout_engine '$cfg_scout_engine' is unavailable or disabled; falling back to auto-selected scout engine." >&2
+        cfg_scout_engine=""
+        cfg_scout_model=""
+      fi
+    fi
+    if ! squad_worker_resolve_scout_target "$cfg_scout_engine" "$cfg_scout_model" ${scout_candidates[@]+"${scout_candidates[@]}"}; then
+      echo "squad-worker: ${scout_resolved_error:-no enabled worker engine found for scout; install a worker engine or pass --engine}" >&2
+      exit 2
+    fi
+    engine="$scout_resolved_engine"
+    if (( model_flag_set == 0 && tier_flag_set == 0 )); then
+      if [[ "$scout_resolved_source" == configured ]]; then
+        model="$scout_resolved_model"
+        scout_model_applied=1
+        scout_model_source="$cfg_scout_source"
+      elif [[ "$scout_resolved_tier" == fast ]]; then
+        model_tier="fast"
+      fi
+    fi
+  elif (( model_flag_set == 0 && tier_flag_set == 0 )); then
+    if [[ -n "$cfg_scout_engine" && "$cfg_scout_engine" == "$engine" && -n "$cfg_scout_model" ]]; then
+      model="$cfg_scout_model"
+      scout_model_applied=1
+      scout_model_source="$cfg_scout_source"
+    elif [[ "$engine" != ccr ]] && squad_worker_probe_fast_tier "$engine" >/dev/null; then
+      model_tier="fast"
+    fi
+  fi
+  if [[ -n "$saved_ws" ]]; then
+    workspace_root="$saved_ws"
+  else
+    unset workspace_root
+  fi
+fi
+
+if [[ -z "$engine" ]]; then
+  usage >&2
+  exit 2
+fi
+if [[ "$engine" == agy ]]; then
+  echo 'agy can no longer run as a worker: Antigravity blocks CLI calls from other AI agents. Use opencode, codex, claude, grok or ccr.' >&2
   exit 2
 fi
 if [[ "$role" == sub-manager ]]; then
@@ -1049,12 +1185,16 @@ if [[ -n "$manager_flag_set" || -n "${SQUAD_MANAGER_ID:-}" || "${SQUAD_WORKER_RE
   manager_context=1
 fi
 [[ "${SQUAD_WORKER_REQUIRE_PLAN:-}" != 0 ]] || manager_context=0
-if (( manager_context == 1 )) && [[ -z "$plan_argument" && -z "$no_plan_reason" ]]; then
+if (( manager_context == 1 )) && [[ "$role" != scout && -z "$plan_argument" && -z "$no_plan_reason" ]]; then
   echo 'squad-worker: a plan is required in manager context. Pass --plan .squad/plans/<name>.md (see templates/devkit/plan.md.example) or --no-plan "<reason>".' >&2
   exit 2
 fi
 plan_path=none
-plan_line="Plan: none (override: ${no_plan_reason:-no plan given})"
+if [[ "$role" == scout && -z "$no_plan_reason" ]]; then
+  plan_line="Plan: none (read-only scout)"
+else
+  plan_line="Plan: none (override: ${no_plan_reason:-no plan given})"
+fi
 if [[ -n "$plan_argument" ]]; then
   plan_directory="$(cd "$(dirname "$plan_argument")" 2>/dev/null && pwd || true)"
   plan_path="${plan_directory:-$(dirname "$plan_argument")}/$(basename "$plan_argument")"
@@ -1091,11 +1231,17 @@ if [[ ! "$verify_timeout" =~ ^[0-9]+$ || "$verify_timeout" =~ ^0+$ || ! "$report
   echo "SQUAD_WORKER_VERIFY_TIMEOUT and SQUAD_WORKER_REPORT_LINES must be positive whole numbers" >&2
   exit 2
 fi
+if [[ "$role" == scout ]] && (( timeout_flag_set == 0 )) && [[ -z "${SQUAD_WORKER_TIMEOUT:-}" ]]; then
+  timeout_minutes="${SQUAD_WORKER_SCOUT_TIMEOUT:-10}"
+fi
 if [[ ! "$timeout_minutes" =~ ^[0-9]+$ || "$timeout_minutes" =~ ^0+$ || ! "$stall_minutes" =~ ^[0-9]+$ ]]; then
   echo "--timeout (at least 1) and SQUAD_WORKER_STALL take whole minutes" >&2
   exit 2
 fi
 squad_worker_select_model
+if (( scout_model_applied == 1 )) && [[ "$model_source" == flag ]]; then
+  model_source="$scout_model_source"
+fi
 if [[ "$plan_path" != none ]]; then
   plan_risk="$(plan_field "$plan_path" risk)"
   plan_complexity="$(plan_field "$plan_path" complexity)"
@@ -1115,6 +1261,28 @@ if [[ "$plan_path" != none ]]; then
     echo 'squad-worker: high complexity; consider --model-tier strong.' >&2
   elif [[ "$plan_risk" == low && "$plan_complexity" == low && "$model_tier" == strong ]]; then
     echo 'squad-worker: low risk and complexity; consider a lower model tier.' >&2
+  fi
+fi
+if [[ "$plan_path" != none && ( "$plan_risk" == high || "$plan_complexity" == high ) && "$role" != reviewer && "$role" != scout && "$role" != researcher ]]; then
+  review_workspace="$(find_workspace 2>/dev/null || true)"
+  latest_review=""
+  if [[ -n "$review_workspace" ]]; then
+    old_directory="$PWD"
+    cd "$review_workspace"
+    latest_plan_review "" "$plan_path" || true
+    cd "$old_directory"
+    [[ -z "$latest_review" ]] || latest_review="$review_workspace/$latest_review"
+  fi
+  if [[ -z "$latest_review" || "$(status_get "$latest_review" verdict)" != approved ]]; then
+    if [[ -z "$plan_review_override" ]]; then
+      echo "squad-worker: plan $plan_path is Risk/Complexity high; run a plan review first:" >&2
+      echo "  squad-worker plan-review --manager $manager_id --role reviewer --model-tier strong --plan $plan_path --brief \"Review the plan file $plan_path (no diff yet): missing auth/security invariants, schema or API contracts, wrong task split, unverifiable acceptance. End with VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED.\"" >&2
+      echo '  or pass --skip-plan-review "<reason>".' >&2
+      exit 2
+    fi
+  fi
+  if [[ -n "$plan_review_override" ]]; then
+    plan_append_approval "$plan_path" "- plan-review-override: $plan_review_override ($(date +%Y-%m-%d))" || { echo "squad-worker: could not record plan review override in $plan_path" >&2; exit 1; }
   fi
 fi
 model_arguments=()
@@ -1237,7 +1405,7 @@ on_stop() {
 trap on_stop TERM INT
 
 # Isolated worktree: by default in git repositories, except for the read-only
-# reviewer, researcher and security roles. Fix rounds reuse an unmerged worktree.
+# reviewer, researcher, scout and security roles. Fix rounds reuse an unmerged worktree.
 engine_directory="$project_directory"
 repository_root=""
 worktree_path=""
@@ -1249,7 +1417,7 @@ previous_context=""
 case "$worktree_mode" in
   1) use_worktree=1 ;;
   0) ;;
-  *) [[ "$role" != reviewer && "$role" != researcher && "$role" != security ]] && use_worktree=1 ;;
+  *) [[ "$role" != reviewer && "$role" != researcher && "$role" != security && "$role" != scout ]] && use_worktree=1 ;;
 esac
 if (( use_worktree == 1 )); then
   repository_root="$(worktree_repository_root "$project_directory" || true)"
@@ -1283,6 +1451,10 @@ if (( use_worktree == 1 )); then
           echo 'squad-worker: consider a higher tier or splitting the task.' >&2
         fi
         previous_report="$(status_get "$previous_status" report)"
+        if (( attempt == 3 )); then
+          echo "squad-worker: $worker_id failed twice; before escalating, get a strong diagnosis:" >&2
+          echo "  squad-worker $worker_id-diag --manager $manager_id --role reviewer --model-tier strong --plan $plan_path --brief \"Read $previous_report and inspect git -C $worktree_path diff $worktree_base_commit: root cause or rabbit hole? name the root cause and the smallest fix.\"" >&2
+        fi
         previous_text=""
         [[ ! -s "$previous_report" ]] || previous_text="$(head -c 4000 "$previous_report")"
         previous_diff="$(git -C "$worktree_path" diff --stat "$worktree_base_commit" | head -n 40)"
@@ -1321,9 +1493,27 @@ fi
 ask_command="$(printf '%q --from %q --workspace %q' "$script_dir/squad-ask.sh" "$worker_id" "$workspace_root")"
 if [[ "$engine" == ccr ]]; then
   questions="- You have no shell, so you cannot ask questions: decide within the brief and list your assumptions in the report."
+elif [[ "$engine" == claude && "$role" == scout && "${SQUAD_WORKER_CLAUDE_TOOLS:-}" != *Bash* ]]; then
+  questions="- You have no shell, so you cannot ask questions: report what you found and note any ambiguities or gaps."
 else
   questions="- If the brief is ambiguous or you find a better technical approach, ask before guessing: \`$ask_command --to $manager_id \"your question\"\` waits for the answer (up to 5 minutes). Ask another worker the same way (\`squad agents\` in $workspace_root lists them).
 - Between major steps, run \`$ask_command --check\` and answer other workers' questions with \`$ask_command --reply <id> \"answer\"\`."
+fi
+if [[ "$role" == scout ]]; then
+  rules="- Read-only exploration: do not edit files, create files, commit, push, or run mutating commands.
+- Use targeted glob/grep searches and bounded reads; summarize findings instead of pasting large file dumps.
+$questions
+- Never read or print secrets, credentials, tokens, or \`.env\` files.
+- If something blocks you or is ambiguous, note the gap clearly instead of guessing.
+- Your final message is the report for $manager_id, at most 30 lines: exact \`path:line\` locations, relevant symbols/patterns, build/test commands if asked, and open gaps."
+else
+  rules="- Do only what the task asks and touch only the files it assigns you; other workers may be editing other files at the same time.
+- Hold the bar of a senior engineer at a top technology company: secure by default (no secrets in code, validate input, least privilege), efficient, simple to maintain and extend, consistent with the surrounding code, and accessible, platform-consistent UI (Apple Human Interface Guidelines, Material Design) when the task has UI.
+$questions
+- Do not commit, push, or delete unrelated files.
+- Use only the tools you were given. Never read credentials or tokens from configuration files; if a tool you need is missing, stop and report it.
+- If something blocks you, stop and explain it in the report instead of guessing.
+- Your final message is the report for $manager_id, at most 15 lines: result, files changed, verification you ran and its outcome, assumptions, open issues."
 fi
 # shellcheck disable=SC2034 # read by lib/engines/*.sh
 prompt="You are $worker_id, a $role worker in a squad led by $manager_id. You run once, without a human at the keyboard.
@@ -1346,13 +1536,7 @@ ${previous_context:+$previous_context
 $brief
 
 ## Rules
-- Do only what the task asks and touch only the files it assigns you; other workers may be editing other files at the same time.
-- Hold the bar of a senior engineer at a top technology company: secure by default (no secrets in code, validate input, least privilege), efficient, simple to maintain and extend, consistent with the surrounding code, and accessible, platform-consistent UI (Apple Human Interface Guidelines, Material Design) when the task has UI.
-$questions
-- Do not commit, push, or delete unrelated files.
-- Use only the tools you were given. Never read credentials or tokens from configuration files; if a tool you need is missing, stop and report it.
-- If something blocks you, stop and explain it in the report instead of guessing.
-- Your final message is the report for $manager_id, at most 15 lines: result, files changed, verification you ran and its outcome, assumptions, open issues."
+$rules"
 
 output_directory=".squad/workers"
 mkdir -p "$output_directory"
@@ -1382,7 +1566,7 @@ write_status() {
   {
     printf 'worker=%s\nengine=%s\nprofile=%s\nmodel=%s\nrole=%s\n' \
       "$worker_id" "$engine" "$run_profile" "$model" "$role"
-    printf 'model_tier=%s\nattempt=%s\ntier_override=%s\nverify=%s\nverify_exit=%s\n' "$model_tier" "$attempt" "$tier_reason" "$verify" "$verify_exit"
+    printf 'model_tier=%s\nattempt=%s\ntier_override=%s\nplan_review_override=%s\nverify=%s\nverify_exit=%s\n' "$model_tier" "$attempt" "$tier_reason" "$plan_review_override" "$verify" "$verify_exit"
     printf 'requested_model=%s\nmodel_source=%s\nactual_model=%s\n' "$model" "$model_source" "$actual_model"
     printf 'title=%s\ntask=%s\nstate=%s\nreason=%s\n' \
       "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state" "${failure_reason:-$stop_reason}"
@@ -1508,7 +1692,11 @@ open_monitor_pane() {
         printf 'export SQUAD_DEVKIT_MANAGER_WRAPPER_PID=%q\n' "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}"
         printf 'export SQUAD_DEVKIT_SESSION_START=%q\n' "${SQUAD_DEVKIT_SESSION_START:-}"
         printf 'export SQUAD_MANAGER_ID=%q\n' "$mgr_id"
-        printf 'exec %q %q\n' "$script_dir/squad-orchestration.sh" "$workspace_root/$output_directory"
+        if [[ "${SQUAD_TUI:-0}" == "1" ]]; then
+          printf 'exec python3 %q --db %q\n' "$script_dir/squad-tui.py" "$workspace_root/.squad/messages.db"
+        else
+          printf 'exec %q %q\n' "$script_dir/squad-orchestration.sh" "$workspace_root/$output_directory"
+        fi
       } >"$orchestration_script"
       chmod +x "$orchestration_script"
       if ! squad_open_monitor "$workspace_root/$orchestration_script" "$pane_title" "$workspace_root" \

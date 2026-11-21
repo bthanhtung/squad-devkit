@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source_file="${BASH_SOURCE[0]}"
+while [[ -L "$source_file" ]]; do
+  source_directory="$(cd "$(dirname "$source_file")" && pwd)"
+  link_target="$(readlink "$source_file")"
+  if [[ "$link_target" == /* ]]; then
+    source_file="$link_target"
+  else
+    source_file="$source_directory/$link_target"
+  fi
+done
+script_dir="$(cd "$(dirname "$source_file")" && pwd)"
 source "$script_dir/lib/squad-jq.sh"
 
 usage() {

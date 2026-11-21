@@ -534,12 +534,12 @@ EOF
   [[ "$(squad_panes_orca_manager "$PWD")" == manager ]] || fail
   export ORCA_PANE_KEY=missing:leaf
   [[ -z "$(squad_panes_orca_manager "$PWD")" ]] || fail
-  export SQUAD_DEVKIT_ORCA_TERMINAL=manager
   mkdir -p "$temp_directory/workspace 'quoted'"
   printf '#!/bin/sh\nprintf quoted-ok\n' >"$temp_directory/worker 'quoted' script"
   chmod +x "$temp_directory/worker 'quoted' script"
-  squad_open_monitor "$temp_directory/worker 'quoted' script" 'worker · codex' "$temp_directory/workspace 'quoted'" "$temp_directory/orca-state" ''
+  ORCA_PANE_KEY=tab:leaf squad_open_monitor "$temp_directory/worker 'quoted' script" 'worker · codex' "$temp_directory/workspace 'quoted'" "$temp_directory/orca-state" '' required
   [[ "$(bash -c "$(cat "$ORCA_TEST_LOG.command")")" == quoted-ok ]] || fail
+  export SQUAD_DEVKIT_ORCA_TERMINAL=manager
   squad_open_monitor /tmp/next 'next · codex' "$PWD" "$temp_directory/orca-state" ''
   grep -q '^terminal split --terminal manager --direction vertical --command ' "$ORCA_TEST_LOG"
   grep -q '^terminal split --terminal worker-pane --direction horizontal --command ' "$ORCA_TEST_LOG"
@@ -572,7 +572,7 @@ EOF
   TMUX=fake TMUX_PANE=%1 squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
   [[ ! -s "$ORCA_TEST_LOG" ]] || fail
   unset -f tmux
-  unset SQUAD_DEVKIT_ORCA_TERMINAL
+  unset SQUAD_DEVKIT_ORCA_TERMINAL ORCA_PANE_KEY
   squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
   [[ ! -s "$ORCA_TEST_LOG" ]] || fail
   export SQUAD_DEVKIT_ORCA_TERMINAL=manager

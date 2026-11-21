@@ -7,15 +7,20 @@ source "$script_dir/lib/squad-devkit-agents.sh"
 
 usage() {
   cat <<'EOF'
-Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill] [--build-squad]
+Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill] [--build-squad] [--with-tokeneconomizer]
 
-Link squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask, and squad-telegram into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
+Link squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask,
+squad-telegram, and squad-tokeneconomizer into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
 and choose the manager CLI. Claude Code is the default when installed; without
 it, the installer asks which installed CLI should manage and saves the answer.
 Re-run it, or run squad-devkit --setup, to change the choice.
 
 Pass --build-squad to compile the squad message bus binary from source using cargo
 instead of downloading a prebuilt release binary.
+
+Pass --with-tokeneconomizer to opt into the experimental Codex TokenEconomizer
+plugin (pinned upstream checkout and Codex plugin registration). Off by default;
+if optional installation fails, a warning is printed and base squad-devkit remains usable.
 
 If the claude-hud status line plugin is installed, the installer also turns on
 its weekly quota and usage-pace display (display.sevenDayThreshold = 0,
@@ -34,6 +39,7 @@ no_prompt=0
 configure_hud=1
 install_skill=1
 build_squad=0
+with_tokeneconomizer=0
 while (( $# > 0 )); do
   case "$1" in
     --manager)
@@ -49,6 +55,7 @@ while (( $# > 0 )); do
     --no-hud) configure_hud=0 ;;
     --no-skill) install_skill=0 ;;
     --build-squad) build_squad=1 ;;
+    --with-tokeneconomizer) with_tokeneconomizer=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -198,7 +205,8 @@ ln -sfn "$script_dir/squad-orchestration.sh" "$bin_directory/squad-orchestration
 ln -sfn "$script_dir/squad-route.sh" "$bin_directory/squad-route"
 ln -sfn "$script_dir/squad-ask.sh" "$bin_directory/squad-ask"
 ln -sfn "$script_dir/squad-telegram.sh" "$bin_directory/squad-telegram"
-printf 'Linked squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask, and squad-telegram into %s\n' "$bin_directory"
+ln -sfn "$script_dir/squad-tokeneconomizer.sh" "$bin_directory/squad-tokeneconomizer"
+printf 'Linked squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask, squad-telegram, and squad-tokeneconomizer into %s\n' "$bin_directory"
 
 # The skill is a link into this repository, so pulling updates it.
 if (( install_skill == 1 )); then
@@ -285,6 +293,12 @@ if (( configure_hud == 1 )) && [[ -d "$(dirname "$hud_config")" ]] && command -v
     else
       echo 'claude-hud: weekly quota display already configured'
     fi
+  fi
+fi
+
+if (( with_tokeneconomizer == 1 )); then
+  if ! "$script_dir/squad-tokeneconomizer.sh" install; then
+    echo "Warning: optional TokenEconomizer installation failed; base squad-devkit installation remains usable. Run squad-tokeneconomizer install to retry." >&2
   fi
 fi
 

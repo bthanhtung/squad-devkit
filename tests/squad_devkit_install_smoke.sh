@@ -99,18 +99,40 @@ export HOME="$temp_directory/home"
 export SQUAD_DEVKIT_BIN_DIR="$installed_bin"
 export SQUAD_DEVKIT_RELEASE_URL="file://$fake_release_dir"
 
+# Ensure a failing codex stub does not affect default offline install.
+rm -f "$test_path/codex"
+codex_log="$temp_directory/codex_calls"
+cat >"$test_path/codex" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$codex_log"
+exit 1
+EOF
+chmod +x "$test_path/codex"
+
 # Verify squad is not initially present on PATH
 if command -v squad >/dev/null 2>&1; then
   fail
 fi
 
-# Run installer
+# Run default installer: links squad-tokeneconomizer without invoking codex or touching plugin state
 bash "$repo_root/scripts/install-devkit.sh" --no-prompt --no-hud --no-skill
 
-# Assert $installed_bin/squad was installed and executable
+# Assert $installed_bin/squad and $installed_bin/squad-tokeneconomizer were installed and executable
 [[ -x "$installed_bin/squad" ]] || fail
+[[ -L "$installed_bin/squad-tokeneconomizer" ]] || fail
+[[ "$(SQUAD_DEVKIT_ROUTER_URL= "$installed_bin/squad-route" test)" == '{"configured":false}' ]] || fail
+[[ ! -e "$codex_log" ]] || fail
+[[ ! -e "$HOME/.cache/squad-devkit/tokeneconomizer" ]] || fail
+[[ ! -e "$HOME/.tokeneconomizer" ]] || fail
+[[ ! -e "$HOME/.codex/plugins" ]] || fail
 version_output="$("$installed_bin/squad" --version)"
 [[ "$version_output" == *"$cargo_version"* ]] || fail
+
+# Optional --with-tokeneconomizer failure warns and leaves base devkit usable (exit 0).
+opt_err="$(bash "$repo_root/scripts/install-devkit.sh" --no-prompt --no-hud --no-skill --with-tokeneconomizer 2>&1)"
+[[ "$opt_err" == *"Warning: optional TokenEconomizer installation failed"* ]] || fail
+[[ -x "$installed_bin/squad-devkit" ]] || fail
+[[ ! -e "$HOME/.cache/squad-devkit/tokeneconomizer/upstream" ]] || fail
 
 # Corrupt SHA256SUMS
 rm -f "$installed_bin/squad"

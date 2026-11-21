@@ -16,13 +16,16 @@ source "$script_dir/lib/squad-tmux-launcher-helpers.sh"
 source "$script_dir/lib/squad-devkit-agents.sh"
 source "$script_dir/lib/squad-panes.sh"
 source "$script_dir/lib/squad-jq.sh"
+# shellcheck source=lib/squad-worker-model.sh
+source "$script_dir/lib/squad-worker-model.sh"
+source "$script_dir/lib/squad-tokeneconomizer.sh"
 
 devkit_version="1.0.2"
 
 usage() {
   cat <<'EOF'
 Usage: squad-devkit [project-name-or-directory] [objective] [--task objective]
-                    [--manager CLI] [--workers LIST]
+                    [--manager CLI] [--workers LIST] [--scout ENGINE[:MODEL]]
                     [--disable-workers LIST] [--view MODE] [--setup] [--doctor] [--list] [--ghostty] [--tmux]
                     [--update] [--reload] [--dry-run] [--no-attach] [--no-prompt]
        squad-devkit update|reload|restart [project-name-or-directory]
@@ -51,8 +54,10 @@ Without an objective the manager opens an interactive chat and asks for one firs
                           (or SQUAD_DEVKIT_WORKERS, or workers= in the config file)
   --disable-workers LIST  Exclude these worker engines
                           (or SQUAD_DEVKIT_DISABLE_WORKERS, or disabled_workers=)
+  --scout ENGINE[:MODEL]  Default cheap read-only scout worker (or SQUAD_WORKER_SCOUT_ENGINE /
+                          SQUAD_WORKER_SCOUT_MODEL, or scout_engine= / scout_model= in config)
   --view MODE   How worker progress is shown: orchestration (one live flow view, default) or panes (one split per worker); or SQUAD_WORKER_VIEW / view= in the config file
-  --doctor      Diagnose environment: core tools, manager, worker engines, and multiplexer/panes
+  --doctor      Diagnose environment: core tools, manager, worker engines, optional integrations, and multiplexer/panes
   --split-test  With --doctor, open and verify a monitor split
   --stats       Show run statistics for the last 30 days (--days N)
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
@@ -107,6 +112,17 @@ manager_client="${SQUAD_DEVKIT_MANAGER:-}"
 workers_opt="${SQUAD_DEVKIT_WORKERS:-}"
 workers_cli=0
 disable_workers_opt="${SQUAD_DEVKIT_DISABLE_WORKERS:-}"
+scout_cli=0
+scout_opt=""
+scout_engine_opt=""
+scout_model_opt=""
+scout_source=""
+parsed_scout_engine=""
+parsed_scout_model=""
+scout_resolved_engine=""
+scout_resolved_model=""
+scout_resolved_source=""
+scout_resolved_error=""
 view_opt="${SQUAD_WORKER_VIEW:-}"
 view_source=""
 [[ -z "$view_opt" ]] || view_source="env"
@@ -159,6 +175,25 @@ while (( $# > 0 )); do
       ;;
     --workers=*) workers_opt="${1#*=}"; workers_cli=1; reload_passthrough_args+=("$1") ;;
     --disable-workers=*) disable_workers_opt="${1#*=}"; workers_cli=1; reload_passthrough_args+=("$1") ;;
+    --scout)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      scout_opt="$2"
+      scout_cli=1
+      reload_passthrough_args+=("$1" "$2")
+      shift
+      ;;
+    --scout=*)
+      scout_opt="${1#*=}"
+      if [[ -z "$scout_opt" ]]; then
+        echo "Missing value for --scout" >&2
+        exit 2
+      fi
+      scout_cli=1
+      reload_passthrough_args+=("$1")
+      ;;
     --view)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
@@ -573,6 +608,7 @@ run_doctor() {
   fi
   # Enabled engines first, in the effective order (allow-list order when set,
   # otherwise the built-in trust order).
+  local doctor_enabled_engines=()
   for eng in "${order[@]}"; do
     if path="$(command -v "$eng" 2>/dev/null)" && worker_enabled "$eng"; then
       ver="$(get_tool_version "$eng")"
@@ -582,6 +618,7 @@ run_doctor() {
         printf '  [FOUND]   %-8s %s [enabled]\n' "$eng" "$path"
       fi
       engines_found=$((engines_found + 1))
+      doctor_enabled_engines+=("$eng")
       seen+=" $eng "
     fi
   done
@@ -603,7 +640,25 @@ run_doctor() {
   if (( engines_found == 0 )); then
     printf '  Note: No worker engines found. Manager will work without sub-workers.\n'
   fi
+  if [[ -n "$scout_engine_opt" ]] && { ! command -v "$scout_engine_opt" >/dev/null 2>&1 || ! worker_enabled "$scout_engine_opt"; }; then
+    local scout_unavail_reason="not installed"
+    ! worker_enabled "$scout_engine_opt" && scout_unavail_reason="disabled"
+    printf '  Default scout: %s [unavailable: %s]\n' "$scout_engine_opt" "$scout_unavail_reason"
+  elif squad_worker_resolve_scout_target "$scout_engine_opt" "$scout_model_opt" ${doctor_enabled_engines[@]+"${doctor_enabled_engines[@]}"}; then
+    local scout_desc=""
+    case "$scout_resolved_source" in
+      configured) scout_desc="$scout_resolved_model" ;;
+      configured-fast|auto-fast|auto-builtin) scout_desc="fast=$scout_resolved_model" ;;
+      configured-router|auto-ccr) scout_desc="router default" ;;
+      *) scout_desc="CLI default" ;;
+    esac
+    printf '  Default scout: %s (%s, source: %s)\n' "$scout_resolved_engine" "$scout_desc" "${scout_source:-$scout_resolved_source}"
+  else
+    printf '  Default scout: none (no enabled worker engines)\n'
+  fi
   printf '\n'
+
+  squad_te_doctor_report
 
   printf 'Terminal & Monitor Support:\n'
   local term_prog="${TERM_PROGRAM:-unknown}"
@@ -752,6 +807,50 @@ workers_opt="$(normalize_worker_list "${workers_opt:-$(devkit_config_get workers
 disable_workers_opt="$(normalize_worker_list "${disable_workers_opt:-$(devkit_config_get disabled_workers)}" disabled_workers)" || exit 2
 setup_mode="$(devkit_config_get setup_mode)"
 
+if (( scout_cli == 1 )); then
+  squad_worker_parse_scout_spec "$scout_opt" || exit 2
+  scout_engine_opt="$parsed_scout_engine"
+  scout_model_opt="$parsed_scout_model"
+  scout_source="flag"
+  if ! worker_enabled "$scout_engine_opt"; then
+    echo "Scout engine '$scout_engine_opt' is disabled by worker settings" >&2
+    exit 2
+  fi
+elif [[ -n "${SQUAD_WORKER_SCOUT_ENGINE:-}" ]]; then
+  if [[ "$SQUAD_WORKER_SCOUT_ENGINE" == *:* ]]; then
+    echo "Unknown scout engine: $SQUAD_WORKER_SCOUT_ENGINE (use claude, codex, opencode, grok, or ccr)" >&2
+    exit 2
+  fi
+  squad_worker_parse_scout_spec "$SQUAD_WORKER_SCOUT_ENGINE${SQUAD_WORKER_SCOUT_MODEL:+:$SQUAD_WORKER_SCOUT_MODEL}" || exit 2
+  scout_engine_opt="$parsed_scout_engine"
+  scout_model_opt="$parsed_scout_model"
+  scout_source="env"
+  if ! worker_enabled "$scout_engine_opt"; then
+    echo "Scout engine '$scout_engine_opt' is disabled by worker settings" >&2
+    exit 2
+  fi
+elif [[ -n "${SQUAD_WORKER_SCOUT_MODEL:-}" ]]; then
+  echo 'SQUAD_WORKER_SCOUT_MODEL requires SQUAD_WORKER_SCOUT_ENGINE' >&2
+  exit 2
+else
+  cfg_scout_engine="$(devkit_config_get scout_engine)"
+  cfg_scout_model="$(devkit_config_get scout_model)"
+  if [[ -z "$cfg_scout_engine" && -n "$cfg_scout_model" ]]; then
+    echo 'scout_model in config requires scout_engine' >&2
+    exit 2
+  fi
+  if [[ -n "$cfg_scout_engine" ]]; then
+    if [[ "$cfg_scout_engine" == *:* ]]; then
+      echo "Unknown scout engine: $cfg_scout_engine (use claude, codex, opencode, grok, or ccr)" >&2
+      exit 2
+    fi
+    squad_worker_parse_scout_spec "$cfg_scout_engine${cfg_scout_model:+:$cfg_scout_model}" || exit 2
+    scout_engine_opt="$parsed_scout_engine"
+    scout_model_opt="$parsed_scout_model"
+    scout_source="config"
+  fi
+fi
+
 interactive=0
 if [[ -z "$devkit_action" ]] && (( no_prompt == 0 )) && { [[ -t 0 ]] || is_truthy "${SQUAD_DEVKIT_FORCE_PROMPT:-}"; }; then
   interactive=1
@@ -850,16 +949,36 @@ build_manager_prompt() {
   local missing_mapping=""
   local worker_order_line=""
   local prompt=""
+  local eff_scout_engine="$scout_engine_opt"
+  local eff_scout_model="$scout_model_opt"
+  local scout_guidance=""
+  if [[ -n "$eff_scout_engine" ]] && { ! command -v "$eff_scout_engine" >/dev/null 2>&1 || ! worker_enabled "$eff_scout_engine"; }; then
+    if [[ "$scout_source" == flag || "$scout_source" == env ]]; then
+      echo "Scout engine not installed: $eff_scout_engine" >&2
+      return 2
+    fi
+    if (( ${#worker_engines[@]} > 0 )); then
+      echo "Note: ignoring unavailable/disabled scout_engine '$eff_scout_engine' in config; auto-selecting scout engine." >&2
+    fi
+    eff_scout_engine=""
+    eff_scout_model=""
+  fi
   if (( ${#worker_engines[@]} == 0 )); then
     worker_line="No worker engine is installed, so do the work yourself instead of starting squad-worker."
   else
-    worker_catalog="$(source "$script_dir/lib/squad-worker-model.sh"; squad_worker_model_catalog "${worker_engines[@]}")" || return $?
+    worker_catalog="$(squad_worker_model_catalog "${worker_engines[@]}")" || return $?
     while IFS= read -r missing_mapping; do
       [[ -z "$missing_mapping" ]] || printf 'Worker models: %s; run squad config workers, then squad-worker --models.\n' "$missing_mapping" >&2
     done < <(printf '%s' "$worker_catalog" | squad_jq -r '.[] | select(.installed and .tier != "" and .source == "unresolved" and .engine != "ccr") | "\(.engine) \(.tier): set SQUAD_WORKER_\(.engine | ascii_upcase)_MODEL_\(.tier | ascii_upcase)"')
     worker_order_line="Installed worker engines, most trusted first: ${worker_engines[*]}"
     if [[ "$setup_mode" == custom && "$workers_from_flag" == 0 && -n "$workers_opt" ]]; then
       worker_order_line="Installed worker engines, in the order the human chose (prefer earlier ones): ${worker_engines[*]}"
+    fi
+    if squad_worker_resolve_scout_target "$eff_scout_engine" "$eff_scout_model" "${worker_engines[@]}"; then
+      scout_guidance="$(squad_worker_format_scout_guidance)"
+    elif [[ -n "${scout_resolved_error:-}" ]]; then
+      echo "$scout_resolved_error" >&2
+      return 2
     fi
     worker_line="squad-worker is: $worker_command
 Always pass --manager <your manager ID> (given at the end of these instructions) on every worker launch; do not rely on inherited environment variables.
@@ -872,6 +991,7 @@ $(printf '%s' "$worker_catalog" | squad_jq -r '
   | [$rows[] | select(.engine == $engine and .tier != "" and .candidate != null)
       | if .effort != null then "\(.tier)=\(.candidate) (effort \(.effort))" else "\(.tier)=\(.candidate)" end]
   | if length == 0 then "\($engine): CLI default only" else "\($engine): " + join(", ") end')
+Scout worker (read-only, no --plan needed): $scout_guidance
 In Claude Code, start workers with run_in_background: true; you are notified when each one exits. In other CLIs, start each worker as a detached job (squad-worker ... >.squad/workers/<id>.out 2>&1 &); each worker messages you when it finishes, so wait with one command, squad receive <your manager ID> --wait --timeout 900, instead of polling or sleeping."
   fi
   if [[ -n "${SQUAD_DEVKIT_ROUTER_URL:-}" ]]; then
@@ -894,7 +1014,7 @@ refresh_project_roles() {
   local source=""
   local destination=""
   mkdir -p "$target_project/.squad/roles"
-  for role in manager-devkit manager-hierarchy dev tester reviewer researcher ui-ux security sub-manager; do
+  for role in manager-devkit manager-hierarchy dev tester reviewer researcher scout ui-ux security sub-manager; do
     source="$script_dir/../templates/devkit/$role.md"
     destination="$target_project/.squad/roles/$role.md"
     if [[ ! -e "$destination" ]]; then
@@ -986,7 +1106,11 @@ fi
 
 manager_prompt="$(build_manager_prompt)" || exit $?
 manager_command="$(shell_join "$script_dir/lib/squad-devkit-manager.sh" "$manager_client" "$manager_prompt" "$objective")"
-manager_command="$(shell_join env "SQUAD_DEVKIT_YOLO=${SQUAD_DEVKIT_YOLO:-0}" "SQUAD_WORKER_VIEW=$view_opt") $manager_command"
+manager_env_args=("SQUAD_DEVKIT_YOLO=${SQUAD_DEVKIT_YOLO:-0}" "SQUAD_WORKER_VIEW=$view_opt")
+if [[ "$scout_source" == flag || "$scout_source" == env ]]; then
+  manager_env_args+=("SQUAD_WORKER_SCOUT_ENGINE=$scout_engine_opt" "SQUAD_WORKER_SCOUT_MODEL=$scout_model_opt")
+fi
+manager_command="$(shell_join env "${manager_env_args[@]}") $manager_command"
 manager_title="$(manager_label "$manager_client")"
 
 if (( dry_run == 1 )); then
