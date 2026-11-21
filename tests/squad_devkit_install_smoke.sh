@@ -14,7 +14,7 @@ fail() {
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-temp_directory="$(mktemp -d /tmp/squad-devkit-install-test.XXXXXX)"
+temp_directory="$(mktemp -d "${TMPDIR:-/tmp}/squad-devkit-install-test.XXXXXX")"
 
 cleanup() {
   rm -rf "$temp_directory"
@@ -99,6 +99,19 @@ export HOME="$temp_directory/home"
 export SQUAD_DEVKIT_BIN_DIR="$installed_bin"
 export SQUAD_DEVKIT_RELEASE_URL="file://$fake_release_dir"
 
+# A fake claude that logs its arguments; the deck step must call it only as needed.
+claude_log="$temp_directory/claude.log"
+rm -f "$test_path/claude"
+cat >"$test_path/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == --version ]]; then echo '2.1.328 (Claude Code)'; exit 0; fi
+printf '%s\n' "\$*" >>"$claude_log"
+exit 0
+EOF
+chmod +x "$test_path/claude"
+export CLAUDE_CONFIG_DIR="$temp_directory/claude-config"
+mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
+
 # Verify squad is not initially present on PATH
 if command -v squad >/dev/null 2>&1; then
   fail
@@ -112,6 +125,35 @@ bash "$repo_root/scripts/install-devkit.sh" --no-prompt --no-hud --no-skill
 [[ "$(SQUAD_DEVKIT_ROUTER_URL= "$installed_bin/squad-route" test)" == '{"configured":false}' ]] || fail
 version_output="$("$installed_bin/squad" --version)"
 [[ "$version_output" == *"$cargo_version"* ]] || fail
+
+# The deck step: marketplace add and install, once each.
+[[ "$(grep -c '^plugin marketplace add ' "$claude_log")" == 1 ]] || fail
+grep -qxF "plugin marketplace add $repo_root" "$claude_log" || fail
+[[ "$(grep -c '^plugin install squad-deck@squad-devkit --scope user$' "$claude_log")" == 1 ]] || fail
+
+# Already there (fixtures stand for what claude would have written): no calls.
+: >"$claude_log"
+printf '{"squad-devkit":{}}\n' >"$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
+printf '{"version":2,"plugins":{"squad-deck@squad-devkit":[{"scope":"user"}]}}\n' >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+bash "$repo_root/scripts/install-devkit.sh" --no-prompt --no-hud --no-skill >/dev/null 2>&1
+[[ ! -s "$claude_log" ]] || fail
+
+# --no-deck skips the step.
+: >"$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
+: >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+bash "$repo_root/scripts/install-devkit.sh" --no-prompt --no-hud --no-skill --no-deck >/dev/null 2>&1
+[[ ! -s "$claude_log" ]] || fail
+
+# A failing claude is a warning, not a failed install.
+rm -f "$test_path/claude"
+cat >"$test_path/claude" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == --version ]]; then echo '2.1.328 (Claude Code)'; exit 0; fi
+exit 1
+EOF
+chmod +x "$test_path/claude"
+warn_output="$(bash "$repo_root/scripts/install-devkit.sh" --no-prompt --no-hud --no-skill 2>&1)"
+[[ "$warn_output" == *'Deck: warning'* ]] || fail
 
 # Corrupt SHA256SUMS
 rm -f "$installed_bin/squad"

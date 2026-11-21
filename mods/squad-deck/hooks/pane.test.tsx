@@ -24,7 +24,11 @@ const PANE = {
 } as const
 
 // Each hook here stands for the engine beneath the mod.
-function engine(on: any, calls: { tails: string[][]; status: (string | undefined)[]; opened: string[]; isDocked: boolean }, files = FILES) {
+type Calls = { tails: string[][]; status: (string | undefined)[]; opened: string[]; isDocked: boolean }
+type Env = Record<string, string>
+const SQUAD_ENV: Env = { SQUAD_DEVKIT_SESSION_START: '1000', SQUAD_DEVKIT_WORKSPACE: '/w' }
+
+function engine(on: any, calls: Calls, files = FILES, env: Env = SQUAD_ENV, hasWorkersDir = false) {
   const clock = mock.clock(on, { now: 1_200_000 })
   on('ui.close', () => ({ value: undefined }))
   on('command.register', () => ({ value: { command: 'deck' } }))
@@ -38,8 +42,14 @@ function engine(on: any, calls: { tails: string[][]; status: (string | undefined
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/elsewhere' }))
   on('env.get', (_: unknown, e: any) => ({
-    value: { SQUAD_DEVKIT_SESSION_START: '1000', SQUAD_DEVKIT_WORKSPACE: '/w' }[e.name as string],
+    value: env[e.name as string],
   }))
+  on('fs.stat', (_: unknown, e: any) => {
+    if (hasWorkersDir && e.path === '/elsewhere/.squad/workers') {
+      return { value: { kind: 'dir', size: 0, mtimeMs: 1, isLink: false } }
+    }
+    throw new Error('ENOENT')
+  })
   on('fs.list', (_: unknown, e: any) => ({
     value: e.path === DIR
       ? Object.keys(files).map((name, i) => ({ name, kind: 'file', size: 1, mtimeMs: 100 + i, isLink: false }))
@@ -56,9 +66,9 @@ function engine(on: any, calls: { tails: string[][]; status: (string | undefined
   return clock
 }
 
-async function boot($: any, on: any, files = FILES, isDocked = true) {
-  const calls = { tails: [] as string[][], status: [] as (string | undefined)[], opened: [] as string[], isDocked }
-  const clock = engine(on, calls, files)
+async function boot($: any, on: any, files = FILES, isDocked = true, env: Env = SQUAD_ENV, hasWorkersDir = false) {
+  const calls: Calls = { tails: [], status: [], opened: [], isDocked }
+  const clock = engine(on, calls, files, env, hasWorkersDir)
   await $.session.start({ cwd: '/elsewhere', surface: 'terminal', isInteractive: true })
 
   return { ...calls, clock }
@@ -174,4 +184,38 @@ test('/deck opens, closes and sets the layout', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 120 } })
   expect((await ui.findAll({ type: 'Text', text: /in \/ .* out/ })).length).toBe(0)
   await ui.unmount()
+})
+
+test('a session that is not a squad session only gets /deck', async ($, on) => {
+  const calls = await boot($, on, FILES, true, {})
+  expect(calls.opened).toEqual([])
+  expect(calls.status).toEqual([])
+  expect(calls.tails).toEqual([])
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await calls.clock.advance(10_000)
+  expect(calls.status).toEqual([])
+  const band = await $.ui.mount({
+    plugin: 'squad-deck',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    surface: 'terminal',
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 } },
+  } as any)
+  expect(await band.find({ type: 'Text', text: /running/ })).toBeUndefined()
+  await band.unmount()
+
+  // /deck open still works there and starts the refresh on demand.
+  const out = await $.command.run({ command: 'deck', args: 'open' } as any)
+  expect(out.text).toBe('Squad deck opened.')
+  expect(calls.opened).toEqual(['squad-deck'])
+})
+
+test('a .squad/workers folder in the session directory makes it a squad session', async ($, on) => {
+  const calls = await boot($, on, FILES, true, {}, true)
+  expect(calls.opened).toContain('squad-deck')
+})
+
+test('SQUAD_MANAGER_ID alone makes it a squad session', async ($, on) => {
+  const calls = await boot($, on, FILES, true, { SQUAD_MANAGER_ID: 'manager-1' })
+  expect(calls.opened).toContain('squad-deck')
 })

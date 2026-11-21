@@ -49,6 +49,26 @@ let tick = 0
 let isBusy = false
 let shownStatus: string | undefined
 const statuses = new Map<string, { mtimeMs: number; run: Run | null }>()
+// Whether this session is a squad session; decided once, on first need.
+let squadSession: Promise<boolean> | undefined
+
+// A squad session has a squad environment variable or a .squad/workers folder in its directory.
+// The plugin may be installed for every session, so the others get /deck and nothing else.
+function isSquadSession($: any): Promise<boolean> {
+  squadSession ??= (async () => {
+    const manager = await $.env.get('SQUAD_MANAGER_ID').catch(() => undefined)
+    if (typeof manager === 'string' && manager !== '') return true
+    const workspace = await $.env.get('SQUAD_DEVKIT_WORKSPACE').catch(() => undefined)
+    if (typeof workspace === 'string' && workspace !== '') return true
+    const cwd = await $.session.cwd().catch(() => undefined)
+    if (typeof cwd !== 'string' || cwd === '') return false
+    const stat = await $.fs.stat(`${cwd.replace(/\/+$/, '')}/.squad/workers`).catch(() => undefined)
+
+    return stat?.kind === 'dir'
+  })()
+
+  return squadSession
+}
 
 async function startedAt($: any): Promise<number> {
   const fromEnv = Number(await $.env.get('SQUAD_DEVKIT_SESSION_START'))
@@ -165,11 +185,13 @@ export const register: Register = on => {
       description: 'Dock the squad worker dashboard: /deck [open|close|layout auto|compact|wide|mini]',
       argumentHint: '[open|close|layout auto|compact|wide|mini]',
     })
-    await startedAt($)
-    // Unasked, the engine seats it from 144 columns and otherwise leaves it waiting.
-    void $.ui.open({ id: PANE, title: 'squad' }).catch(() => undefined)
-    ensureTimer($)
-    await refresh($, true)
+    if (await isSquadSession($)) {
+      await startedAt($)
+      // Unasked, the engine seats it from 144 columns and otherwise leaves it waiting.
+      void $.ui.open({ id: PANE, title: 'squad' }).catch(() => undefined)
+      ensureTimer($)
+      await refresh($, true)
+    }
 
     return next(e)
   })
@@ -199,7 +221,7 @@ export const register: Register = on => {
   })
 
   on('tool.check', async ($, e, next) => {
-    if (ensureTimer($)) void refresh($, true)
+    if ((await isSquadSession($)) && ensureTimer($)) void refresh($, true)
     const verdict = await next(e)
     if (e.tool_use_id !== undefined) {
       await update($, perms, one => addVerdict(one, e.tool, verdict.decision)).catch(() => undefined)
@@ -209,7 +231,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    if (ensureTimer($)) void refresh($, true)
+    if ((await isSquadSession($)) && ensureTimer($)) void refresh($, true)
     const line = clean(String(e.command ?? ''), 100)
     if (line !== '') {
       await update($, commands, list => [...list, line].slice(-5)).catch(() => undefined)

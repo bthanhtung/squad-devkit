@@ -1,0 +1,12 @@
+{
+  "name": "squad-devkit",
+  "owner": { "name": "squad-devkit" },
+  "description": "Claude Code mods for squad-devkit managers.",
+  "plugins": [
+    {
+      "name": "squad-deck",
+      "source": "./mods/squad-deck",
+      "description": "A live, observe-only dashboard of squad-devkit workers docked in the manager's Claude Code terminal."
+    }
+  ]
+}

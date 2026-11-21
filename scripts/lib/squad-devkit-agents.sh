@@ -57,6 +57,18 @@ validate_yolo_client() {
 
 deck_min_claude_version="2.1.289"
 
+# Prints the key (squad-deck@<marketplace>) of the squad deck when it is installed as a
+# Claude Code plugin, and returns 0; returns 1 otherwise. A plain file read, so it is
+# cheap enough for every launch.
+deck_installed_plugin() {
+  local file key
+  file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+  [[ -f "$file" ]] || return 1
+  key="$(squad_jq -r '(.plugins // {}) | keys[] | select(startswith("squad-deck@"))' "$file" 2>/dev/null | head -n 1)" || key=""
+  [[ -n "$key" ]] || return 1
+  printf '%s' "$key"
+}
+
 # Decides whether the manager loads the squad deck mod (mods/squad-deck). Prints
 # the reason and returns 0 when it does, 1 when it does not. $1 is the claude
 # binary. Any failure to read the version means off.
@@ -85,6 +97,9 @@ deck_plugin_check() {
   IFS=. read -r need_major need_minor need_patch <<<"$deck_min_claude_version"
   if (( 10#$major * 1000000000 + 10#$minor * 1000000 + 10#$patch < need_major * 1000000000 + need_minor * 1000000 + need_patch )); then
     printf 'Claude Code %s.%s.%s is older than %s' "$major" "$minor" "$patch" "$deck_min_claude_version"; return 1
+  fi
+  if found="$(deck_installed_plugin)"; then
+    printf 'installed plugin %s' "$found"; return 0
   fi
   printf 'mods/squad-deck, Claude Code %s.%s.%s' "$major" "$minor" "$patch"
 }
@@ -119,7 +134,8 @@ manager_start_command() {
       fi
       arguments+=(--append-system-prompt "$instructions")
       # The squad deck mod: an observe-only worker dashboard in this session.
-      if deck_plugin_check "$binary" >/dev/null; then
+      # An installed squad-deck plugin loads by itself: --plugin-dir would load it twice.
+      if deck_plugin_check "$binary" >/dev/null && ! deck_installed_plugin >/dev/null; then
         arguments+=(--plugin-dir "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/mods/squad-deck")
       fi
       if [[ -n "${4:-}" ]]; then
