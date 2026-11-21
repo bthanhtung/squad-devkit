@@ -629,6 +629,8 @@ The default `graph` layout is a lifecycle flow chart, top to bottom:
 
 Keys: `l` (or Tab) cycles layouts and `g` / `w` / `c` / `t` pick graph, swarm (`--layout g2`), cards or tree directly; `p` pins the pane (cancels auto-close); `a` toggles all managers (`--all-managers`); `h` expands or collapses the older-plans list; `f` toggles focus (present) mode, which shows only the header, the main lane and the waiting group at full height (`--focus` starts in it, including with `--once`). The `pipeline` and `tree` layouts keep their previous look with the same manager scoping. `--once` prints one frame without escape codes.
 
+The swarm layout (`--layout g2`, key `w`) shows the manager’s latest brief, plan tasks, worker activity, tokens and review status. Cards wrap to fit the pane. Short panes use compact cards, and `j`/`k` shows live details for the selected worker. Set `SQUAD_ORCHESTRATION_ANIMATE=0` to disable motion.
+
 The `cards` layout (`--layout cards`, key `c`) shows live activity and output age, stale workers, waiting age, model tier, verification failures, merge state, scope violations and the reason for another round. Live token counts and activity are updated while a worker runs when log output changes; missing live data is simply unavailable. Cards grow with the pane width. Cards, tree and pipeline show plan task progress and token totals; unlaunched tasks appear as pending with `after <id>` dependencies. Missing or older plan/status fields are accepted.
 
 In cards, tree and pipeline, Flow wraps message text and pins unanswered questions ahead of recent messages. `v` cycles all, questions and failures (`--flow-filter`, or `SQUAD_ORCHESTRATION_FLOW_FILTER`); `e` expands earlier worker rows (`SQUAD_ORCHESTRATION_EXPAND=1` starts expanded). `SQUAD_ORCHESTRATION_STALE_SECS` defaults to 120. These controls preserve `f` for focus and `p` for pinning.
@@ -734,6 +736,23 @@ without updating its status shows as LOST.
 place every two seconds with synchronized output, so it does not flicker
 either. It works in any terminal. Each run keeps `<id>-<time>.status`, `.log` (JSON events), and
 `.md` (report) in that directory.
+
+## Squad deck
+
+The squad deck is a small Claude Code mod that docks a live dashboard of your workers inside the manager's own terminal, in the spirit of [Flightdeck](https://github.com/scasella/claude-flightdeck). Flightdeck watches a session's subagents; squad workers are separate processes, so the deck reads their `.status` files and the tail of their logs instead. It is observe-only: it makes no network call, writes nothing but its own session state, never changes the session, and has no buttons that stop or merge a worker.
+
+`squad-devkit` starts the Claude Code manager with `--plugin-dir <devkit>/mods/squad-deck` when Claude Code is 2.1.289 or later (the mod API is early access and moves between releases; a version that cannot be read turns the deck off). Turn it off with `SQUAD_DEVKIT_DECK=0` or `deck=off` in `~/.config/squad-devkit/config`; `squad-devkit --doctor` prints `Deck: on|off (<reason>)`.
+
+What it shows:
+
+- **Pane `squad`**: one card per worker of this session (runs that started at or after `SQUAD_DEVKIT_SESSION_START`, the newest status per worker id, at most the 30 newest files): a header with state, id, engine·model and role; elapsed time, tokens in/out, verify and verdict; and a dim activity line. The activity of a running worker is its last tool or text, taken from the last 16 KB of its log (claude stream-json, OpenCode json, or the last line otherwise). Below the cards sit permission chips (allowed, asked and denied checks of this session, per file, shell and other tool) and the last five Bash commands with secrets redacted (Bearer and Authorization values, `*_TOKEN=`/`*_KEY=`/`*_SECRET=`/`PASSWORD=` values, GitHub, OpenAI-style, AWS, Slack and Telegram tokens, JWTs, PEM blocks). ANSI and control characters are stripped from everything it draws.
+- **Layouts**: two columns from 110 columns, one column when compact, one line per worker in mini; `auto` picks by width and height.
+- **Band above the prompt**: `squad: 2 running · 3 done · 1 failed` plus the newest activity, on the main screen while the pane is not shown, and hidden when no worker started this session.
+- **Status line**: `squad 2▶ 3✓ 1✗`, cleared when there are no workers.
+
+The pane opens by itself at session start when there is room (Claude Code seats it from 144 columns). `/deck` (or `/deck open`) opens it at any width, `/deck close` closes it, and `/deck layout auto|compact|wide|mini` sets the layout. Data refreshes every two seconds while the pane is open or workers are known, and every ten seconds otherwise.
+
+The workers directory is `$SQUAD_DEVKIT_WORKSPACE/.squad/workers`, or `<session directory>/.squad/workers` when that is unset. Test the mod with `claude plugin validate mods/squad-deck` and `claude plugin test mods/squad-deck`.
 
 ## Upgrading from the four-pane setup
 
@@ -927,6 +946,7 @@ Environment variables that tune a run. Related settings appear in the sections a
 | `SQUAD_DEVKIT_MAX_MB` | `200` | Size cap for `.squad/workers` |
 | `SQUAD_DEVKIT_STATUSLINE` | `1` | `0` turns off the squad status-line label |
 | `SQUAD_DEVKIT_NOTIFY` | `1` | `0` disables desktop notifications |
+| `SQUAD_DEVKIT_DECK` | `1` | `0` (or `deck=off` in config) keeps the [squad deck](#squad-deck) mod out of the Claude Code manager |
 | `SQUAD_WORKER_CLAUDE_MODEL` | `haiku` | Default model for Claude workers |
 | `SQUAD_WORKER_CODEX_PROFILE` | CLI configuration | Default Codex profile for workers |
 | `SQUAD_WORKER_TIMEOUT` / `SQUAD_WORKER_STALL` | `45` / `10` | Minutes before a run is stopped / counted as stuck |

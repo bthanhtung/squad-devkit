@@ -34,6 +34,10 @@ git init -q "$project_directory"
 
 cat >"$test_bin/claude" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == --version ]]; then
+  printf '2.1.328 (Claude Code)\n'
+  exit 0
+fi
 printf 'claude:%s\n' "${*//$'\n'/\\n}" >>"$DEVKIT_TEST_LOG"
 sleep 30
 EOF
@@ -174,12 +178,12 @@ printf 'node_modules/\n' >"$project_directory/.gitignore"
 grep -qx '.squad/' "$project_directory/.git/info/exclude"
 [[ -z "$(cd "$project_directory" && git status --porcelain)" ]] || fail
 for attempt in {1..30}; do
-  if [[ -f "$DEVKIT_TEST_LOG" ]]; then
+  if [[ -f "$DEVKIT_TEST_LOG" ]] && rg -q '^claude:--permission-mode' "$DEVKIT_TEST_LOG"; then
     break
   fi
   sleep 1
 done
-if [[ ! -f "$DEVKIT_TEST_LOG" ]]; then
+if [[ ! -f "$DEVKIT_TEST_LOG" ]] || ! rg -q '^claude:--permission-mode' "$DEVKIT_TEST_LOG"; then
   tmux capture-pane -p -t "$session_name" >&2 || true
   echo 'The manager did not start' >&2
   exit 1
@@ -189,6 +193,7 @@ fi
 [[ "$(tmux show-options -t "$session_name" -v prefix)" == C-a ]] || fail
 [[ "$(tmux show-options -gv prefix)" == C-b ]] || fail
 rg -q '^claude:--permission-mode auto --append-system-prompt You are the Claude Code manager.*You have already joined the squad;' "$DEVKIT_TEST_LOG"
+rg -Fq -- "--plugin-dir $repo_root/mods/squad-deck" "$DEVKIT_TEST_LOG"
 rg -q '## Your role \(.squad/roles/manager-devkit.md\).*You do not write code' "$DEVKIT_TEST_LOG"
 rg -q '^  manager \(role: manager-devkit\)' <<<"$(cd "$project_directory" && squad agents)"
 [[ -f "$project_directory/.squad/managers/manager.pid" ]] || fail

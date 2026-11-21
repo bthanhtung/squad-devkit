@@ -591,6 +591,13 @@ run_doctor() {
     fi
     printf '  Active default manager: %s (%s)\n' "$default_mgr" "$(manager_label "$default_mgr")"
   fi
+  # The squad deck mod (a live worker dashboard) rides on Claude Code only.
+  local deck_reason
+  if deck_reason="$(deck_plugin_check "$(command -v claude 2>/dev/null || true)")"; then
+    printf '  Deck: on (%s)\n' "$deck_reason"
+  else
+    printf '  Deck: off (%s)\n' "$deck_reason"
+  fi
   printf '\n'
 
   printf 'Worker Engines:\n'

@@ -114,6 +114,7 @@ squad-worker --stop dev-1           # or --stop all
 
 - [Full guide](./docs/squad-devkit.md): [highlights](./docs/squad-devkit.md#highlights), [configuration](./docs/squad-devkit.md#configuration-reference), [model selection](./docs/squad-devkit.md#worker-model-selection), [hierarchy mode](./docs/squad-devkit.md#hierarchy-mode), [watching workers](./docs/squad-devkit.md#watching-workers), [YOLO sessions](./docs/squad-devkit.md#opt-in-yolo-sessions), [project status](./docs/squad-devkit.md#project-status), [FAQ](./docs/squad-devkit.md#faq)
 - [Telegram remote](./docs/squad-devkit.md#telegram-remote): control every running manager from your phone
+- [Squad deck](./docs/squad-devkit.md#squad-deck): a live, observe-only worker dashboard docked in the Claude Code manager
 - [squad CLI reference](./docs/squad-cli.md)
 - [Changelog](./CHANGELOG.md)
 - Demos: [setup wizard](./assets/demo/setup-wizard.gif), [orchestration view](./assets/demo/orchestration-graph.gif), [hierarchy mode](./assets/demo/hierarchy.gif), [classic panes](./assets/demo/panes.gif)
