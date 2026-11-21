@@ -281,7 +281,7 @@ ensure_pad_len() {
 }
 
 terminal_columns() {
-  local columns="${COLUMNS:-}"
+  local columns="${COLUMNS:-${ORCH_COLUMNS:-}}"
   if [[ -z "$columns" ]]; then
     local sz=""
     if [[ -t 1 ]] || (( once == 0 )); then
@@ -307,11 +307,12 @@ terminal_columns() {
     [[ "$columns" =~ ^[0-9]+$ ]] && (( columns > 20 )) || columns=80
   fi
   [[ "$columns" =~ ^[0-9]+$ ]] && (( columns > 0 )) || columns=80
+  ORCH_COLUMNS="$columns"
   REPLY="$columns"
 }
 
 terminal_lines() {
-  local lines="${LINES:-}"
+  local lines="${LINES:-${ORCH_LINES:-}}"
   if [[ -z "$lines" ]]; then
     local sz=""
     if [[ -t 1 ]] || (( once == 0 )); then
@@ -337,6 +338,7 @@ terminal_lines() {
     [[ "$lines" =~ ^[0-9]+$ ]] && (( lines > 0 )) || lines=40
   fi
   [[ "$lines" =~ ^[0-9]+$ ]] && (( lines > 0 )) || lines=40
+  ORCH_LINES="$lines"
   REPLY="$lines"
 }
 
@@ -467,6 +469,7 @@ center_str() {
 # through as zero width, @@SPIN@@ counts as one column, any other ESC is dropped.
 clamp_line() {
   local orig="$1" cols="$2" line rest pre seq res="" w=0 cut=0
+  if [[ "$orig" == @@LIST_ROW_*@@ ]]; then REPLY="$orig"; return; fi
   line="${orig//@@ASK_CLR@@/}"
   if [[ "$line" != *$'\033'* ]]; then
     line="${line//@@SPIN@@/•}"
@@ -509,23 +512,28 @@ clamp_line() {
 }
 
 # clamp_frame FRAME COLS ROWS: every line at most COLS wide, at most ROWS lines (REPLY).
+# Optional arguments reuse the first N width-clamped rows and limit new width work.
 # Extra rows are dropped from the middle with a "+N more" row; the header and the
 # last row (footer) stay.
 clamp_frame() {
-  local frame="$1" cols="$2" rows="$3" line out="" n i
+  local frame="$1" cols="$2" rows="$3" preclamped="${4:-0}" width_limit="${5:-2147483647}" line out="" n i
   local frame_lines=()
   frame="${frame%$'\n'}"
   while IFS= read -r line || [[ -n "$line" ]]; do
     frame_lines[${#frame_lines[@]}]="$line"
   done <<<"$frame"
   n=${#frame_lines[@]}
+  CLAMP_ROWS=$n
   if (( rows >= 3 && n > rows )); then
     local head=$(( rows - 2 ))
     frame_lines=("${frame_lines[@]:0:head}" "  +$(( n - head - 1 )) more" "${frame_lines[$(( n - 1 ))]}")
     n=${#frame_lines[@]}
+    (( preclamped <= head )) || preclamped=$head
   fi
   for (( i = 0; i < n; i++ )); do
-    clamp_line "${frame_lines[$i]}" "$cols"
+    if (( i < preclamped || i >= width_limit )); then REPLY="${frame_lines[$i]}"; else
+      clamp_line "${frame_lines[$i]}" "$cols"
+    fi
     out+="${REPLY}"$'\n'
   done
   REPLY="$out"
@@ -575,12 +583,27 @@ format_time() {
 }
 
 rfc3339_to_hhmm() {
-  local ts="$1"
-  if [[ "$ts" =~ T([0-9]{2}:[0-9]{2}) ]]; then
-    REPLY="${BASH_REMATCH[1]}"
+  local ts="$1" hours minutes offset sign offset_hours offset_minutes local_zone
+  if [[ ! "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T([0-9]{2}):([0-9]{2})(:[0-9]{2})?(\.[0-9]+)?(Z|([+-])([0-9]{2}):?([0-9]{2}))?$ ]]; then
+    REPLY="00:00"
     return
   fi
-  REPLY="00:00"
+  hours="${BASH_REMATCH[1]}" minutes="${BASH_REMATCH[2]}"
+  sign="${BASH_REMATCH[6]}" offset_hours="${BASH_REMATCH[7]}" offset_minutes="${BASH_REMATCH[8]}"
+  offset=0
+  if [[ -n "$sign" ]]; then
+    offset=$((10#$offset_hours * 60 + 10#$offset_minutes))
+    [[ "$sign" != "-" ]] || offset=$((-offset))
+  fi
+  if [[ -z "${ORCH_LOCAL_OFFSET_MINUTES+x}" ]]; then
+    # shortcut: uses the current UTC offset, so times from before a DST switch can be off by an hour; upgrade to per-message date conversion if that matters.
+    local_zone="$(date +%z)"
+    ORCH_LOCAL_OFFSET_MINUTES=$((10#${local_zone:1:2} * 60 + 10#${local_zone:3:2}))
+    [[ "${local_zone:0:1}" != "-" ]] || ORCH_LOCAL_OFFSET_MINUTES=$((-ORCH_LOCAL_OFFSET_MINUTES))
+  fi
+  minutes=$(( (10#$hours * 60 + 10#$minutes - offset + ORCH_LOCAL_OFFSET_MINUTES) % 1440 ))
+  (( minutes >= 0 )) || minutes=$((minutes + 1440))
+  printf -v REPLY '%02d:%02d' $((minutes / 60)) $((minutes % 60))
 }
 
 rfc3339_to_epoch() {
@@ -911,8 +934,8 @@ resolve_plan_file() {
   fi
   if [[ -f "$cand" && -r "$cand" ]]; then
     local p_dir
-    if p_dir="$(cd "$(dirname "$cand")" 2>/dev/null && pwd -P)"; then
-      REPLY="${p_dir}/$(basename "$cand")"
+    if p_dir="$(cd "${cand%/*}" 2>/dev/null && pwd -P)"; then
+      REPLY="${p_dir}/${cand##*/}"
     else
       REPLY="$cand"
     fi
@@ -923,60 +946,48 @@ resolve_plan_file() {
 # Prints tab-separated lines: id<TAB>engine<TAB>deps from ## Tasks of a plan file.
 # Only matches '- <id> (<meta>): ...' lines; ignores wave headings and prose.
 parse_plan_tasks() {
-  local plan_file="$1"
+  local plan_file="$1" line heading in_tasks=0 tid rest meta eng after deps dep
+  local task_re='^[[:space:]]*[-*][[:space:]]+([A-Za-z0-9._-]+)[[:space:]]*\(([^)]*)\)([[:space:]]*:.*)$'
+  local deps_re='[Dd][Ee][Pp][Ee][Nn][Dd][Ss] [Oo][Nn]:(.*)'
+  local paren_re='\([^)]*\)' sentence_re='\.[[:space:]]+.*$'
+  REPLY=""
   [[ -f "$plan_file" && -r "$plan_file" ]] || return 0
-  awk '
-    BEGIN { in_tasks = 0 }
-    { gsub(/\r/, "") }
-    /^##[[:space:]]+/ {
-      h = tolower($0)
-      sub(/^##[[:space:]]+/, "", h)
-      sub(/[[:space:]:]+$/, "", h)
-      in_tasks = (h == "tasks")
-      next
-    }
-    !in_tasks { next }
-    /^[[:space:]]*[-*][[:space:]]+/ {
-      line = $0
-      sub(/^[[:space:]]*[-*][[:space:]]+/, "", line)
-      if (match(line, /^[A-Za-z0-9._-]+[[:space:]]*\(/)) {
-        tid = substr(line, 1, RLENGTH - 1)
-        sub(/[[:space:]]+$/, "", tid)
-        rest = substr(line, RLENGTH + 1)
-        close_p = index(rest, ")")
-        if (close_p == 0) next
-        meta = substr(rest, 1, close_p - 1)
-        after_p = substr(rest, close_p + 1)
-        if (after_p !~ /^[[:space:]]*:/) next
-        eng = meta
-        sub(/[,;].*$/, "", eng)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", eng)
-        if (eng !~ /^[A-Za-z0-9_-]+$/) eng = ""
-        deps = ""
-        low_after = tolower(after_p)
-        dp = index(low_after, "depends on:")
-        if (dp > 0) {
-          dstr = substr(after_p, dp + 11)
-          gsub(/\([^)]*\)/, "", dstr)
-          sub(/\.[[:space:]]+.*$/, "", dstr)
-          sub(/;.*$/, "", dstr)
-          sub(/\.[[:space:]]*$/, "", dstr)
-          n = split(dstr, arr, ",")
-          for (i = 1; i <= n; i++) {
-            d = arr[i]
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", d)
-            sub(/\.$/, "", d)
-            low_d = tolower(d)
-            if (low_d == "" || low_d == "none" || low_d == "n/a" || low_d == "-") continue
-            if (d ~ /^[A-Za-z0-9._-]+$/) {
-              deps = (deps == "" ? d : deps ", " d)
-            }
-          }
-        }
-        printf "%s\t%s\t%s\n", tid, eng, deps
-      }
-    }
-  ' "$plan_file" 2>/dev/null || true
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line//$'\r'/}"
+    if [[ "$line" =~ ^##[[:space:]]+ ]]; then
+      heading="${line#\#\#}"
+      heading="${heading#"${heading%%[![:space:]]*}"}"
+      heading="${heading%"${heading##*[![:space:]:]}"}"
+      in_tasks=0
+      [[ "$heading" != [Tt][Aa][Ss][Kk][Ss] ]] || in_tasks=1
+      continue
+    fi
+    (( in_tasks == 1 )) || continue
+    [[ "$line" =~ $task_re ]] || continue
+    tid="${BASH_REMATCH[1]}" meta="${BASH_REMATCH[2]}" after="${BASH_REMATCH[3]}"
+    eng="${meta%%[,;]*}"
+    eng="${eng#"${eng%%[![:space:]]*}"}"
+    eng="${eng%"${eng##*[![:space:]]}"}"
+    [[ "$eng" =~ ^[A-Za-z0-9_-]+$ ]] || eng=""
+    deps=""
+    if [[ "$after" =~ $deps_re ]]; then
+      rest="${BASH_REMATCH[1]}"
+      while [[ "$rest" =~ $paren_re ]]; do rest="${rest/"${BASH_REMATCH[0]}"/}"; done
+      if [[ "$rest" =~ $sentence_re ]]; then rest="${rest%"${BASH_REMATCH[0]}"}"; fi
+      rest="${rest%%;*}"
+      rest="${rest%"${rest##*[![:space:]]}"}"; rest="${rest%.}"
+      while [[ -n "$rest" ]]; do
+        dep="${rest%%,*}"
+        if [[ "$rest" == *,* ]]; then rest="${rest#*,}"; else rest=""; fi
+        dep="${dep#"${dep%%[![:space:]]*}"}"
+        dep="${dep%"${dep##*[![:space:]]}"}"; dep="${dep%.}"
+        case "$dep" in ''|[Nn][Oo][Nn][Ee]|[Nn]/[Aa]|-) continue ;; esac
+        [[ "$dep" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+        deps+="${deps:+, }$dep"
+      done
+    fi
+    REPLY+="$tid"$'\t'"$eng"$'\t'"$deps"$'\n'
+  done < "$plan_file"
 }
 
 WS_ROOT="$(resolve_workspace_root "$workers_dir")"
@@ -1073,8 +1084,19 @@ AUTO_CLOSE_COUNTING=0
 AUTO_CLOSE_REMAINING=0
 
 FRAME_TPL=("" "" "" "")
+BASE_FRAME_TPL=()
+BASE_FRAME_ROWS=()
+LIST_NORMAL_ROW=() LIST_SELECTED_ROW=()
+base_frame_valid=0
+history_source_stamp=""
+history_read_at=-10
+history_snapshot=""
+inference_key=""
+matching_key=""
+C_LAST_TYPE=() C_LAST_TS=() C_ASKING=() C_ASK_TS=() C_ASK_H_IDX=()
 
 load_data() {
+  base_frame_valid=0
   W_NAME=()
   W_STARTED=()
   W_FINISHED=()
@@ -1140,12 +1162,6 @@ load_data() {
   PT_ENGINE=()
   PT_DEPS=()
 
-  H_TS=()
-  H_FROM=()
-  H_TO=()
-  H_TYPE=()
-  H_BODY=()
-  H_TAIL=()
   MANAGERS_LIST=()
 
   DATA_NOW="${SQUAD_ORCHESTRATION_NOW:-$(date +%s)}"
@@ -1179,6 +1195,10 @@ load_data() {
       while IFS= read -r line || [[ -n "$line" ]]; do
         [[ "$line" == *=* ]] || continue
         k="${line%%=*}"
+        case "$k" in
+          worker|started|finished|plan|state|pid|engine|model|model_tier|verify|scope_violation|merged|discarded|log|tokens_in|tokens_out|tokens|worktree|role|parent|depth|manager|title|activity) ;;
+          *) continue ;;
+        esac
         sanitize_text "${line#*=}"
         v="$REPLY"
         case "$k" in
@@ -1310,52 +1330,63 @@ load_data() {
 
   # Read raw history to infer MANAGER_ID from sender frequency
   local history_raw
-  history_raw="$(read_history "$WS_ROOT" "$since")"
+  local source_stamp="override"
+  if [[ -z "${SQUAD_ORCHESTRATION_HISTORY_CMD:-}" ]]; then
+    if [[ "$OSTYPE" == darwin* ]]; then
+      source_stamp="$(stat -f '%m:%z' "$WS_ROOT/.squad/messages.db" "$WS_ROOT/.squad/messages.db-wal" 2>/dev/null || true)"
+    else
+      source_stamp="$(stat -c '%Y:%s' "$WS_ROOT/.squad/messages.db" "$WS_ROOT/.squad/messages.db-wal" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ "$source_stamp" == override || "$source_stamp" != "$history_source_stamp" ]] || (( SECONDS - history_read_at >= 10 )); then
+    history_snapshot="$(read_history "$WS_ROOT" "$since")"
+    history_source_stamp="$source_stamp"
+    history_read_at=$SECONDS
+  fi
+  history_raw="$history_snapshot"
   local regex="^[[:space:]*]*\\[([^]]+)\\][[:space:]]+([^[:space:]]+)[[:space:]]*->[[:space:]]*([^:]+):[[:space:]]*(.*)$"
-  local sender_names=()
-  local sender_counts=()
-  local raw_line
-  while IFS= read -r raw_line; do
-    [[ -n "$raw_line" ]] || continue
-    if [[ "$raw_line" =~ $regex ]]; then
-      local h_from="${BASH_REMATCH[2]}"
-      local from_is_worker=0
-      local wi=0
-      while (( wi < ${#raw_worker[@]} )); do
-        if [[ "${raw_worker[$wi]}" == "$h_from" ]]; then
-          from_is_worker=1
-          break
-        fi
-        wi=$(( wi + 1 ))
-      done
-      if (( from_is_worker == 0 )); then
-        local s_i=0 s_cnt="${#sender_names[@]}" s_found=-1
-        while (( s_i < s_cnt )); do
-          if [[ "${sender_names[$s_i]}" == "$h_from" ]]; then
-            s_found="$s_i"
-            break
+  local raw_names="|" raw_name
+  for raw_name in ${raw_worker[@]+"${raw_worker[@]}"}; do raw_names+="$raw_name|"; done
+  local next_inference_key="$raw_names"$'\n'"$history_raw"
+  if [[ "$next_inference_key" != "$inference_key" ]]; then
+    local sender_names=()
+    local sender_counts=()
+    local raw_line
+    while IFS= read -r raw_line; do
+      [[ -n "$raw_line" ]] || continue
+      if [[ "$raw_line" =~ $regex ]]; then
+        local h_from="${BASH_REMATCH[2]}"
+        if [[ "$raw_names" != *"|$h_from|"* ]]; then
+          local s_i=0 s_cnt="${#sender_names[@]}" s_found=-1
+          while (( s_i < s_cnt )); do
+            if [[ "${sender_names[$s_i]}" == "$h_from" ]]; then
+              s_found="$s_i"
+              break
+            fi
+            s_i=$(( s_i + 1 ))
+          done
+          if (( s_found < 0 )); then
+            sender_names[$s_cnt]="$h_from"
+            sender_counts[$s_cnt]=1
+          else
+            sender_counts[$s_found]=$(( sender_counts[$s_found] + 1 ))
           fi
-          s_i=$(( s_i + 1 ))
-        done
-        if (( s_found < 0 )); then
-          sender_names[$s_cnt]="$h_from"
-          sender_counts[$s_cnt]=1
-        else
-          sender_counts[$s_found]=$(( sender_counts[$s_found] + 1 ))
         fi
       fi
-    fi
-  done <<< "$history_raw"
+    done <<< "$history_raw"
 
-  local best_sender="" best_cnt=0 s_i=0 s_cnt="${#sender_names[@]}"
-  while (( s_i < s_cnt )); do
-    if (( sender_counts[$s_i] > best_cnt )); then
-      best_cnt="${sender_counts[$s_i]}"
-      best_sender="${sender_names[$s_i]}"
-    fi
-    s_i=$(( s_i + 1 ))
-  done
-  INFERRED_MANAGER_ID="${best_sender:-manager}"
+    local best_sender="" best_cnt=0 s_i=0 s_cnt="${#sender_names[@]}"
+    while (( s_i < s_cnt )); do
+      if (( sender_counts[$s_i] > best_cnt )); then
+        best_cnt="${sender_counts[$s_i]}"
+        best_sender="${sender_names[$s_i]}"
+      fi
+      s_i=$(( s_i + 1 ))
+    done
+    INFERRED_MANAGER_ID="${best_sender:-manager}"
+
+    inference_key="$next_inference_key"
+  fi
 
   local VIEW_MANAGER_ID="${SQUAD_MANAGER_ID:-}"
   if [[ -z "$VIEW_MANAGER_ID" ]]; then
@@ -1625,106 +1656,109 @@ load_data() {
   done
 
   # Parse history into H_* and match against workers
-  local tail_idx=-1 tail_lines=0
-  while IFS= read -r raw_line; do
-    [[ -n "$raw_line" ]] || continue
-    sanitize_text "$raw_line"
-    raw_line="$REPLY"
-    if [[ ! "$raw_line" =~ $regex ]]; then
-      # Continuation line of a multi-line message: keep the first few for previews.
-      if (( tail_idx >= 0 && tail_lines < 12 )); then
-        H_TAIL[$tail_idx]+="${raw_line}"$'\n'
-        if [[ "${H_TYPE[$tail_idx]}" == "QUESTION" || "${H_TYPE[$tail_idx]}" == "ANSWER" ]]; then
-          local cont="$raw_line"
-          while [[ "$cont" == " "* ]]; do cont="${cont# }"; done
-          if (( ${#H_BODY[$tail_idx]} < 1000 )); then
-            H_BODY[$tail_idx]+=" ${cont}"
+  local worker_lookup="|" worker_key="${all_managers}:$VIEW_MANAGER_ID" lookup_i
+  for (( lookup_i=0; lookup_i<TOTAL_WORKERS; lookup_i++ )); do
+    worker_lookup+="${W_NAME[$lookup_i]}:$lookup_i|"
+    worker_key+="|${W_NAME[$lookup_i]}:${W_PARENT[$lookup_i]}"
+  done
+  local next_matching_key="$worker_key"$'\n'"$history_raw"
+  if [[ "$matching_key" != "$next_matching_key" ]]; then
+    H_TS=() H_FROM=() H_TO=() H_TYPE=() H_BODY=() H_TAIL=()
+    local tail_idx=-1 tail_lines=0 raw_line
+    while IFS= read -r raw_line; do
+      [[ -n "$raw_line" ]] || continue
+      sanitize_text "$raw_line"
+      raw_line="$REPLY"
+      if [[ ! "$raw_line" =~ $regex ]]; then
+        # Continuation line of a multi-line message: keep the first few for previews.
+        if (( tail_idx >= 0 && tail_lines < 12 )); then
+          H_TAIL[$tail_idx]+="${raw_line}"$'\n'
+          if [[ "${H_TYPE[$tail_idx]}" == "QUESTION" || "${H_TYPE[$tail_idx]}" == "ANSWER" ]]; then
+            local cont="$raw_line"
+            while [[ "$cont" == " "* ]]; do cont="${cont# }"; done
+            if (( ${#H_BODY[$tail_idx]} < 1000 )); then
+              H_BODY[$tail_idx]+=" ${cont}"
+            fi
+          fi
+          tail_lines=$(( tail_lines + 1 ))
+        fi
+        continue
+      fi
+      tail_idx=-1
+      tail_lines=0
+      if [[ "$raw_line" =~ $regex ]]; then
+        local h_ts="${BASH_REMATCH[1]}"
+        local h_from="${BASH_REMATCH[2]}"
+        local h_to="${BASH_REMATCH[3]}"
+        local h_body="${BASH_REMATCH[4]}"
+        classify_msg "$h_body"
+        local h_type="$REPLY"
+
+        local keep_msg=1
+        if (( all_managers == 0 )); then
+          keep_msg=0
+          if [[ "$h_from" == "$VIEW_MANAGER_ID" || "$h_to" == "$VIEW_MANAGER_ID" ]]; then
+            keep_msg=1
+          else
+            if [[ "$worker_lookup" == *"|$h_from:"* || "$worker_lookup" == *"|$h_to:"* ]]; then
+              keep_msg=1
+            fi
           fi
         fi
-        tail_lines=$(( tail_lines + 1 ))
-      fi
-      continue
-    fi
-    tail_idx=-1
-    tail_lines=0
-    if [[ "$raw_line" =~ $regex ]]; then
-      local h_ts="${BASH_REMATCH[1]}"
-      local h_from="${BASH_REMATCH[2]}"
-      local h_to="${BASH_REMATCH[3]}"
-      local h_body="${BASH_REMATCH[4]}"
-      classify_msg "$h_body"
-      local h_type="$REPLY"
 
-      local keep_msg=1
-      if (( all_managers == 0 )); then
-        keep_msg=0
-        if [[ "$h_from" == "$VIEW_MANAGER_ID" || "$h_to" == "$VIEW_MANAGER_ID" ]]; then
-          keep_msg=1
-        else
-          local chk_w=0
-          while (( chk_w < TOTAL_WORKERS )); do
-            if [[ "${W_NAME[$chk_w]}" == "$h_from" || "${W_NAME[$chk_w]}" == "$h_to" ]]; then
-              keep_msg=1
-              break
-            fi
-            chk_w=$(( chk_w + 1 ))
-          done
+        if (( keep_msg == 1 )); then
+          local h_idx="${#H_TS[@]}"
+          H_TS[$h_idx]="$h_ts"
+          H_FROM[$h_idx]="$h_from"
+          H_TO[$h_idx]="$h_to"
+          H_TYPE[$h_idx]="$h_type"
+          H_BODY[$h_idx]="$h_body"
+          H_TAIL[$h_idx]=""
+          tail_idx="$h_idx"
         fi
-      fi
 
-      if (( keep_msg == 1 )); then
-        local h_idx="${#H_TS[@]}"
-        H_TS[$h_idx]="$h_ts"
-        H_FROM[$h_idx]="$h_from"
-        H_TO[$h_idx]="$h_to"
-        H_TYPE[$h_idx]="$h_type"
-        H_BODY[$h_idx]="$h_body"
-        H_TAIL[$h_idx]=""
-        tail_idx="$h_idx"
-      fi
-
-      # Match against workers
-      wi=0
-      while (( wi < TOTAL_WORKERS )); do
-        local wn="${W_NAME[$wi]}"
-        local wp="${W_PARENT[$wi]}"
-        if [[ "$h_from" == "$wn" || "$h_to" == "$wn" ]]; then
-          local other="$h_to"
-          [[ "$h_from" == "$wn" ]] || other="$h_from"
+        # Match against workers
+        local endpoint other entry other_entry other_idx
+        for endpoint in "$h_from" "$h_to"; do
+          [[ "$worker_lookup" == *"|$endpoint:"* ]] || continue
+          entry="${worker_lookup#*"|$endpoint:"}"
+          wi="${entry%%|*}"
+          local wn="${W_NAME[$wi]}" wp="${W_PARENT[$wi]}"
+          other="$h_to"; [[ "$h_from" == "$wn" ]] || other="$h_from"
           local match_edge=1
           if [[ -n "$wp" ]]; then
             [[ "$other" == "$wp" ]] || match_edge=0
-          else
-            local ci_w=0
-            while (( ci_w < TOTAL_WORKERS )); do
-              if [[ "${W_NAME[$ci_w]}" == "$other" && "${W_PARENT[$ci_w]}" == "$wn" ]]; then
-                match_edge=0
-                break
-              fi
-              ci_w=$(( ci_w + 1 ))
-            done
+          elif [[ "$worker_lookup" == *"|$other:"* ]]; then
+            other_entry="${worker_lookup#*"|$other:"}"
+            other_idx="${other_entry%%|*}"
+            [[ "${W_PARENT[$other_idx]}" != "$wn" ]] || match_edge=0
           fi
           if (( match_edge == 1 )); then
             W_LAST_TYPE[$wi]="$h_type"
             W_LAST_TS[$wi]="$h_ts"
-            if [[ "$h_from" == "$wn" ]]; then
-              if [[ "$h_type" == "QUESTION" ]]; then
-                W_ASKING[$wi]=1
-                W_ASK_TS[$wi]="$h_ts"
-                W_ASK_H_IDX[$wi]="$h_idx"
-              fi
-            elif [[ "$h_to" == "$wn" && "$h_type" == "ANSWER" ]]; then
+            if [[ "$h_from" == "$wn" && "$h_type" == QUESTION ]]; then
+              W_ASKING[$wi]=1
+              W_ASK_TS[$wi]="$h_ts"
+              W_ASK_H_IDX[$wi]="$h_idx"
+            elif [[ "$h_from" != "$wn" && "$h_to" == "$wn" && "$h_type" == ANSWER ]]; then
               W_ASKING[$wi]=0
               W_ASK_TS[$wi]=""
               W_ASK_H_IDX[$wi]=-1
             fi
           fi
-        fi
-        wi=$(( wi + 1 ))
-      done
+          [[ "$h_from" != "$h_to" ]] || break
+        done
 
-    fi
-  done <<< "$history_raw"
+      fi
+    done <<< "$history_raw"
+
+    matching_key="$next_matching_key"
+    C_LAST_TYPE=(${W_LAST_TYPE[@]+"${W_LAST_TYPE[@]}"}) C_LAST_TS=(${W_LAST_TS[@]+"${W_LAST_TS[@]}"})
+    C_ASKING=(${W_ASKING[@]+"${W_ASKING[@]}"}) C_ASK_TS=(${W_ASK_TS[@]+"${W_ASK_TS[@]}"}) C_ASK_H_IDX=(${W_ASK_H_IDX[@]+"${W_ASK_H_IDX[@]}"})
+  else
+    W_LAST_TYPE=(${C_LAST_TYPE[@]+"${C_LAST_TYPE[@]}"}) W_LAST_TS=(${C_LAST_TS[@]+"${C_LAST_TS[@]}"})
+    W_ASKING=(${C_ASKING[@]+"${C_ASKING[@]}"}) W_ASK_TS=(${C_ASK_TS[@]+"${C_ASK_TS[@]}"}) W_ASK_H_IDX=(${C_ASK_H_IDX[@]+"${C_ASK_H_IDX[@]}"})
+  fi
 
   # Finalize worker edge info (Bug fix: terminal states show done/failed)
   wi=0
@@ -1826,7 +1860,8 @@ load_data() {
     local p_file="${P_FILE[$pi]}"
     if [[ -n "$p_file" && -f "$p_file" && -r "$p_file" ]]; then
       local parsed_tasks
-      parsed_tasks="$(parse_plan_tasks "$p_file")"
+      parse_plan_tasks "$p_file"
+      parsed_tasks="$REPLY"
       if [[ -n "$parsed_tasks" ]]; then
         local t_line
         while IFS= read -r t_line; do
@@ -4709,18 +4744,13 @@ render_list_worker_rows() {
     act_disp="$REPLY"
   fi
 
-  local is_selected=0
-  if [[ "$wn" == "$selected_id" ]]; then
-    is_selected=1
-  fi
-
-  if (( is_selected == 1 && use_color == 1 )); then
-    local r1_full="${prefix_plain}${act_disp}"
-    pad_str "$r1_full" "$columns"
-    LIST_ROW1="${reverse}${REPLY}${reset}"
-  else
-    LIST_ROW1="${prefix_disp}${act_disp}"
-  fi
+  clamp_line "${prefix_disp}${act_disp}" "$columns"
+  LIST_NORMAL_ROW[$w]="$REPLY"
+  local r1_full="${prefix_plain}${act_disp}"
+  pad_str "$r1_full" "$columns"
+  clamp_line "${reverse}${REPLY}${reset}" "$columns"
+  LIST_SELECTED_ROW[$w]="$REPLY"
+  LIST_ROW1="@@LIST_ROW_$w@@"
 
   # Row 2:
   local row2_indent="            ↳ "
@@ -5239,7 +5269,7 @@ g2_rail() {
   mid="┬"; [[ "$dir" == u ]] && mid="┴"
   lo=$c1; hi=$cK; (( cc >= lo )) || lo=$cc; (( cc <= hi )) || hi=$cc
   local phase=$(( cf + 1 )) pulse_left=-1 pulse_right=-1
-  if (( use_anim == 1 )); then
+  if (( use_anim == 1 )) && [[ "$g2_step" == workers ]]; then
     [[ "$dir" == u ]] || phase=$(( 5 - phase ))
     pulse_left=$(( cc - (cc - lo) * phase / 5 ))
     pulse_right=$(( cc + (hi - cc) * phase / 5 ))
@@ -5271,11 +5301,24 @@ g2_flow() {
   local labels=() states=() maxrows=4 tcount sh
   flow=(); g2_pre=""
   local stems=(│ │ │ │)
-  if (( use_anim == 1 && n > 0 )); then stems[$cf]="●"; fi
+  if (( use_anim == 1 )) && [[ "$g2_step" == workers ]]; then stems[$cf]="●"; fi
+  local step_text="" step_name step_label step_colour step_mark step_index=0
+  local step_labels=("Plan" "Dispatch" "Workers" "Review & merge" "Done")
+  for step_name in plan dispatch workers review done; do
+    step_label="${step_labels[$step_index]}"
+    if (( step_index < g2_step_index )); then step_mark="✓"; step_colour="$c_completed"
+    elif (( step_index == g2_step_index )); then step_mark="▶"; step_colour="${bold}${c_running}"
+    else step_mark="○"; step_colour="$dim"; fi
+    step_text+="${step_text:+ › }${step_colour}${step_mark} ${step_label}${reset}"
+    step_index=$(( step_index + 1 ))
+  done
+  [[ "$g2_step" != done ]] || step_text+=" · owner approves commit/push"
+  g2_emit 0 "" "$step_text"
   if (( compact == 1 )); then
+    g2_emit 0 "$c_manager" "YOU · owner"
     g2_emit 0 "$c_manager" "$MANAGER_ID · main session · $manager_tier"
     g2_emit 0 "$c_completed" "$plan · task layer · tasks $tt"
-    if (( lines >= 18 )); then
+    if (( lines >= 26 )); then
       for (( i=0; i<tt && i<2; i++ )); do
         g2_emit 0 "$c_completed" "${g2_task_ids[$i]} · ${g2_task_states[$i]}"
       done
@@ -5314,6 +5357,11 @@ g2_flow() {
     g2_emit 0 "$c_manager" "verify $passed/$checked · scope $scope · merge ${merge:-unavailable}"
     return
   fi
+  g2_top "$c_manager" "┄" "┌" "┐"
+  g2_bc "$c_manager" "┆" "YOU · owner"
+  g2_bc "$c_manager" "┆" "approves plan · commit · push"
+  g2_top "$c_manager" "┄" "└" "┘"
+  g2_emit "$cc" "$c_manager" "│"; g2_emit "$cc" "$c_manager" "▼"
   g2_top "$c_manager" "┄" "┌" "┐"
   g2_bc "$c_manager" "┆" "$MANAGER_ID · main session"
   g2_bc "$c_manager" "┆" "plans + reviews worker diffs"
@@ -5408,6 +5456,7 @@ build_g2_frame() {
   local manager_state="on call" worker_model="" manager_model="" manager_tier="lead" max_count=0 count
   local flow=() g2_side=() side=() headers=() legend="" legendw="" seen="|" lcount=0 key
   local bw bl cc g2_pre="" compact=0 show per cw m0 ccs=() iw pin1 pin2 mm wm
+  local g2_step="done" g2_step_index=4 needs_review=0 active_workers=0
   local CELLC CELLB g2_task_ids=() g2_task_states=() parsed_tasks="" task_line task_id task_state
   for (( i=nh-1; i>=0; i-- )); do
     if [[ "${H_FROM[$i]}" == "$MANAGER_ID" && "${H_TYPE[$i]}" == brief ]]; then
@@ -5419,7 +5468,7 @@ build_g2_frame() {
   if (( ${#P_NAME[@]} > 0 )); then
     plan="${P_NAME[0]}"
     if [[ -n "${P_FILE[0]:-}" && -r "${P_FILE[0]}" ]]; then
-      parsed_tasks="$(parse_plan_tasks "${P_FILE[0]}")"
+      parse_plan_tasks "${P_FILE[0]}"; parsed_tasks="$REPLY"
     fi
   fi
   if [[ -n "$parsed_tasks" ]]; then
@@ -5444,6 +5493,11 @@ build_g2_frame() {
   tt=${#g2_task_ids[@]}
   if [[ "${TOTAL_TOKENS:-0}" =~ ^[0-9]+$ ]] && (( TOTAL_TOKENS > 0 )); then fmt_human_count "$TOTAL_TOKENS"; tokh="$REPLY"; fi
   for (( i=0; i<n; i++ )); do
+    if [[ "${W_STATE[$i]}" == running || "${W_ASKING[$i]:-0}" == 1 ]]; then active_workers=1; fi
+    case "${W_STATE[$i]}" in
+      failed|lost) needs_review=1;;
+      completed) case "${W_MERGE_STATE[$i]:-}" in merged|discarded) ;; *) needs_review=1;; esac;;
+    esac
     [[ "${W_VERIFY[$i]:-}" != "pass" ]] || passed=$(( passed + 1 ))
     case "${W_VERIFY[$i]:-}" in pass|fail|FAIL) checked=$(( checked + 1 ));; esac
     case "${W_SCOPE_VIOLATION[$i]:-}" in 1|true|yes) scope="violation";; esac
@@ -5463,6 +5517,11 @@ build_g2_frame() {
     fi
     [[ -z "${W_ENGINE[$i]:-}" ]] || engine="${W_ENGINE[$i]}"
   done
+  if (( n == 0 )); then
+    if (( ${#P_NAME[@]} == 0 )); then g2_step="plan"; g2_step_index=0
+    else g2_step="dispatch"; g2_step_index=1; fi
+  elif (( active_workers )); then g2_step="workers"; g2_step_index=2
+  elif (( needs_review )); then g2_step="review"; g2_step_index=3; fi
   (( RUNNING_COUNT > 0 || n == 0 )) || manager_state="review"
   # Reserve the lead label even when the tier legend needs truncation.
   clamp_line "$legend" $(( columns - 19 )); legend="$REPLY  ${c_manager}■ manager · lead${reset}"
@@ -5510,9 +5569,9 @@ build_g2_frame() {
   if (( sw > 0 )); then
     iw=$(( sw - 4 ))
     local ph1="◇" ph2="◇" poll="poll [ " item cand gl advice=0 done_all=0
-    (( n > 0 )) || ph1="◆"
-    (( n == 0 || RUNNING_COUNT == 0 )) || ph2="◆"
-    (( n > 0 && RUNNING_COUNT == 0 )) && done_all=1
+    [[ "$g2_step" != plan ]] || ph1="◆"
+    [[ "$g2_step" != workers ]] || ph2="◆"
+    [[ "$g2_step" != done ]] || done_all=1
     g2_sc "$bold" "$MANAGER_ID"; g2_sc "$dim" "manager · $manager_state [ § ]"; g2_sc "" "[ .squad/roles/*.md ]"
     g2_sb "" ""
     g2_sb "" "$ph1 before a plan"; g2_sg "$plan"; g2_sg "tasks $td/$tt"
@@ -5561,6 +5620,7 @@ build_g2_frame() {
   for (( i=nh-log_count; i<nh; i++ )); do (( ${#H_FROM[$i]} <= fromw )) || fromw=${#H_FROM[$i]}; done
   (( fromw <= 12 )) || fromw=12
   text=" session log [ stream: $stream ] "; display_width "$text"; g2_rep "─" $(( columns - DW > 0 ? columns - DW : 0 ))
+  [[ "$g2_step" != done ]] || text="${text//§/✓}"
   local loghead="${text//§/@@SPIN@@}${dim}${REPLY}${reset}"
   fmt_human_count "${TOTAL_TOKENS:-0}"; local status_tokens="$REPLY"
   status="workers [ $RUNNING_COUNT running ]   tasks [ $td/$tt done ]   manager [ $manager_state ]   tokens [ $status_tokens ]"
@@ -5571,7 +5631,7 @@ build_g2_frame() {
 
   local return_width="$bl" return_track="" pulse_track pulse_col
   (( compact == 0 )) || return_width=6
-  if (( use_anim == 1 && n > 0 && return_width >= 4 )); then
+  if (( use_anim == 1 && return_width >= 4 )) && [[ "$g2_step" == review ]]; then
     g2_rep "╌" $(( return_width - 1 )); return_track="◀$REPLY"
   fi
   for (( f=0; f<4; f++ )); do
@@ -5588,7 +5648,11 @@ build_g2_frame() {
         # Bash 3.2 keeps quotes around a quoted replacement as literal characters.
         text="${text/"$return_track"/$pulse_track}"
       fi
-      if (( sw > 0 )); then g2_sp "$gap"; text="${side[$i]//§/@@SPIN@@}${REPLY}${text}"; fi
+      if (( sw > 0 )); then
+        g2_sp "$gap"
+        if [[ "$g2_step" == done ]]; then text="${side[$i]//§/✓}${REPLY}${text}"
+        else text="${side[$i]//§/@@SPIN@@}${REPLY}${text}"; fi
+      fi
       clamp_line "$text" "$columns"; frame+="$REPLY"$'\n'
     done
     clamp_line "$loghead" "$columns"; frame+="$REPLY"$'\n'
@@ -5953,21 +6017,44 @@ build_base_frame_templates() {
 }
 
 render_cached_frame() {
+  local LC_ALL=C
   local fnum="${1:-0}"
   local step=0 spin_idx=0
   if (( use_anim == 1 )); then
     step=$(( fnum % 4 ))
     spin_idx=$(( fnum % 10 ))
   fi
-  local tpl="${FRAME_TPL[$step]}"
+  local tpl="${FRAME_TPL[$step]}" row_w row_text
+  if [[ "$layout" == list && "$tpl" == *@@LIST_ROW_* ]]; then
+    for row_w in "${LIST_WORKER_ORDER[@]}"; do
+      row_text="${LIST_NORMAL_ROW[$row_w]}"
+      if (( use_color == 1 )) && [[ "${W_NAME[$row_w]}" == "$selected_id" ]]; then
+        row_text="${LIST_SELECTED_ROW[$row_w]}"
+      fi
+      tpl="${tpl//@@LIST_ROW_${row_w}@@/$row_text}"
+    done
+  fi
   local spin="${SPINNER_GLYPHS[$spin_idx]}"
   local ask_c="$c_asking"
   if (( use_anim == 1 && fnum % 2 == 0 )); then
     ask_c="${bold}${c_asking}"
   fi
-  tpl="${tpl//@@SPIN@@/$spin}"
-  tpl="${tpl//@@ASK_CLR@@/$ask_c}"
+  if [[ "$tpl" == *@@SPIN@@* ]]; then tpl="${tpl//@@SPIN@@/$spin}"; fi
+  if [[ "$tpl" == *@@ASK_CLR@@* ]]; then tpl="${tpl//@@ASK_CLR@@/$ask_c}"; fi
   REPLY="$tpl"
+}
+
+# Row separators and animation markers are bytes; avoid multibyte pattern scans.
+draw_live_frame() {
+  local LC_ALL=C frame="$1" line output="" frame_rows=0 frame_tail=""
+  frame="${frame%$'\n'}"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    (( frame_rows == 0 )) || output+=$'\n'
+    output+=$'\033[2K'"$line"
+    frame_rows=$(( frame_rows + 1 ))
+  done <<< "$frame"
+  (( frame_rows >= FRAME_ROWS )) || frame_tail=$'\033['"$(( frame_rows + 1 ))"$';1H\033[J'
+  printf '\033[?2026h\033[H%s%s\033[?2026l' "$output" "$frame_tail"
 }
 
 # Ensure blocking writes on TTY stdout (prevents macOS PTY 1024-byte EAGAIN drops under ttyd/vhs)
@@ -6081,14 +6168,19 @@ panel_key() {
       if [[ "$layout" == "list" && ${#LIST_WORKER_ORDER[@]} -gt 0 ]]; then
         local cur_pos=-1 oi
         for (( oi=0; oi<${#LIST_WORKER_ORDER[@]}; oi++ )); do
-          if [[ "${W_NAME[${LIST_WORKER_ORDER[$oi]}]}" == "$selected_id" ]]; then
+          i=${LIST_WORKER_ORDER[$oi]:--1}
+          (( i >= 0 && i < TOTAL_WORKERS )) || continue
+          if [[ "${W_NAME[$i]:-}" == "$selected_id" ]]; then
             cur_pos=$oi; break
           fi
         done
         local new_pos=$(( cur_pos + step ))
         if (( new_pos < 0 )); then new_pos=0; fi
         if (( new_pos >= ${#LIST_WORKER_ORDER[@]} )); then new_pos=$(( ${#LIST_WORKER_ORDER[@]} - 1 )); fi
-        selected_id="${W_NAME[${LIST_WORKER_ORDER[$new_pos]}]}"
+        i=${LIST_WORKER_ORDER[$new_pos]:--1}
+        if (( i >= 0 && i < TOTAL_WORKERS )) && [[ -n "${W_NAME[$i]:-}" ]]; then
+          selected_id="${W_NAME[$i]}"
+        fi
       else
         i=$(( selected_index + step ))
         while (( i >= 0 && i < TOTAL_WORKERS )); do
@@ -6139,7 +6231,7 @@ panel_key() {
 # the screen and make the next redraw land on a shifted frame.
 FRAME_ROWS=24
 clamp_frame_templates() {
-  local columns="$1" rows n
+  local columns="$1" rows n preclamped
   terminal_lines; rows="$REPLY"
   FRAME_ROWS="$rows"
   for n in 0 1 2 3; do
@@ -6147,7 +6239,9 @@ clamp_frame_templates() {
       FRAME_TPL[$n]="${FRAME_TPL[$(( n - 1 ))]}"
       continue
     fi
-    clamp_frame "${FRAME_TPL[$n]}" "$columns" "$rows"
+    preclamped="${BASE_FRAME_ROWS[$n]:-0}"
+    if (( details_open == 1 || history_open == 1 )); then preclamped=0; fi
+    clamp_frame "${FRAME_TPL[$n]}" "$columns" "$rows" "$preclamped"
     FRAME_TPL[$n]="$REPLY"
   done
 }
@@ -6155,6 +6249,13 @@ clamp_frame_templates() {
 build_frame_templates() {
   selection_sync
   notify_questions
+  terminal_columns; local cache_columns="$REPLY"
+  terminal_lines; local cache_lines="$REPLY"
+  local render_key="$layout:$cache_columns:$cache_lines:$zoom_target:$focus:$history_expanded:$flow_filter:$expand_earlier:$AUTO_CLOSE_PINNED:$AUTO_CLOSE_COUNTING:$AUTO_CLOSE_REMAINING"
+  if (( details_open == 0 && history_open == 0 )); then
+    if [[ "${base_render_key:-}" != "$render_key" ]]; then base_frame_valid=0; fi
+    base_render_key="$render_key"
+  fi
   if (( history_open == 1 )); then
     terminal_columns; local columns="$REPLY"
     ensure_pad_len "$columns"
@@ -6166,12 +6267,34 @@ build_frame_templates() {
     clamp_frame_templates "$columns"
     return 0
   fi
-  build_base_frame_templates
+  if (( details_open == 0 )); then
+    if (( base_frame_valid == 0 )); then
+      build_base_frame_templates
+      # Keep hidden rows for the overflow count; only visible rows need width work.
+      local base_n base_text
+      for base_n in 0 1 2 3; do
+        if (( base_n > 0 )) && [[ "${FRAME_TPL[$base_n]}" == "$base_text" ]]; then
+          FRAME_TPL[$base_n]="${FRAME_TPL[$((base_n-1))]}"
+          BASE_FRAME_ROWS[$base_n]="${BASE_FRAME_ROWS[$((base_n-1))]}"
+          continue
+        fi
+        base_text="${FRAME_TPL[$base_n]}"
+        clamp_frame "$base_text" "$cache_columns" 2147483647 0 "$cache_lines"
+        FRAME_TPL[$base_n]="$REPLY"
+        BASE_FRAME_ROWS[$base_n]="$CLAMP_ROWS"
+        (( BASE_FRAME_ROWS[base_n] <= cache_lines )) || BASE_FRAME_ROWS[$base_n]="$cache_lines"
+      done
+      BASE_FRAME_TPL=("${FRAME_TPL[@]}")
+      base_frame_valid=1
+    else
+      FRAME_TPL=("${BASE_FRAME_TPL[@]}")
+    fi
+  fi
   local columns footer text key n detail_budget detail_height
   terminal_columns; columns="$REPLY"
   footer=""
   if [[ "$layout" != "list" ]]; then
-    text="$(printf "> %s · j/k select · i details" "${selected_id:-no worker}" | LC_ALL=C tr -d '[:cntrl:]')"
+    text="> ${selected_id:-no worker} · j/k select · i details"
     if [[ "$layout" == g2 ]] && (( selected_index >= 0 )) &&
         [[ "${W_STATE[$selected_index]:-}" == running ]]; then
       local activity="${W_ACTIVITY[$selected_index]:-${W_TITLE[$selected_index]:-}}"
@@ -6186,6 +6309,7 @@ build_frame_templates() {
         text+=" · output $REPLY ago"
       fi
     fi
+    text="${text//[[:cntrl:]]/}"
     trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
   fi
   if (( details_open == 1 && selected_index >= 0 )); then
@@ -6195,7 +6319,8 @@ build_frame_templates() {
     for key in worker model model_tier attempt tier_override plan worktree log report verify verify_exit merged discarded scope_violation; do
       (( detail_budget > 0 )) || break
       selected_field "$key"
-      text="$(printf '%s: %s' "$key" "${REPLY:-—}" | LC_ALL=C tr -d '[:cntrl:]')"
+      text="$key: ${REPLY:-—}"
+      text="${text//[[:cntrl:]]/}"
       trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
       detail_budget=$(( detail_budget - 1 ))
     done
@@ -6206,7 +6331,7 @@ build_frame_templates() {
     fi
     if (( detail_budget > 0 )); then
       text="activity: ${W_ACTIVITY[$selected_index]:-—} · tokens: ${W_TOK[$selected_index]:-0}"
-      text="$(printf '%s' "$text" | LC_ALL=C tr -d '[:cntrl:]')"
+      text="${text//[[:cntrl:]]/}"
       trunc_str "$text" "$columns"; footer+="$REPLY"$'\n'
     fi
     if (( detail_height > 1 )) || [[ -z "$stop_pending" && -z "$action_message" ]]; then
@@ -6384,6 +6509,7 @@ is_pinned=0
 need_template_rebuild=0
 
 saved_tty=""
+trap 'ORCH_COLUMNS=""; ORCH_LINES=""; base_frame_valid=0; need_template_rebuild=1' WINCH
 trap 'cleanup_live_session' EXIT
 trap 'cleanup_live_session; trap - INT; kill -INT "$$"' INT
 trap 'cleanup_live_session; trap - TERM; kill -TERM "$$"' TERM
@@ -6453,6 +6579,13 @@ while true; do
     fi
   fi
 
+  terminal_columns; current_columns="$REPLY"
+  terminal_lines; current_lines="$REPLY"
+  if [[ "${last_dimensions:-}" != "$current_columns:$current_lines" ]]; then
+    last_dimensions="$current_columns:$current_lines"
+    base_frame_valid=0
+    need_template_rebuild=1
+  fi
   if (( need_template_rebuild == 1 )); then
     build_frame_templates
     need_template_rebuild=0
@@ -6461,15 +6594,7 @@ while true; do
   draw_fnum="${SQUAD_ORCHESTRATION_FRAME:-$frame_counter}"
   [[ "$draw_fnum" =~ ^[0-9]+$ ]] || draw_fnum="$frame_counter"
   render_cached_frame "$draw_fnum"
-  frame_output="${REPLY%$'\n'}"
-  # Erase each row before writing it: a row exactly as wide as the pane leaves the cursor in the
-  # last column, where a trailing erase-to-end-of-line would wipe the row's last character.
-  # The rows below the frame are cleared from an explicit cursor position for the same reason.
-  frame_rows="${frame_output//[!$'\n']/}"
-  frame_rows=$(( ${#frame_rows} + 1 ))
-  frame_tail=""
-  (( frame_rows >= FRAME_ROWS )) || frame_tail=$'\033['"$(( frame_rows + 1 ))"$';1H\033[J'
-  printf '\033[?2026h\033[H\033[2K%s%s\033[?2026l' "${frame_output//$'\n'/$'\n\033[2K'}" "$frame_tail"
+  draw_live_frame "$REPLY"
 
   if (( first_frame == 1 )); then
     first_frame=0
@@ -6490,17 +6615,29 @@ while true; do
     else
       sleep "$frame_delay"
     fi
-    if (( key_pressed == 1 )); then
+    while (( key_pressed == 1 )); do
       if [[ "$key" == $'\033' ]]; then
         arrow=""
-        IFS= read -r -s -t 1 -n 2 arrow 2>/dev/null || true
+        if (( BASH_VERSINFO[0] >= 4 )); then
+          IFS= read -r -s -t 0.05 -n 2 arrow 2>/dev/null || true
+        elif command -v perl >/dev/null 2>&1; then
+          arrow="$(perl -e 'vec($r="",0,1)=1; if(select($r,undef,undef,0.05)>0){sysread(STDIN,$c,2);print $c}' 2>/dev/null)"
+        fi
         case "$arrow" in '[A') key=k ;; '[B') key=j ;; *) key=esc ;; esac
       fi
+      case "$key" in
+        j|k|i|d|r|s|m)
+          # Buffered layout/zoom changes must refresh list indices before navigation.
+          if (( need_template_rebuild == 1 )); then
+            build_frame_templates
+            need_template_rebuild=0
+          fi
+          ;;
+      esac
       if panel_key "$key"; then
-        build_frame_templates
+        need_template_rebuild=1
         subframe=0
-        continue
-      fi
+      else
       case "$key" in
         q|Q)
           exit 0
@@ -6510,7 +6647,7 @@ while true; do
           AUTO_CLOSE_PINNED=1
           AUTO_CLOSE_COUNTING=0
           idle_start_sec=0
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         ""|$'\n'|$'\r')
@@ -6520,29 +6657,29 @@ while true; do
           ;;
         w|W)
           layout="g2"
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         g|G)
           layout="graph"
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         t|T)
           layout="tree"
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         a|A)
           all_managers=$(( 1 - all_managers ))
           load_data
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         [1-9])
           if (( key <= ${#SM_LIST[@]} )); then
             zoom_target="${W_NAME[${SM_LIST[$(( key - 1 ))]}]}"
-            build_frame_templates
+            need_template_rebuild=1
             subframe=0
           fi
           ;;
@@ -6560,35 +6697,35 @@ while true; do
               done
             fi
             zoom_target="${W_NAME[${SM_LIST[$next_sm_pos]}]}"
-            build_frame_templates
+            need_template_rebuild=1
             subframe=0
           fi
           ;;
         $'\033'|$'\177'|$'\010'|$'\b')
           if [[ -z "$locked_root" && -n "$zoom_target" ]]; then
             zoom_target=""
-            build_frame_templates
+            need_template_rebuild=1
             subframe=0
           fi
           ;;
         c|C)
           layout="cards"
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         v|V)
           cycle_flow_filter
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         e|E)
           expand_earlier=$(( 1 - expand_earlier ))
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         f|F)
           focus=$(( 1 - focus ))
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         h|H)
@@ -6597,7 +6734,7 @@ while true; do
           else
             history_expanded=$(( 1 - history_expanded ))
           fi
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
         $'\t'|l|L)
@@ -6610,11 +6747,19 @@ while true; do
             tree)     layout="list" ;;
             *)        layout="list" ;;
           esac
-          build_frame_templates
+          need_template_rebuild=1
           subframe=0
           ;;
       esac
-    fi
+      fi
+      key=""
+      key_pressed=0
+      if (( BASH_VERSINFO[0] >= 4 )); then
+        IFS= read -r -s -t 0 -n 1 key 2>/dev/null && IFS= read -r -s -t 0.001 -n 1 key 2>/dev/null && key_pressed=1
+      elif command -v perl >/dev/null 2>&1; then
+        key="$(perl -e 'vec($r="",0,1)=1; if(select($r,undef,undef,0)>0){sysread(STDIN,$c,1);print $c}else{exit 2}' 2>/dev/null)" && key_pressed=1
+      fi
+    done
   else
     sleep "$frame_delay"
   fi

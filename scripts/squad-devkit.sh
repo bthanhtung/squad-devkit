@@ -18,6 +18,7 @@ source "$script_dir/lib/squad-panes.sh"
 source "$script_dir/lib/squad-jq.sh"
 # shellcheck source=lib/squad-worker-model.sh
 source "$script_dir/lib/squad-worker-model.sh"
+source "$script_dir/lib/squad-tokeneconomizer.sh"
 
 devkit_version="1.0.2"
 
@@ -56,7 +57,7 @@ Without an objective the manager opens an interactive chat and asks for one firs
   --scout ENGINE[:MODEL]  Default cheap read-only scout worker (or SQUAD_WORKER_SCOUT_ENGINE /
                           SQUAD_WORKER_SCOUT_MODEL, or scout_engine= / scout_model= in config)
   --view MODE   How worker progress is shown: orchestration (one live flow view, default) or panes (one split per worker); or SQUAD_WORKER_VIEW / view= in the config file
-  --doctor      Diagnose environment: core tools, manager, worker engines, and multiplexer/panes
+  --doctor      Diagnose environment: core tools, manager, worker engines, optional integrations, and multiplexer/panes
   --split-test  With --doctor, open and verify a monitor split
   --stats       Show run statistics for the last 30 days (--days N)
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
@@ -663,6 +664,8 @@ run_doctor() {
     printf '  Default scout: none (no enabled worker engines)\n'
   fi
   printf '\n'
+
+  squad_te_doctor_report
 
   printf 'Terminal & Monitor Support:\n'
   local term_prog="${TERM_PROGRAM:-unknown}"

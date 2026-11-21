@@ -194,6 +194,10 @@ squad join manager --role manager-devkit --client claude --protocol-version 2 >/
 mkdir -p .squad/plans
 write_plan .squad/plans/ok.md Low
 write_plan .squad/plans/risky.md High
+write_plan .squad/plans/gate.md high
+write_plan .squad/plans/complex.md low
+sed 's/^- Complexity: .*/- Complexity: high/' .squad/plans/complex.md >.squad/plans/complex.new
+mv .squad/plans/complex.new .squad/plans/complex.md
 
 # expect_exit STATUS PATTERN CMD...
 expect_exit() {
@@ -206,6 +210,22 @@ expect_exit() {
 
 # --- 2. plan gate -------------------------------------------------------------------
 export SQUAD_MANAGER_ID=manager
+expect_exit 2 'run a plan review first' "$worker" gate --engine grok --no-worktree --plan .squad/plans/gate.md --tier-reason test --brief x
+grep -q -- '--skip-plan-review' "$tmp/out" || fail 'missing override advice'
+expect_exit 2 'run a plan review first' "$worker" gate --engine grok --no-worktree --plan .squad/plans/complex.md --brief x
+expect_exit 2 'Missing value for --skip-plan-review' "$worker" gate --engine grok --skip-plan-review '' --brief x
+for role in reviewer scout researcher; do
+  "$worker" "gate-$role" --engine grok --no-worktree --role "$role" --plan .squad/plans/gate.md --tier-reason test --brief x >/dev/null
+done
+"$worker" gate-low --engine grok --no-worktree --plan .squad/plans/ok.md --brief x >/dev/null
+"$worker" gate-override --engine grok --no-worktree --plan .squad/plans/gate.md --tier-reason test --skip-plan-review x --brief x >/dev/null
+grep -qx 'plan_review_override=x' "$(ls -t .squad/workers/gate-override-*.status | head -n 1)" || fail 'missing override status'
+grep -q -- '^- plan-review-override: x' .squad/plans/gate.md || fail 'missing override approval'
+gate_path="$PWD/.squad/plans/gate.md"
+printf 'worker=gate-approval\nrole=reviewer\nplan=%s\nstate=completed\nfinished=9999999998\nverdict=approved\n' "$gate_path" >.squad/workers/gate-approval.status
+"$worker" gate-approved --engine grok --no-worktree --plan .squad/plans/gate.md --tier-reason test --brief x >/dev/null
+printf 'worker=gate-changes\nrole=reviewer\nplan=%s\nstate=completed\nfinished=9999999999\nverdict=changes_requested\n' "$gate_path" >.squad/workers/gate-changes.status
+expect_exit 2 'run a plan review first' "$worker" gate-blocked --engine grok --no-worktree --plan .squad/plans/gate.md --tier-reason test --brief x
 expect_exit 2 'a plan is required in manager context' \
   "$worker" g-1 --engine grok --no-worktree --brief 'x'
 unset SQUAD_MANAGER_ID
@@ -332,7 +352,7 @@ git_q -C "$repo" commit -qm init
 
 run_edit() { # run_edit ID PLAN EDIT [ROLE]
   local tier_args=()
-  [[ "$2" != .squad/plans/risky.md ]] || tier_args=(--tier-reason test)
+  [[ "$2" != .squad/plans/risky.md ]] || tier_args=(--tier-reason test --skip-plan-review "merge gate test")
   FAKE_EDIT="$3" "$worker" "$1" --engine grok --worktree --project "$repo" --plan "$2" ${tier_args[@]+"${tier_args[@]}"} \
     ${4:+--role "$4"} --brief 'Edit' >/dev/null
 }

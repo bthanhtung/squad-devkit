@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export TZ=UTC
 
 if [[ -z "${TEST_SIGHUP_RESET:-}" ]] && command -v perl >/dev/null 2>&1; then
   export TEST_SIGHUP_RESET=1
@@ -12,6 +13,17 @@ unset SQUAD_MANAGER_ID SQUAD_AGENT_ID SQUAD_DEVKIT_WORKSPACE SQUAD_WORKTREE_WORK
   SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_DEVKIT_SESSION_START SQUAD_DEVKIT_MANAGER_CLIENT SQUAD_ORCHESTRATION_LAYOUT
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+eval "$(sed -n '/^rfc3339_to_hhmm() {/,/^}/p' "$root/scripts/squad-orchestration.sh")"
+check_local_time() (
+  export TZ="$1"
+  rfc3339_to_hhmm "$2"
+  [[ "$REPLY" == "$3" ]] || { echo "FAIL: $TZ $2: expected $3, got $REPLY" >&2; exit 1; }
+)
+check_local_time Asia/Ho_Chi_Minh 2026-11-14T07:05:00Z 14:05
+check_local_time UTC 2026-11-14T07:05:00Z 07:05
+check_local_time Asia/Ho_Chi_Minh 2026-11-14T23:30:00Z 06:30
+check_local_time UTC 2026-11-14T14:05:00+07:00 07:05
+check_local_time UTC garbage 00:00
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/squad-orch.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 live_pid=""
@@ -380,7 +392,7 @@ done
 for cols in 80 100 140 180; do
   swarm="$(COLUMNS=$cols LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
   assert_max_width "$swarm" "$cols" "g2 COLUMNS=$cols"
-  for label in 'SQUAD-DEVKIT ORCHESTRATION' 'task layer' '» delegate to workers' '▼' 'back to' 'session log' 'workers [' 'Fixing issues' '■ manager · lead'; do
+  for label in 'YOU · owner' 'SQUAD-DEVKIT ORCHESTRATION' 'task layer' '» delegate to workers' '▼' 'back to' 'session log' 'workers [' 'Fixing issues' '■ manager · lead'; do
     grep -Fq "$label" <<< "$swarm" || { echo "FAIL: g2 missing $label" >&2; exit 1; }
   done
   for wid in dev-1 test-1 dev-2 done-1; do
@@ -405,6 +417,7 @@ narrow_swarm="$(COLUMNS=54 LINES=24 NO_COLOR=1 /bin/bash "$root/scripts/squad-or
   echo 'FAIL: narrow g2 did not wrap worker cards' >&2
   exit 1
 }
+grep -Fq 'YOU · owner' <<< "$narrow_swarm"
 grep -Fq 'back to' <<< "$narrow_swarm"
 assert_max_width "$narrow_swarm" 54 'g2 54x24'
 mkdir -p "$tmp/g2-finished"
@@ -428,11 +441,30 @@ if [[ "${swarm_arrows[0]}" != ◀╌*●* || "${swarm_arrows[3]}" != ◀●╌* 
   echo 'FAIL: g2 review pulse must travel toward the left arrowhead' >&2
   exit 1
 fi
-if [[ -z "${branch_tracks[0]}" || -z "${branch_tracks[3]}" || "${branch_tracks[0]}" == "${branch_tracks[3]}" ||
-      -z "${merge_tracks[0]}" || -z "${merge_tracks[3]}" || "${merge_tracks[0]}" == "${merge_tracks[3]}" ]]; then
-  echo 'FAIL: g2 branch and merge pulses must move during review' >&2
+if [[ -n "${branch_tracks[0]}${branch_tracks[3]}${merge_tracks[0]}${merge_tracks[3]}" ]]; then
+  echo 'FAIL: g2 rails must not pulse during review' >&2
   exit 1
 fi
+mkdir -p "$tmp/g2-merged" "$tmp/g2-running"
+for worker in a b c; do
+  printf 'worker=%s\nstate=completed\nmerged=yes\nstarted=%s\n' "$worker" "$since" > "$tmp/g2-merged/$worker.status"
+  printf 'worker=%s\nstate=running\npid=%s\nstarted=%s\n' "$worker" "$$" "$now" > "$tmp/g2-running/$worker.status"
+done
+for phase in 0 3; do
+  merged_frames[$phase]="$(COLUMNS=140 LINES=80 SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_ORCHESTRATION_FRAME=$phase \
+    /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-merged")"
+  running_frame="$(COLUMNS=140 LINES=80 SQUAD_ORCHESTRATION_FORCE_COLOR=1 SQUAD_ORCHESTRATION_FRAME=$phase \
+    /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-running")"
+  running_rails[$phase]="$(grep -oE '┌[─●┬┴┼]*●[─●┬┴┼]*┐' <<< "$running_frame" || true)"
+  running_merges[$phase]="$(grep -oE '└[─●┬┴┼]*●[─●┬┴┼]*┘' <<< "$running_frame" || true)"
+done
+[[ "${merged_frames[0]}" == "${merged_frames[3]}" ]] || { echo 'FAIL: completed g2 frames differ' >&2; exit 1; }
+grep -Fq '▶ Done' <<< "${merged_frames[0]}" || { echo 'FAIL: g2 missing Done step' >&2; exit 1; }
+grep -Fq '▶ Workers' <<< "$running_frame" || { echo 'FAIL: g2 missing Workers step' >&2; exit 1; }
+[[ -n "${running_rails[0]}" && -n "${running_rails[3]}" && "${running_rails[0]}" != "${running_rails[3]}" &&
+   -n "${running_merges[0]}" && -n "${running_merges[3]}" && "${running_merges[0]}" != "${running_merges[3]}" ]] || {
+  echo 'FAIL: g2 running rail pulses must move' >&2; exit 1
+}
 mkdir -p "$tmp/g2-one"
 cp "$workers_dir/dev-1-2.status" "$tmp/g2-one/"
 one_swarm="$(COLUMNS=140 LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once "$tmp/g2-one")"

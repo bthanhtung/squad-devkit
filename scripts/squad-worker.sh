@@ -42,7 +42,7 @@ Usage: squad-worker <worker-id> [--engine ENGINE] (--brief TEXT | --brief-file F
                     [--plan FILE | --no-plan "REASON"] [--clone URL] [--init]
                     [--own PATHS] [--no-plan-context] [--parent ID]
                     [--budget-tokens N] [--max-children N]
-                    [--tier-reason REASON] [--verify COMMAND]
+                    [--tier-reason REASON] [--skip-plan-review REASON] [--verify COMMAND]
        squad-worker --list
        squad-worker --tree [--json]
        squad-worker --stop <worker-id|all>
@@ -75,6 +75,7 @@ Options:
   --models           Print local model candidates as JSON; optional --engine/--project filters
   --model-tier TIER  fast|balanced|strong; requires a mapping (Claude aliases available)
   --tier-reason REASON  Allow a high-risk plan below strong tier; record why
+  --skip-plan-review REASON  Bypass the plan review gate; record why
   --retry-escalate   Retry a failed verification once at the next mapped tier
   --merge-if-green   Merge verified, in-scope changes on a low-risk plan
   --verify COMMAND   Run acceptance command after a completed worker
@@ -157,6 +158,7 @@ scout_resolved_model=""
 scout_resolved_source=""
 scout_resolved_error=""
 tier_reason=""
+plan_review_override=""
 retry_escalate=0
 merge_if_green=0
 verify_command=""
@@ -225,7 +227,7 @@ one_line_reason() {
 while (( $# > 0 )); do
   case "$1" in --models|--engine|--project) ;; *) catalog_incompatible=1 ;; esac
   case "$1" in
-    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own|--parent|--budget-tokens|--max-children|--tier-reason|--verify)
+    --engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own|--parent|--budget-tokens|--max-children|--tier-reason|--skip-plan-review|--verify)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -241,6 +243,7 @@ while (( $# > 0 )); do
         --model) model="$2"; model_flag_set=1 ;;
         --model-tier) model_tier="$2"; tier_flag_set=1 ;;
         --tier-reason) tier_reason="$(one_line_reason --tier-reason "$2")" || exit 2 ;;
+        --skip-plan-review) plan_review_override="$(one_line_reason --skip-plan-review "$2")" || exit 2 ;;
         --verify) verify_command="$2" ;;
         --mcp) keep_mcp+=("$2") ;;
         --manager) manager_id="$2"; required_split=1; manager_flag_set=1 ;;
@@ -597,16 +600,18 @@ scope_violations() {
 # verdict is changes_requested never counts; the newest such reviewer is left in
 # $review_blocker so the gate can say why. A reviewer without a verdict (older
 # runs, or a report that omits it) still counts, as before.
-review_exists() {
-  local target_status="$1" plan="$2" target_finished file finished state verdict newest=0 latest=""
+latest_plan_review() {
+  local target_status="$1" plan="$2" target_finished file finished state newest=0
+  latest_review=""
   review_blocker=""
   # A worker without a real plan cannot be reviewed against one.
   [[ -n "$plan" && "$plan" != none ]] || return 1
-  target_finished="$(status_get "$target_status" finished)"
+  target_finished=""
+  [[ -z "$target_status" ]] || target_finished="$(status_get "$target_status" finished)"
   target_finished="${target_finished:-0}"
   while IFS= read -r file; do
     [[ "$(status_get "$file" role)" == reviewer ]] || continue
-    [[ "$(status_get "$file" worker)" != "$(status_get "$target_status" worker)" ]] || continue
+    [[ -z "$target_status" || "$(status_get "$file" worker)" != "$(status_get "$target_status" worker)" ]] || continue
     [[ "$(status_get "$file" plan)" == "$plan" ]] || continue
     state="$(status_get "$file" state)"
     [[ "$state" == "completed" || "$state" == "done" ]] || continue
@@ -614,16 +619,21 @@ review_exists() {
     if [[ "$finished" =~ ^[0-9]+$ ]] && (( finished > target_finished )); then
       if (( finished > newest )); then
         newest="$finished"
-        latest="$file"
+        latest_review="$file"
       elif (( finished == newest )) && [[ "$(status_get "$file" verdict)" == changes_requested ]]; then
-        latest="$file"
+        latest_review="$file"
       fi
     fi
   done < <(ls -t .squad/workers/*.status 2>/dev/null)
-  [[ -n "$latest" ]] || return 1
-  verdict="$(status_get "$latest" verdict)"
+  [[ -n "$latest_review" ]]
+}
+
+review_exists() {
+  local verdict
+  latest_plan_review "$1" "$2" || return 1
+  verdict="$(status_get "$latest_review" verdict)"
   if [[ "$verdict" == changes_requested ]]; then
-    review_blocker="$(status_get "$latest" worker) ($(status_get "$latest" report))"
+    review_blocker="$(status_get "$latest_review" worker) ($(status_get "$latest_review" report))"
     return 1
   fi
   return 0
@@ -1253,6 +1263,28 @@ if [[ "$plan_path" != none ]]; then
     echo 'squad-worker: low risk and complexity; consider a lower model tier.' >&2
   fi
 fi
+if [[ "$plan_path" != none && ( "$plan_risk" == high || "$plan_complexity" == high ) && "$role" != reviewer && "$role" != scout && "$role" != researcher ]]; then
+  review_workspace="$(find_workspace 2>/dev/null || true)"
+  latest_review=""
+  if [[ -n "$review_workspace" ]]; then
+    old_directory="$PWD"
+    cd "$review_workspace"
+    latest_plan_review "" "$plan_path" || true
+    cd "$old_directory"
+    [[ -z "$latest_review" ]] || latest_review="$review_workspace/$latest_review"
+  fi
+  if [[ -z "$latest_review" || "$(status_get "$latest_review" verdict)" != approved ]]; then
+    if [[ -z "$plan_review_override" ]]; then
+      echo "squad-worker: plan $plan_path is Risk/Complexity high; run a plan review first:" >&2
+      echo "  squad-worker plan-review --manager $manager_id --role reviewer --model-tier strong --plan $plan_path --brief \"Review the plan file $plan_path (no diff yet): missing auth/security invariants, schema or API contracts, wrong task split, unverifiable acceptance. End with VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED.\"" >&2
+      echo '  or pass --skip-plan-review "<reason>".' >&2
+      exit 2
+    fi
+  fi
+  if [[ -n "$plan_review_override" ]]; then
+    plan_append_approval "$plan_path" "- plan-review-override: $plan_review_override ($(date +%Y-%m-%d))" || { echo "squad-worker: could not record plan review override in $plan_path" >&2; exit 1; }
+  fi
+fi
 model_arguments=()
 # shellcheck disable=SC2034 # read by lib/engines/*.sh
 [[ -z "$model" ]] || model_arguments=(--model "$model")
@@ -1419,6 +1451,10 @@ if (( use_worktree == 1 )); then
           echo 'squad-worker: consider a higher tier or splitting the task.' >&2
         fi
         previous_report="$(status_get "$previous_status" report)"
+        if (( attempt == 3 )); then
+          echo "squad-worker: $worker_id failed twice; before escalating, get a strong diagnosis:" >&2
+          echo "  squad-worker $worker_id-diag --manager $manager_id --role reviewer --model-tier strong --plan $plan_path --brief \"Read $previous_report and inspect git -C $worktree_path diff $worktree_base_commit: root cause or rabbit hole? name the root cause and the smallest fix.\"" >&2
+        fi
         previous_text=""
         [[ ! -s "$previous_report" ]] || previous_text="$(head -c 4000 "$previous_report")"
         previous_diff="$(git -C "$worktree_path" diff --stat "$worktree_base_commit" | head -n 40)"
@@ -1530,7 +1566,7 @@ write_status() {
   {
     printf 'worker=%s\nengine=%s\nprofile=%s\nmodel=%s\nrole=%s\n' \
       "$worker_id" "$engine" "$run_profile" "$model" "$role"
-    printf 'model_tier=%s\nattempt=%s\ntier_override=%s\nverify=%s\nverify_exit=%s\n' "$model_tier" "$attempt" "$tier_reason" "$verify" "$verify_exit"
+    printf 'model_tier=%s\nattempt=%s\ntier_override=%s\nplan_review_override=%s\nverify=%s\nverify_exit=%s\n' "$model_tier" "$attempt" "$tier_reason" "$plan_review_override" "$verify" "$verify_exit"
     printf 'requested_model=%s\nmodel_source=%s\nactual_model=%s\n' "$model" "$model_source" "$actual_model"
     printf 'title=%s\ntask=%s\nstate=%s\nreason=%s\n' \
       "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state" "${failure_reason:-$stop_reason}"
@@ -1656,7 +1692,11 @@ open_monitor_pane() {
         printf 'export SQUAD_DEVKIT_MANAGER_WRAPPER_PID=%q\n' "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}"
         printf 'export SQUAD_DEVKIT_SESSION_START=%q\n' "${SQUAD_DEVKIT_SESSION_START:-}"
         printf 'export SQUAD_MANAGER_ID=%q\n' "$mgr_id"
-        printf 'exec %q %q\n' "$script_dir/squad-orchestration.sh" "$workspace_root/$output_directory"
+        if [[ "${SQUAD_TUI:-0}" == "1" ]]; then
+          printf 'exec python3 %q --db %q\n' "$script_dir/squad-tui.py" "$workspace_root/.squad/messages.db"
+        else
+          printf 'exec %q %q\n' "$script_dir/squad-orchestration.sh" "$workspace_root/$output_directory"
+        fi
       } >"$orchestration_script"
       chmod +x "$orchestration_script"
       if ! squad_open_monitor "$workspace_root/$orchestration_script" "$pane_title" "$workspace_root" \

@@ -60,6 +60,11 @@ Workers see only the brief, so make it complete.
 - Small follow-ups: add a `## Follow-up: <name>` section to the existing plan.
   `--no-plan "<reason>"` is only for genuine emergencies; the reason is
   recorded in the status file and report.
+- A plan with `Risk: high` or `Complexity: high` needs a strong `reviewer` run
+  on the plan file before any editing worker; the launcher refuses otherwise.
+  Reviewer briefs must say to read the plan file (`--plan` supplies only
+  Goal/Findings/Decisions). `--skip-plan-review "<reason>"` is only for a
+  logged human decision.
 - Commit and push only after the human approves and you record
   `- commit: <repo>` / `- push: <repo>` under `## Approvals`, preferably with
   the absolute path (`- push: /abs/path/to/repo`); a bare basename matches
@@ -118,6 +123,9 @@ reviewer run on the same plan; `--override-review "<reason>"` records an
 override in the plan. High-risk pushes also need `- review: <repo>`. Never commit or push without the human's approval.
 Workers that fail, time out, or stall report back instead of hanging; rerun
 or reassign their task.
+
+At attempt 3, the launcher prints a strong reviewer diagnosis command; run it
+before escalating tier or changing approach.
 
 Reference: `squad-devkit --help`, `squad-worker --help`, and
 `docs/squad-devkit.md` in the squad-devkit repository.
