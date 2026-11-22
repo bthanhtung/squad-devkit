@@ -14,12 +14,15 @@ import {
   addVerdict,
   clean,
   emptyPerms,
+  isPlanPath,
+  parsePlanTasks,
   parseStatus,
+  planCounts,
   pickRuns,
   pickShape,
   statusText,
 } from './deck'
-import type { Run } from './deck'
+import type { PlanProgress, Run } from './deck'
 import { Band, Deck } from './view'
 
 const PANE = 'squad-deck'
@@ -27,6 +30,7 @@ const EVERY_MS = 2000
 const LINGER_MS = 60_000 // the pane and the band stay this long after the last worker stops
 const IDLE_EVERY = 5 // while nothing is open and no worker is known: every 10 s
 const MAX_TAILS = 8
+const MAX_PLANS = 2
 const LAYOUTS = ['auto', 'compact', 'wide', 'mini']
 
 // Change a tag when the shape of a value changes: an older one reads as the initial.
@@ -35,6 +39,7 @@ const now = atom({ plugin: 'squad-deck', key: 'now' } as const, 0)
 const since = atom({ plugin: 'squad-deck', key: 'since' } as const, 0)
 const isDocked = atom({ plugin: 'squad-deck', key: 'isDocked' } as const, false)
 const isActive = atom({ plugin: 'squad-deck', key: 'isActive' } as const, false)
+const plans = atom({ plugin: 'squad-deck', key: 'plans' } as const, [], { shape: 'plans-1' })
 const perms = atom({ plugin: 'squad-deck', key: 'perms' } as const, emptyPerms(), {
   shape: 'perms-1',
 })
@@ -61,6 +66,7 @@ let wasOpen = false
 let stoppedAt: number | undefined
 const seen = new Set<string>()
 const statuses = new Map<string, { mtimeMs: number; run: Run | null }>()
+const planFiles = new Map<string, { mtimeMs: number; ids: string[] }>()
 // Whether this session is a squad session; decided once, on first need.
 let squadSession: Promise<boolean> | undefined
 
@@ -93,11 +99,53 @@ async function startedAt($: any): Promise<number> {
   return seconds
 }
 
-async function workersDir($: any): Promise<string> {
+async function workspaceDir($: any): Promise<string> {
   const workspace = await $.env.get('SQUAD_DEVKIT_WORKSPACE')
   const base = workspace !== undefined && workspace !== '' ? workspace : await $.session.cwd()
 
-  return `${base.replace(/\/+$/, '')}/.squad/workers`
+  return base.replace(/\/+$/, '')
+}
+
+// Task ids of a plan file, read only from <workspace>/.squad/plans and cached by mtime.
+async function planTasks($: any, workspace: string, path: string): Promise<string[]> {
+  if (!isPlanPath(path, workspace)) return []
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (stat === undefined) return []
+  const hit = planFiles.get(path)
+  if (hit !== undefined && hit.mtimeMs === stat.mtimeMs) return hit.ids
+  const text = await $.fs.read(path).catch(() => undefined)
+  const ids = typeof text === 'string' ? parsePlanTasks(text) : []
+  planFiles.set(path, { mtimeMs: stat.mtimeMs, ids })
+
+  return ids
+}
+
+// Progress of the plans this tab's runs belong to: a plan is active while one of its runs runs
+// or ended within the linger window. Newest first, at most MAX_PLANS.
+async function readPlans($: any, workspace: string, list: Run[], clock: number): Promise<PlanProgress[]> {
+  const byPlan = new Map<string, Run[]>()
+  for (const run of list) {
+    if (run.plan === '' || run.plan === 'none') continue
+    byPlan.set(run.plan, [...(byPlan.get(run.plan) ?? []), run])
+  }
+  const isRecent = (run: Run) =>
+    run.state === 'running' || (run.finished !== null && clock - run.finished * 1000 < LINGER_MS)
+  const active = [...byPlan.entries()]
+    .filter(([, group]) => group.some(isRecent))
+    .sort(([, a], [, b]) => Math.max(...b.map(run => run.started)) - Math.max(...a.map(run => run.started)))
+    .slice(0, MAX_PLANS)
+  for (const path of [...planFiles.keys()]) if (!byPlan.has(path)) planFiles.delete(path)
+
+  return Promise.all(
+    active.map(async ([path, group]) => ({
+      name: (path.split('/').pop() ?? path).replace(/\.md$/, ''),
+      ...planCounts(await planTasks($, workspace, path), list, group),
+    })),
+  )
+}
+
+async function workersDir($: any): Promise<string> {
+  return `${await workspaceDir($)}/.squad/workers`
 }
 
 // This tab's manager id; empty outside a squad-devkit tab, which then sees every run.
@@ -203,6 +251,10 @@ async function refresh($: any, isForced = false): Promise<void> {
       await update($, isDocked, () => false)
     }
 
+    const progress = await readPlans($, await workspaceDir($), list, clock)
+    if (JSON.stringify(progress) !== JSON.stringify(await read($, plans))) {
+      await update($, plans, () => progress)
+    }
     if (running.length > 0 || JSON.stringify(list) !== JSON.stringify(before)) {
       await update($, runs, () => list)
       await update($, now, () => Math.floor(clock / 1000))
@@ -319,6 +371,7 @@ export const register: Register = on => {
       now: await read($, now),
       perms: await read($, perms),
       commands: await read($, commands),
+      plans: await read($, plans),
       shape: pickShape(choice, columns, rows, list.length),
     })
   })
@@ -329,6 +382,6 @@ export const register: Register = on => {
       return next(e)
     }
 
-    return Band($.ui.resolve(e), list)
+    return Band($.ui.resolve(e), list, (await read($, plans))[0])
   })
 }

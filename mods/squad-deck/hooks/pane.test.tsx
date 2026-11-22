@@ -63,6 +63,10 @@ function engine(on: any, calls: Calls, files: Record<string, string> = FILES, en
     if (hasWorkersDir && e.path === '/elsewhere/.squad/workers') {
       return { value: { kind: 'dir', size: 0, mtimeMs: 1, isLink: false } }
     }
+    const name = String(e.path).split('/').pop() ?? ''
+    if (String(e.path).startsWith('/w/.squad/plans/') && name in files) {
+      return { value: { kind: 'file', size: 1, mtimeMs: 5, isLink: false } }
+    }
     throw new Error('ENOENT')
   })
   on('fs.list', (_: unknown, e: any) => ({
@@ -187,6 +191,7 @@ test('the band above the prompt shows the totals and the newest activity', async
     props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 } },
   } as any)
   expect((await band.find({ type: 'Text', text: /1 running.*1 done.*1 failed/ }))?.text).toBe('1 running · 1 done · 1 failed')
+  expect(JSON.stringify(await band.drawn())).toContain(' 2/3 · ')
   expect((await band.find({ type: 'Text', text: /deck-1 · Edit/ }))?.text).toBe('deck-1 · Edit /src/app.ts')
   await band.unmount()
 })
@@ -365,4 +370,89 @@ test('the band and the status line are hidden while nothing runs', async ($, on)
   } as any)
   expect(await band.find({ type: 'Text', text: /done/ })).toBeUndefined()
   await band.unmount()
+})
+
+const BARS = 'worker=a-1\nmanager=manager-1\nengine=claude\nstate=running\nstarted=1100\ntimeout_seconds=200\ntokens_in=100000\ntokens_out=20000\n'
+
+test('a card shows the time bar and no token bar without a budget', async ($, on) => {
+  await boot($, on, { 'a-1-1.status': BARS })
+  const drawn = await drawPane($)
+  expect(drawn).toContain('━')
+  expect(drawn).toContain('1m/3m')
+  expect(drawn).not.toContain('600k')
+})
+
+test('a card with a budget also shows the token bar', async ($, on) => {
+  await boot($, on, { 'a-1-1.status': `${BARS}budget_tokens=600000\n` })
+  expect(await drawPane($)).toContain('120k/600k')
+})
+
+test('a card shows the time % of its limit, and the token % beside a budget', async ($, on) => {
+  // 100 s of 200 s; 120k of 600k tokens.
+  await boot($, on, { 'a-1-1.status': `${BARS}budget_tokens=600000\n` })
+  const drawn = await drawPane($)
+  expect(drawn).toContain(' 50%')
+  expect(drawn).toContain(' 20%')
+})
+
+test('a card without a timeout uses the 45-minute default', async ($, on) => {
+  await boot($, on, { 'a-1-1.status': worker('a-1', 'manager-1', 'running', 1100) })
+  const drawn = await drawPane($)
+  expect(drawn).toContain('──────────')
+  expect(drawn).toContain(' 3%')
+  expect(drawn).toContain('1m/45m')
+})
+
+test('a finished card shows 100%', async ($, on) => {
+  const done = `${worker('a-1', 'manager-1', 'completed', 1100)}finished=1150\ntimeout_seconds=200\n`
+  await boot($, on, { 'a-1-1.status': done })
+  expect(await drawPane($)).toContain(' 100%')
+})
+
+// --- Plan progress ----------------------------------------------------------
+
+const PLAN_FILE = '# P\n## Tasks\n- dev-1 (x): a\n- dev-2: b\n- dev-3: c\n## Notes\n- late-1 (x)\n'
+const planned = (id: string, state: string, plan: string, extra = '') =>
+  `${worker(id, 'manager-1', state, 1100)}plan=${plan}\n${extra}`
+const PLAN_ENV = { ...SQUAD_ENV, SQUAD_MANAGER_ID: 'manager-1' }
+const mountBand = ($: any) =>
+  $.ui.mount({
+    plugin: 'squad-deck',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    surface: 'terminal',
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 } },
+  } as any)
+
+test('an active plan draws a progress row, and the band shows the same figure', async ($, on) => {
+  const files = {
+    'sample.md': PLAN_FILE,
+    'dev-1-1.status': planned('dev-1', 'completed', '/w/.squad/plans/sample.md', 'verify=pass\nfinished=1150\n'),
+    'dev-2-1.status': planned('dev-2', 'completed', '/w/.squad/plans/sample.md', 'verify=fail\nfinished=1150\n'),
+    'dev-3-1.status': planned('dev-3', 'running', '/w/.squad/plans/sample.md'),
+  }
+  await boot($, on, files, false, PLAN_ENV, false, false)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 60 } })
+  const row = await ui.find({ type: 'Text', text: /1\/3 tasks · 33%/ })
+  expect(row?.text).toContain('sample')
+  expect(row?.text).toContain('█')
+  await ui.unmount()
+  const band = await mountBand($)
+  expect(JSON.stringify(await band.drawn())).toContain(' 1/3 · 33% · ')
+  await band.unmount()
+})
+
+test('a plan outside .squad/plans is ignored and its runs give the figure', async ($, on) => {
+  const files = {
+    'dev-1-1.status': planned('dev-1', 'completed', '/etc/sample.md', 'finished=1150\n'),
+    'dev-2-1.status': planned('dev-2', 'running', '/etc/sample.md'),
+  }
+  await boot($, on, files, true, PLAN_ENV)
+  expect(await drawPane($)).toContain('1/2 tasks · 50%')
+})
+
+test('a plan with no active run draws no row', async ($, on) => {
+  const old = planned('dev-1', 'completed', '/w/.squad/plans/sample.md', 'finished=1000\n')
+  await boot($, on, { 'sample.md': PLAN_FILE, 'dev-1-1.status': old }, true, PLAN_ENV)
+  expect(await drawPane($)).not.toContain('tasks ·')
 })

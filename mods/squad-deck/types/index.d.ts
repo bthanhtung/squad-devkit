@@ -15,11 +15,19 @@ export type Run = {
   verdict: string
   tokensIn: number | null
   tokensOut: number | null
+  // The run's time limit and token budget; null when the status file has none.
+  timeoutSeconds: number | null
+  budgetTokens: number | null
+  // The plan file the run belongs to (absolute path); empty or `none` without one.
+  plan: string
   title: string
   isScopeViolation: boolean
   log: string
   activity: string
 }
+
+// Progress of one active plan: tasks done out of tasks.
+export type PlanProgress = { name: string; done: number; total: number }
 
 export type Kind = 'file' | 'shell' | 'other'
 export type Verdict = 'allow' | 'ask' | 'deny'
@@ -42,6 +50,8 @@ declare module 'claude-code' {
       perms: Shaped<Perms>
       commands: Shaped<string[]>
       layout: Shaped<Layout>
+      // Progress of this tab's active plans, newest first, at most two.
+      plans: Shaped<PlanProgress[]>
     }
   }
 }

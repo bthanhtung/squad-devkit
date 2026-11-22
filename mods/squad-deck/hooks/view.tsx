@@ -1,7 +1,7 @@
 // The deck's drawing: calm, one accent, dim secondary text. Every function
 // takes the surface's element table (`$.ui.resolve(e)`) and plain data.
-import { elapsed, summary, tokens } from './deck'
-import type { Kind, Perms, Run, Shape } from './deck'
+import { bar, elapsed, percent, progressText, summary, timeFraction, timeLimit, tokenFraction, tokens } from './deck'
+import type { Kind, Perms, PlanProgress, Run, Shape } from './deck'
 
 type Ui = { Box: any; Text: any }
 
@@ -14,6 +14,52 @@ function tone(run: Run): string | undefined {
   if (run.state === 'completed') return 'success'
   if (run.state === 'failed' || run.state === 'stopped') return 'error'
   return undefined
+}
+
+function isFinished(run: Run): boolean {
+  return run.state === 'completed' || run.state === 'failed' || run.state === 'stopped'
+}
+
+// Accent until 80 %, warning from 80 %, error from 95 %; a finished run keeps its own tone.
+function barTone(run: Run, fraction: number): string | undefined {
+  if (isFinished(run)) return tone(run)
+  if (fraction >= 0.95) return 'error'
+  return fraction >= 0.8 ? 'warning' : ACCENT
+}
+
+function Bar({ Text }: Ui, fraction: number, width: number, color: string | undefined) {
+  const { filled, empty } = bar(fraction, width)
+
+  return (
+    <Text>
+      <Text color={color}>{filled}</Text>
+      <Text dimColor>{empty}</Text>
+    </Text>
+  )
+}
+
+function Bars(ui: Ui, run: Run, now: number) {
+  const { Text } = ui
+  const time = timeFraction(run, now)
+  const used = tokenFraction(run)
+  if (time === null && used === null) return null
+
+  return (
+    <Text wrap="truncate-end">
+      {'  '}
+      {time !== null && Bar(ui, time, 10, barTone(run, time))}
+      {time !== null && <Text color={barTone(run, time)}>{` ${percent(time, isFinished(run))}`}</Text>}
+      {time !== null && (
+        <Text dimColor>{` ${Math.floor((time * timeLimit(run)) / 60)}m/${Math.round(timeLimit(run) / 60)}m`}</Text>
+      )}
+      {time !== null && used !== null && '  '}
+      {used !== null && Bar(ui, used, 10, barTone(run, used))}
+      {used !== null && <Text color={barTone(run, used)}>{` ${percent(used, isFinished(run))}`}</Text>}
+      {used !== null && (
+        <Text dimColor>{` ${tokens((run.tokensIn ?? 0) + (run.tokensOut ?? 0))}/${tokens(run.budgetTokens)}`}</Text>
+      )}
+    </Text>
+  )
 }
 
 function word(run: Run): string {
@@ -30,7 +76,8 @@ function detail(run: Run): string {
   return run.state === 'running' ? run.activity : run.title
 }
 
-function Card({ Box, Text }: Ui, run: Run, now: number) {
+function Card(ui: Ui, run: Run, now: number) {
+  const { Box, Text } = ui
   const color = tone(run)
   const spent = elapsed(run, now)
 
@@ -55,6 +102,7 @@ function Card({ Box, Text }: Ui, run: Run, now: number) {
         {run.verdict !== '' && <Text dimColor> · </Text>}
         {run.verdict !== '' && <Text color={checkTone(run.verdict)}>{run.verdict}</Text>}
       </Text>
+      {Bars(ui, run, now)}
       <Text wrap="truncate-end" dimColor>
         {'  '}
         {detail(run)}
@@ -113,12 +161,31 @@ export function Chips({ Text }: Ui, perms: Perms) {
   )
 }
 
+// One row per active plan: `name  ██████░░░░  3/5 tasks · 60%`.
+export function PlanRows({ Box, Text }: Ui, plans: PlanProgress[]) {
+  return plans.map(plan => {
+    const isComplete = plan.total > 0 && plan.done >= plan.total
+    const cells = Math.round((plan.total === 0 ? 0 : Math.min(1, plan.done / plan.total)) * 10)
+
+    return (
+      <Box key={`plan-${plan.name}`}>
+        <Text wrap="truncate-end">
+          <Text bold>{plan.name}</Text>
+          <Text color={isComplete ? 'success' : ACCENT}>{`  ${'█'.repeat(cells)}`}</Text>
+          <Text dimColor>{'░'.repeat(10 - cells)}</Text>
+          <Text color={isComplete ? 'success' : ACCENT}>{`  ${progressText(plan.done, plan.total)}`}</Text>
+        </Text>
+      </Box>
+    )
+  })
+}
+
 export function Deck(
   ui: Ui,
-  data: { runs: Run[]; now: number; perms: Perms; commands: string[]; shape: Shape },
+  data: { runs: Run[]; now: number; perms: Perms; commands: string[]; plans: PlanProgress[]; shape: Shape },
 ) {
   const { Box, Text } = ui
-  const { runs, now, perms, commands, shape } = data
+  const { runs, now, perms, commands, plans, shape } = data
   const rows =
     shape === 'mini'
       ? runs.map(run => MiniRow(ui, run, now))
@@ -141,6 +208,7 @@ export function Deck(
       ) : (
         <Box flexDirection="column">
           {Totals(ui, runs)}
+          {plans.length > 0 && <Box flexDirection="column">{PlanRows(ui, plans)}</Box>}
           <Box flexDirection="column" marginTop={1}>
             {body}
           </Box>
@@ -161,13 +229,16 @@ export function Deck(
   )
 }
 
-export function Band({ Box, Text }: Ui, runs: Run[]) {
+export function Band({ Box, Text }: Ui, runs: Run[], plan?: PlanProgress) {
   const newest = runs.find(run => run.state === 'running' && run.activity !== '')
+  const finished = runs.filter(isFinished).length
 
   return (
     <Box flexDirection="column">
       <Box>
         <Text dimColor>squad: </Text>
+        {Bar({ Box, Text }, (plan?.done ?? finished) / Math.max(1, plan?.total ?? runs.length), 8, ACCENT)}
+        <Text dimColor>{` ${plan === undefined ? `${finished}/${runs.length}` : progressText(plan.done, plan.total, '')} · `}</Text>
         {Totals({ Box, Text }, runs)}
       </Box>
       {newest !== undefined && (

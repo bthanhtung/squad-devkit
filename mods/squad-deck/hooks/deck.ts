@@ -1,9 +1,9 @@
 // Pure helpers of the squad deck: parsing, redaction, formatting. No `$` here,
 // so every function is testable on its own.
 
-import type { Kind, Perms, Run, Verdict } from '../types'
+import type { Kind, Perms, PlanProgress, Run, Verdict } from '../types'
 
-export type { Kind, Perms, Run, Verdict }
+export type { Kind, Perms, PlanProgress, Run, Verdict }
 
 export const MAX_RUNS = 30
 export const TAIL_BYTES = 16384
@@ -93,6 +93,9 @@ export function parseStatus(text: string, fallbackId = ''): Run | null {
     verdict: word(f.verdict, 24),
     tokensIn: count(f.tokens_in),
     tokensOut: count(f.tokens_out),
+    timeoutSeconds: count(f.timeout_seconds),
+    budgetTokens: count(f.budget_tokens),
+    plan: (f.plan ?? '').slice(0, 400),
     title: clean(f.title ?? '', 80),
     isScopeViolation: (f.scope_violation ?? '') !== '',
     log: f.log ?? '',
@@ -202,13 +205,55 @@ export function activity(tail: string): string {
 
 // --- Formatting -----------------------------------------------------------
 
+function endOf(run: Run, now: number): number {
+  return run.state === 'running' ? now : (run.finished ?? now)
+}
+
 export function elapsed(run: Run, now: number): string {
-  const end = run.state === 'running' ? now : (run.finished ?? now)
+  const end = endOf(run, now)
   const seconds = Math.max(0, Math.round(end - run.started))
   if (run.started === 0) return ''
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
   return `${Math.floor(seconds / 3600)}h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}m`
+}
+
+/** A thin bar of `width` cells: `filled` then `empty`; fraction is clamped to [0, 1]. */
+export function bar(fraction: number, width: number): { filled: string; empty: string } {
+  const cells = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 1
+  const share = Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0
+  const full = Math.round(share * cells)
+
+  return { filled: '━'.repeat(full), empty: '─'.repeat(cells - full) }
+}
+
+const DEFAULT_LIMIT = 2700 // seconds: the worker default of 45 minutes
+const SCOUT_LIMIT = 600 // a scout gets 10 minutes
+
+/** The run's time limit in seconds: its own, else its role's default (old status files). */
+export function timeLimit(run: Run): number {
+  if (run.timeoutSeconds !== null && run.timeoutSeconds > 0) return run.timeoutSeconds
+  return run.role === 'scout' ? SCOUT_LIMIT : DEFAULT_LIMIT
+}
+
+/** Time spent over the run's limit, or null when it has not started. Can exceed 1. */
+export function timeFraction(run: Run, now: number): number | null {
+  if (run.started === 0) return null
+  return Math.max(0, endOf(run, now) - run.started) / timeLimit(run)
+}
+
+/** A fraction as a whole percent, held to 0..100; a finished run shows 100%. */
+export function percent(fraction: number, isFinished = false): string {
+  if (isFinished) return '100%'
+  const share = Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0
+
+  return `${Math.floor(share * 100)}%`
+}
+
+/** Tokens used over the run's budget, or null without a budget. Can exceed 1. */
+export function tokenFraction(run: Run): number | null {
+  if (run.budgetTokens === null || run.budgetTokens === 0) return null
+  return ((run.tokensIn ?? 0) + (run.tokensOut ?? 0)) / run.budgetTokens
 }
 
 export function tokens(n: number | null): string {
@@ -267,4 +312,53 @@ export function addVerdict(perms: Perms, tool: string, decision: string): Perms 
   const kind = kindOf(tool)
 
   return { ...perms, [kind]: { ...perms[kind], [decision]: perms[kind][decision] + 1 } }
+}
+
+// --- Plans ----------------------------------------------------------------
+
+const BULLET = /^- ([A-Za-z0-9._-]+)(?: \(|:)/
+const HEADING = /^### ([A-Za-z0-9._-]+)(?:\s|:|$)/
+
+/** True when `path` is a file below `<workspace>/.squad/plans/`, with no `..` in it. */
+export function isPlanPath(path: string, workspace: string): boolean {
+  const root = `${workspace.replace(/\/+$/, '')}/.squad/plans/`
+
+  return path.startsWith(root) && path.length > root.length && !path.split('/').includes('..')
+}
+
+/** Task ids of a plan's `## Tasks` section: top-level `- id (`, `- id:` and `### id` lines. */
+export function parsePlanTasks(text: string): string[] {
+  const ids: string[] = []
+  let inTasks = false
+  for (const line of text.split('\n')) {
+    if (line.startsWith('## ')) {
+      inTasks = /^##\s+Tasks\s*$/i.test(line)
+      continue
+    }
+    if (!inTasks) continue
+    const id = (BULLET.exec(line) ?? HEADING.exec(line))?.[1]
+    if (id !== undefined && id.toLowerCase() !== 'none' && !ids.includes(id)) ids.push(id)
+  }
+
+  return ids
+}
+
+/**
+ * Done out of total for one plan. With task ids: an id is done when this tab has a completed
+ * run of that worker whose verify did not fail. Without: the plan's own runs.
+ */
+export function planCounts(ids: string[], runs: Run[], planRuns: Run[]): { done: number; total: number } {
+  if (ids.length === 0) {
+    return { done: planRuns.filter(run => run.state === 'completed').length, total: planRuns.length }
+  }
+  const passed = new Set(
+    runs.filter(run => run.state === 'completed' && run.verify !== 'fail').map(run => run.id),
+  )
+
+  return { done: ids.filter(id => passed.has(id)).length, total: ids.length }
+}
+
+/** `3/5 tasks · 60%`; the band passes an empty unit for `3/5 · 60%`. */
+export function progressText(done: number, total: number, unit = ' tasks'): string {
+  return `${done}/${total}${unit} · ${percent(total === 0 ? 0 : done / total, total > 0 && done >= total)}`
 }
