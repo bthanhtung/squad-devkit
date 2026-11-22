@@ -79,6 +79,10 @@ function engine(on: any, calls: Calls, files: Record<string, string> = FILES, en
     calls.tails.push([...e.argv])
     return { value: { exitCode: 0, stdout: LOG, stderr: '' } }
   })
+  const kept = new Map<string, unknown>()
+  on('store.get', (_: unknown, e: any) => ({ value: kept.get(e.key) }))
+  on('store.set', (_: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }))
+  on('store.delete', (_: unknown, e: any) => (kept.delete(e.key), { value: undefined }))
   on('tool.check', (_: unknown, e: any) => ({ decision: e.tool === 'Bash' ? 'ask' : 'allow' }))
   on('tool.call', () => ({ result: {} }))
 
@@ -455,4 +459,49 @@ test('a plan with no active run draws no row', async ($, on) => {
   const old = planned('dev-1', 'completed', '/w/.squad/plans/sample.md', 'finished=1000\n')
   await boot($, on, { 'sample.md': PLAN_FILE, 'dev-1-1.status': old }, true, PLAN_ENV)
   expect(await drawPane($)).not.toContain('tasks ·')
+})
+
+// --- Width ------------------------------------------------------------------
+
+// /deck with the terminal's width as command.run reports it.
+const deckRun = ($: any, args: string, columns = 160) =>
+  $.command.run({ command: 'deck', args, presentation: { isFullscreen: true, columns } } as any)
+
+test('the default dock is 30% of the terminal columns', async ($, on) => {
+  const calls = await boot($, on, {})
+  expect((await deckRun($, 'open', 160)).text).toBe('Squad deck opened.')
+  expect(calls.opens.at(-1).columns).toBe(48)
+  expect(calls.opens.at(-1).backgroundColor).toBe('transparent')
+})
+
+test('the default dock is clamped to 24 and 60 columns', async ($, on) => {
+  const calls = await boot($, on, {})
+  await deckRun($, 'open', 60)
+  expect(calls.opens.at(-1).columns).toBe(24)
+  await deckRun($, 'open', 300)
+  expect(calls.opens.at(-1).columns).toBe(60)
+})
+
+test('the dock is 40 columns while the terminal width is not yet known', async ($, on) => {
+  // The running worker opens the pane at session start, before any command or render.
+  const calls = await boot($, on, FILES, false)
+  expect(calls.opened).toEqual(['squad-deck'])
+  expect(calls.opens[0].columns).toBe(40)
+})
+
+test('/deck width sets the dock, reopens it, and a bare /deck width resets it', async ($, on) => {
+  const calls = await boot($, on, {})
+  await deckRun($, 'open', 160)
+  expect((await deckRun($, 'width 50')).text).toBe('Squad deck width: 50.')
+  expect(calls.opens.at(-1).columns).toBe(50)
+  expect((await deckRun($, 'width')).text).toBe('Squad deck width: default.')
+  expect(calls.opens.at(-1).columns).toBe(48)
+})
+
+test('/deck width rejects values outside 24..120 and leaves a closed dock shut', async ($, on) => {
+  const calls = await boot($, on, {}, false)
+  expect((await deckRun($, 'width 10')).text).toContain('Usage: /deck width')
+  expect((await deckRun($, 'width 121')).text).toContain('Usage: /deck width')
+  expect((await deckRun($, 'width 50')).text).toBe('Squad deck width: 50.')
+  expect(calls.opened).toEqual([])
 })
