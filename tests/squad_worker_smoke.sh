@@ -186,6 +186,7 @@ ls .squad/workers/dev-1-*.md >/dev/null
 dev_one_status="$(ls .squad/workers/dev-1-*.status)"
 grep -qx 'state=completed' "$dev_one_status"
 grep -qx 'exit=0' "$dev_one_status"
+grep -Eq '^timeout_seconds=[1-9][0-9]*$' "$dev_one_status"
 grep -qx 'profile=' "$dev_one_status"
 grep -qx 'title=Fix add() in calc.py' "$dev_one_status"
 monitor_frame="$("$repo_root/scripts/squad-worker-monitor.sh" "$dev_one_status" --once)"

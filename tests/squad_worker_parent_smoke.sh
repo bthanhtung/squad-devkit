@@ -100,6 +100,7 @@ grep -qx 'parent=' "$root_status"
 grep -qx 'depth=1' "$root_status"
 grep -qx 'budget_tokens=' "$root_status"
 grep -qx 'max_children=' "$root_status"
+grep -Eqx 'timeout_seconds=[0-9]+' "$root_status"
 
 # 2. Child of a depth-1 worker gets depth 2 and parent recorded
 "$worker" child-dev --engine grok --parent root-dev --no-worktree --brief "Child worker task" >/dev/null
