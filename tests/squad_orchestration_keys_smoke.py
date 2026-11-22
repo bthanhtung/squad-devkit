@@ -244,4 +244,41 @@ with tempfile.TemporaryDirectory(prefix='orch-invalidation-') as tmp:
     finally:
         view.close()
 
+# Verify g2 attention filter hides non-attention workers from LIVE VIEW and j/k navigation.
+with tempfile.TemporaryDirectory(prefix='orch-attention-') as tmp:
+    workspace = Path(tmp)
+    fixture(workspace, 3)
+    view = View(workspace, 'g2')
+    try:
+        view.frame(lambda f: b'LIVE VIEW > dev-0' in f, 2)
+        empty_attn = view.key(b'f', b'LIVE VIEW > no worker', .6)
+        assert b'WORKERS (0/3)' in empty_attn
+        assert b'No workers needing attention' in empty_attn
+        assert b'no attention needed' in empty_attn
+        # j/k must not select hidden workers when attention filter is empty.
+        still_empty = view.key(b'j', b'LIVE VIEW > no worker', .6)
+        assert b'LIVE VIEW > dev-' not in still_empty
+        # Esc exits attention filter.
+        exited = view.key(b'\x1b', b'LIVE VIEW > dev-0', .6)
+        assert b'attention only' not in exited
+
+        # Mark dev-1 as failed and dev-2 as ready to merge (completed + worktree).
+        s1 = status(workspace, 1)
+        s1.write_text(s1.read_text().replace('state=completed', 'state=failed'))
+        s2 = status(workspace, 2)
+        s2.write_text(s2.read_text() + f'worktree={workspace}\n')
+        with (workspace / '.squad/messages.db').open('a') as db:
+            db.write('x')
+        view.frame(lambda f: b'NEEDS ATTENTION (2)' in f, 4)
+        attn = view.key(b'f', b'WORKERS (2/3)', .6)
+        assert b'LIVE VIEW > dev-1' in attn
+        # j/k cycles only through attention workers (dev-1 <-> dev-2), skipping dev-0.
+        nxt = view.key(b'j', b'LIVE VIEW > dev-2', .6)
+        assert b'LIVE VIEW > dev-0' not in nxt
+        wrapped = view.key(b'j', b'LIVE VIEW > dev-1', .6)
+        assert b'LIVE VIEW > dev-0' not in wrapped
+        view.quit()
+    finally:
+        view.close()
+
 print('squad orchestration keys smoke: OK')

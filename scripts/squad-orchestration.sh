@@ -5465,6 +5465,44 @@ g2_worker_subline() {
   REPLY=""
 }
 
+# Compute g2 attention/display rank for worker i into REPLY:
+#   0 = asking (waiting on you)
+#   1 = failed / lost / stopped / verify fail / scope violation
+#   2 = completed with unmerged worktree (ready to merge)
+#   3 = running
+#   4 = done / merged / discarded
+g2_worker_rank() {
+  local i="$1"
+  REPLY=4
+  case "${W_MERGE_STATE[$i]:-}" in
+    merged|discarded) REPLY=4 ;;
+    *)
+      if [[ "${W_ASKING[$i]:-0}" == 1 ]]; then REPLY=0
+      elif [[ "${W_STATE[$i]}" == failed || "${W_STATE[$i]}" == lost || "${W_STATE[$i]}" == stopped || "${W_VERIFY[$i]:-}" == fail || "${W_VERIFY[$i]:-}" == timeout || -n "${W_SCOPE_VIOLATION[$i]:-}" ]]; then REPLY=1
+      elif [[ "${W_STATE[$i]}" == completed && -n "${W_WORKTREE[$i]:-}" ]]; then REPLY=2
+      elif [[ "${W_STATE[$i]}" == running ]]; then REPLY=3
+      elif [[ "${W_STATE[$i]}" == completed ]]; then REPLY=4; fi
+      ;;
+  esac
+}
+
+# Populate G2_ORDERED and G2_ORDERED_RANK according to g2_attention_only.
+g2_visible_order() {
+  local rank i n="${#W_NAME[@]}"
+  G2_ORDERED=()
+  G2_ORDERED_RANK=()
+  for rank in 0 1 2 3 4; do
+    (( g2_attention_only == 0 || rank <= 2 )) || break
+    for (( i=0; i<n; i++ )); do
+      g2_worker_rank "$i"
+      if (( REPLY == rank )); then
+        G2_ORDERED[${#G2_ORDERED[@]}]="$i"
+        G2_ORDERED_RANK[${#G2_ORDERED_RANK[@]}]="$REPLY"
+      fi
+    done
+  done
+}
+
 build_g2_frame() {
   local columns="$1" lines="$2" rule_line="$3"
   local i j k f r row frame text state model tier plan="No plan"
@@ -5505,38 +5543,24 @@ build_g2_frame() {
     tt=$n; td=$COMPLETED_COUNT
   fi
 
-  local rank wi attn_n=0 run_n=0 done_n=0
-  for rank in 0 1 2 3 4; do
-    for (( i=0; i<n; i++ )); do
-      wi=4
-      case "${W_MERGE_STATE[$i]:-}" in
-        merged|discarded) wi=4 ;;
-        *)
-          if [[ "${W_ASKING[$i]:-0}" == 1 ]]; then wi=0
-          elif [[ "${W_STATE[$i]}" == failed || "${W_STATE[$i]}" == lost || "${W_VERIFY[$i]:-}" == fail || "${W_VERIFY[$i]:-}" == timeout || -n "${W_SCOPE_VIOLATION[$i]:-}" ]]; then wi=1
-          elif [[ "${W_STATE[$i]}" == completed && -n "${W_WORKTREE[$i]:-}" ]]; then wi=2
-          elif [[ "${W_STATE[$i]}" == running ]]; then wi=3
-          elif [[ "${W_STATE[$i]}" == completed ]]; then wi=4; fi
-          ;;
-      esac
-      if (( wi == rank )); then
-        if (( g2_attention_only == 1 && wi > 2 )); then continue; fi
-        ordered[${#ordered[@]}]="$i"
-        ordered_rank[${#ordered_rank[@]}]="$wi"
-        if (( wi <= 2 )); then attn_n=$(( attn_n + 1 ))
-        elif (( wi == 3 )); then run_n=$(( run_n + 1 ))
-        else done_n=$(( done_n + 1 )); done_ids[${#done_ids[@]}]="${W_NAME[$i]}"; fi
-      fi
-    done
+  local wi attn_n=0 run_n=0 done_n=0
+  local G2_ORDERED=() G2_ORDERED_RANK=()
+  g2_visible_order
+  ordered=(${G2_ORDERED[@]+"${G2_ORDERED[@]}"})
+  ordered_rank=(${G2_ORDERED_RANK[@]+"${G2_ORDERED_RANK[@]}"})
+  for (( k=0; k<${#ordered[@]}; k++ )); do
+    i="${ordered[$k]}"
+    wi="${ordered_rank[$k]}"
+    if (( wi <= 2 )); then attn_n=$(( attn_n + 1 ))
+    elif (( wi == 3 )); then run_n=$(( run_n + 1 ))
+    else done_n=$(( done_n + 1 )); done_ids[${#done_ids[@]}]="${W_NAME[$i]}"; fi
   done
 
   if [[ "${TOTAL_TOKENS:-0}" =~ ^[0-9]+$ ]] && (( TOTAL_TOKENS > 0 )); then fmt_human_count "$TOTAL_TOKENS"; tokh="$REPLY"; fi
   for (( i=0; i<n; i++ )); do
     if [[ "${W_STATE[$i]}" == running || "${W_ASKING[$i]:-0}" == 1 ]]; then active_workers=1; fi
-    case "${W_STATE[$i]}" in
-      failed|lost) needs_review=1;;
-      completed) case "${W_MERGE_STATE[$i]:-}" in merged|discarded) ;; *) needs_review=1;; esac;;
-    esac
+    g2_worker_rank "$i"
+    if (( REPLY == 1 || REPLY == 2 )); then needs_review=1; fi
     [[ "${W_VERIFY[$i]:-}" != "pass" ]] || passed=$(( passed + 1 ))
     case "${W_VERIFY[$i]:-}" in pass|fail|FAIL) checked=$(( checked + 1 ));; esac
     case "${W_SCOPE_VIOLATION[$i]:-}" in 1|true|yes) scope="violation";; esac
@@ -5657,6 +5681,9 @@ build_g2_frame() {
     esac
     lv_rows+=("Next     |${act_next}"); lv_clrs+=("$bold")
     lv_rows+=("Actions  |[d] diff  [r] report  [m] monitor  [i] details"); lv_clrs+=("$dim")
+  elif (( g2_attention_only == 1 && n > 0 )); then
+    lv_rows+=("Status   |No workers needing attention"); lv_clrs+=("$dim")
+    lv_rows+=("Next     |press [f] to show all workers"); lv_clrs+=("")
   else
     lv_rows+=("Status   |No workers yet · waiting for dispatch"); lv_clrs+=("$dim")
     lv_rows+=("Next     |wait"); lv_clrs+=("")
@@ -5818,6 +5845,7 @@ build_g2_frame() {
       g2_rep "─" $(( bw - 2 )); body_lines+=("${c_completed}└${REPLY}┘${reset}")
 
       local w_hdr=" WORKERS (${#ordered[@]}/${n}) "
+      (( g2_attention_only == 0 )) || w_hdr=" WORKERS (${#ordered[@]}/${n}) · attention only "
       g2_rep "─" $(( bw - 2 - ${#w_hdr} )); body_lines+=("┌${w_hdr}${REPLY}┐")
       local max_w_rows=$(( (body_h - 8) / 2 ))
       (( max_w_rows >= 2 )) || max_w_rows=2
@@ -5839,7 +5867,14 @@ build_g2_frame() {
         g2_box_row "$biw" "$G2_CLR" "${mark} ${G2_ICON} ${W_NAME[$i]} [${G2_STATUS}] ${sub}" ""
         body_lines+=("$REPLY")
       done
-      (( ${#ordered[@]} > 0 )) || { g2_box_row "$biw" "$dim" "No workers yet" ""; body_lines+=("$REPLY"); }
+      if (( ${#ordered[@]} == 0 )); then
+        if (( g2_attention_only == 1 )); then
+          g2_box_row "$biw" "$dim" "No workers needing attention · press [f] for all" ""
+        else
+          g2_box_row "$biw" "$dim" "No workers yet" ""
+        fi
+        body_lines+=("$REPLY")
+      fi
       g2_rep "─" $(( bw - 2 )); body_lines+=("└${REPLY}┘")
 
       local lv_hdr=" ${lv_title} "
@@ -6471,14 +6506,19 @@ source "$script_dir/lib/squad-notify.sh"
 source "$script_dir/lib/squad-panes.sh"
 
 selection_sync() {
-  local i rank=5 wi best=-1
-  if [[ "$layout" == g2 && -z "$selected_id" ]]; then
-    for (( i=0; i<TOTAL_WORKERS; i++ )); do
-      worker_next_action "$i"; wi=4
-      case "$REPLY" in answer) wi=0;; fix|resume) wi=1;; merge) wi=2;; wait) wi=3;; esac
-      if (( wi < rank )); then rank=$wi; best=$i; fi
+  local i
+  if [[ "$layout" == g2 ]]; then
+    local G2_ORDERED=() G2_ORDERED_RANK=()
+    g2_visible_order
+    if (( ${#G2_ORDERED[@]} == 0 )); then
+      selected_index=-1; selected_id=""; return
+    fi
+    for i in "${G2_ORDERED[@]}"; do
+      if [[ "${W_NAME[$i]}" == "$selected_id" ]]; then selected_index=$i; return; fi
     done
-    (( best < 0 )) || selected_id="${W_NAME[$best]}"
+    selected_index="${G2_ORDERED[0]}"
+    selected_id="${W_NAME[$selected_index]}"
+    return
   fi
   selected_index=-1
   for (( i=0; i<TOTAL_WORKERS; i++ )); do
@@ -6577,9 +6617,19 @@ panel_key() {
         if (( i >= 0 && i < TOTAL_WORKERS )) && [[ -n "${W_NAME[$i]:-}" ]]; then
           selected_id="${W_NAME[$i]}"
         fi
+      elif [[ "$layout" == g2 ]]; then
+        local G2_ORDERED=() G2_ORDERED_RANK=()
+        g2_visible_order
+        if (( ${#G2_ORDERED[@]} > 0 )); then
+          local cur_pos=0 oi len="${#G2_ORDERED[@]}"
+          for (( oi=0; oi<len; oi++ )); do
+            if [[ "${W_NAME[${G2_ORDERED[$oi]}]}" == "$selected_id" ]]; then cur_pos=$oi; break; fi
+          done
+          local new_pos=$(( (cur_pos + step + len) % len ))
+          selected_id="${W_NAME[${G2_ORDERED[$new_pos]}]}"
+        fi
       else
         i=$(( selected_index + step ))
-        if [[ "$layout" == g2 ]] && (( TOTAL_WORKERS > 0 )); then i=$(( (i + TOTAL_WORKERS) % TOTAL_WORKERS )); fi
         while (( i >= 0 && i < TOTAL_WORKERS )); do
           if [[ -z "$zoom_target" || "${W_PARENT[$i]}" == "$zoom_target" || "${W_NAME[$i]}" == "$zoom_target" ]]; then
             selected_id="${W_NAME[$i]}"; break
@@ -6599,7 +6649,7 @@ panel_key() {
       ;;
     esc)
       if (( details_open == 1 )); then details_open=0
-g2_attention_only=0
+      elif (( g2_attention_only == 1 )); then g2_attention_only=0
       elif (( history_open == 1 )); then history_open=0
       elif [[ -z "$locked_root" ]]; then zoom_target=""; fi
       ;;
@@ -6694,7 +6744,11 @@ build_frame_templates() {
   terminal_columns; columns="$REPLY"
   footer=""
   if [[ "$layout" != "list" ]]; then
-    text="> ${selected_id:-no worker} · j/k select · i details"
+    if [[ "$layout" == g2 && "$g2_attention_only" == 1 && -z "$selected_id" ]]; then
+      text="> no attention needed · [f] show all"
+    else
+      text="> ${selected_id:-no worker} · j/k select · i details"
+    fi
     if [[ "$layout" == g2 ]] && (( selected_index >= 0 )) &&
         [[ "${W_STATE[$selected_index]:-}" == running ]]; then
       local activity="${W_ACTIVITY[$selected_index]:-${W_TITLE[$selected_index]:-}}"
