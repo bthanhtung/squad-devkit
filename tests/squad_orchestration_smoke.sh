@@ -106,7 +106,7 @@ EOF
   H_TS=('2026-11-14T07:05:00Z'); H_FROM=(a); H_TO=(manager); H_TYPE=(QUESTION); H_BODY=('QUESTION: unblock me')
   build_g2_frame 240 80 ""
   mission="${FRAME_TPL[0]}"
-  for expected in 'manager · lead' 'before a plan' 'swarming workers' 'last advice:' 'YOU · owner' 'main session' '✓ Plan' 'PLAN DAG' 'DATA FLOW > a' 'notes 2 injected' 'loop 2/3' 'lint ✓,tests ✗' '$1.25 (est)' 'fix round: squad-worker a' '07:05 a→manager ? unblock me'; do
+  for expected in '✓ Plan' 'PLAN DAG' 'LIVE VIEW > a' 'Live output (tail):' 'loop 2/3' 'lint ✓,tests ✗' '$1.25 (est)' 'fix round: squad-worker a' '07:05 a→manager ? unblock me'; do
     [[ "$mission" == *"$expected"* ]] || { echo "FAIL: mission missing $expected" >&2; exit 1; }
   done
   W_COST_STATUS[0]=unknown; W_ASKING[0]=1
@@ -149,7 +149,7 @@ EOF
     [[ "$CLAMP_ROWS" -le "$2" ]]
     while IFS= read -r row; do display_width "$row"; [[ "$DW" -le "$1" ]]; done <<< "$REPLY"
   done
-  build_g2_frame 80 20 ""; [[ "${FRAME_TPL[0]}" == *'NEXT'* ]]
+  build_g2_frame 80 20 ""; [[ "${FRAME_TPL[0]}" == *'Next'* ]]
 )
 
 # Find a dead PID for the lost worker fixture
@@ -501,7 +501,7 @@ done
 for cols in 80 100 140 180; do
   swarm="$(COLUMNS=$cols LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
   assert_max_width "$swarm" "$cols" "g2 COLUMNS=$cols"
-  for label in 'SQUAD-DEVKIT ORCHESTRATION' 'PLAN DAG' 'DATA FLOW' 'CONVERSATION' 'waiting on you:' 'done '; do
+  for label in 'SQUAD-DEVKIT ORCHESTRATION' 'PLAN DAG' 'LIVE VIEW' 'CONVERSATION' 'waiting on you:' 'WORKERS'; do
     grep -Fq "$label" <<< "$swarm" || { echo "FAIL: g2 missing $label" >&2; exit 1; }
   done
   for wid in dev-1 test-1 dev-2 done-1; do
@@ -510,16 +510,16 @@ for cols in 80 100 140 180; do
   printf '%s\n' "$swarm" > "$tmp/g2-${cols}.txt"
 done
 short_swarm="$(COLUMNS=80 LINES=24 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
-for label in 'dev-1' 'NEXT' 'CONVERSATION' 'done '; do
+for label in 'dev-1' 'Next' 'CONVERSATION' 'WORKERS'; do
   grep -Fq "$label" <<< "$short_swarm" || { echo "FAIL: compact g2 missing $label" >&2; exit 1; }
 done
 assert_max_width "$short_swarm" 80 'g2 LINES=24'
 (( $(printf '%s\n' "$short_swarm" | wc -l) <= 24 )) || { echo 'FAIL: compact g2 exceeds height' >&2; exit 1; }
 split_swarm="$(COLUMNS=108 LINES=31 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
-for label in 'PLAN DAG' 'CONVERSATION' 'done '; do
+for label in 'PLAN DAG' 'CONVERSATION' 'WORKERS'; do
   grep -Fq "$label" <<< "$split_swarm" || { echo "FAIL: compact g2 missing $label" >&2; exit 1; }
 done
-grep -Eq '│ +(> )?dev-1.*│' <<< "$split_swarm" || { echo 'FAIL: compact g2 lost worker cards' >&2; exit 1; }
+grep -Eq '│ +[▶ ]*[●✓✗◆?○■–] dev-1' <<< "$split_swarm" || { echo 'FAIL: compact g2 lost worker list' >&2; exit 1; }
 assert_max_width "$split_swarm" 108 'g2 108x31'
 narrow_swarm="$(COLUMNS=54 LINES=24 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$workers_dir")"
 grep -Fq 'dev-1' <<< "$narrow_swarm"
@@ -568,7 +568,7 @@ for f in "$tmp/g2-decisions"/*.status; do printf 'manager=manager-2\n' >> "$f"; 
 qtime="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 hist="printf '%s\\n' '* [$qtime] asker -> manager-2: QUESTION: Need input' '* [$qtime] manager-2 -> badverify: ANSWER: Retry now'"
 decisions="$(SQUAD_MANAGER_ID=manager-2 SQUAD_ORCHESTRATION_NOW="$now" SQUAD_ORCHESTRATION_HISTORY_CMD="$hist" COLUMNS=80 LINES=80 NO_COLOR=1 /bin/bash "$root/scripts/squad-orchestration.sh" --layout g2 --once --since "$since" "$tmp/g2-decisions")"
-for label in 'Investigate issue' '? waiting on you' '? Need input' '↳ Retry now' 'newest-plan' 'verify fail' 'ready to merge' 'done 3:' 'scout'; do
+for label in 'Investigate issue' 'waiting on you' '? Need input' '↳ Retry now' 'newest-plan' 'verify timeout' 'ready to merge' 'merged' 'scout'; do
   grep -Fq "$label" <<< "$decisions" || { echo "FAIL: g2 decisions missing $label" >&2; exit 1; }
 done
 assert_max_width "$decisions" 80 'g2 decisions'

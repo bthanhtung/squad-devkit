@@ -115,8 +115,8 @@ for run in range(3):
         try:
             print(f'run {run + 1}')
             view.key(b'w', b'PLAN DAG', .6)
-            view.key(b'j', b'DATA FLOW > dev-1', .6)
-            view.key(b'k', b'DATA FLOW > dev-0', .6)
+            view.key(b'j', b'LIVE VIEW > dev-1', .6)
+            view.key(b'k', b'LIVE VIEW > dev-0', .6)
             view.key(b'w', b'worker', .6)
             view.key(b'c', b'dev-0', .6)
             view.key(b'g', b'> dev-0 ', .6)
