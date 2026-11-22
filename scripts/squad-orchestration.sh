@@ -5366,15 +5366,32 @@ g2_kv_row() {
 
 # Read last N non-empty sanitized lines from worker log into G2_TAIL_LINES.
 g2_worker_tail() {
-  local path="$1" max_n="${2:-4}" raw line
+  local path="$1" max_n="${2:-4}" raw line parsed
+  local fallback=()
   G2_TAIL_LINES=()
   [[ -n "$path" && -f "$path" && -r "$path" ]] || return 0
-  raw="$(tail -n 20 "$path" 2>/dev/null | tr -d '\r' | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g; s/[[:cntrl:]]//g')"
+  raw="$(tail -n 30 "$path" 2>/dev/null | tr -d '\r' | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g; s/[[:cntrl:]]//g')"
   while IFS= read -r line; do
     line="${line#"${line%%[![:space:]]*}"}"
     [[ -n "$line" ]] || continue
+    fallback[${#fallback[@]}]="$line"
+    if [[ "$line" == '{"type":'* ]]; then
+      parsed=""
+      if [[ "$line" =~ \"command\":\"([^\"]+)\" ]]; then
+        parsed="\$ ${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ \"text\":\"([^\"]+)\" ]]; then
+        parsed="${BASH_REMATCH[1]}"
+      elif [[ "$line" == *'"turn.completed"'* ]]; then
+        parsed="✓ turn completed"
+      fi
+      [[ -n "$parsed" ]] || continue
+      line="$parsed"
+    fi
     G2_TAIL_LINES[${#G2_TAIL_LINES[@]}]="$line"
   done <<< "$raw"
+  if (( ${#G2_TAIL_LINES[@]} == 0 && ${#fallback[@]} > 0 )); then
+    G2_TAIL_LINES=("${fallback[@]}")
+  fi
   local cnt=${#G2_TAIL_LINES[@]}
   if (( cnt > max_n )); then
     G2_TAIL_LINES=("${G2_TAIL_LINES[@]:$(( cnt - max_n )):$max_n}")
@@ -5874,7 +5891,9 @@ build_g2_frame() {
     done
     clamp_line "$status" "$columns"; frame+="$REPLY"$'\n'
     if (( once == 0 )); then
-      text="[c] cards  [g] graph  ${reset}${bold}[w] swarm${reset}${dim}  [f] attention  [d] diff  [i] details  [q] quit"
+      local flabel="[f] attention"
+      (( g2_attention_only == 0 )) || flabel="[f] show all"
+      text="[c] cards  [g] graph  ${reset}${bold}[w] swarm${reset}${dim}  ${flabel}  [d] diff  [i] details  [q] quit"
       (( columns >= 65 )) || text="[c] [g] ${reset}${bold}[w]${reset}${dim} [f] [i] [q]"
       clamp_line "${dim}${text}${reset}" "$columns"
       frame+="$REPLY"$'\n'
@@ -6570,7 +6589,7 @@ panel_key() {
       fi
       ;;
     i) details_open=$(( 1 - details_open )) ;;
-    f) [[ "$layout" != g2 ]] || g2_attention_only=$(( 1 - g2_attention_only )) ;;
+    f|F) [[ "$layout" == g2 ]] || return 1; g2_attention_only=$(( 1 - g2_attention_only )) ;;
     h)
       if [[ "$layout" == "list" ]]; then
         history_open=$(( 1 - history_open ))
@@ -6632,7 +6651,7 @@ build_frame_templates() {
   terminal_columns; local cache_columns="$REPLY"
   terminal_lines; local cache_lines="$REPLY"
   local render_key="$layout:$cache_columns:$cache_lines:$zoom_target:$focus:$history_expanded:$flow_filter:$expand_earlier:$AUTO_CLOSE_PINNED:$AUTO_CLOSE_COUNTING:$AUTO_CLOSE_REMAINING"
-  [[ "$layout" != g2 ]] || render_key+=":$selected_id"
+  [[ "$layout" != g2 ]] || render_key+=":$selected_id:$g2_attention_only"
   if (( details_open == 0 && history_open == 0 )); then
     if [[ "${base_render_key:-}" != "$render_key" ]]; then base_frame_valid=0; fi
     base_render_key="$render_key"

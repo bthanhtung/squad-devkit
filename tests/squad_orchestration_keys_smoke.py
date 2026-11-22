@@ -117,6 +117,10 @@ for run in range(3):
             view.key(b'w', b'PLAN DAG', .6)
             view.key(b'j', b'LIVE VIEW > dev-1', .6)
             view.key(b'k', b'LIVE VIEW > dev-0', .6)
+            f_on = view.key(b'f', b'attention only', .6)
+            assert b'[f] show all' in f_on
+            f_off = view.key(b'f', b'[f] attention', .6)
+            assert b'attention only' not in f_off
             view.key(b'w', b'worker', .6)
             view.key(b'c', b'dev-0', .6)
             view.key(b'g', b'> dev-0 ', .6)
