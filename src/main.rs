@@ -662,7 +662,21 @@ fn offer_worker_setup(workspace: &Path) {
 }
 
 fn cmd_config(args: Vec<String>) -> Result<()> {
-    const USAGE: &str = "Usage: squad config workers [--global] [--timeout <secs>]";
+    const USAGE: &str = "Usage: squad config workers [--global] [--timeout <secs>] | list [--json] [--global] | set --engine ENGINE --tier TIER --model ID [--name LABEL] [--effort LEVEL] [--source SOURCE] [--global] --yes | apply --from-json FILE|- [--global] --yes";
+    if args.first().map(String::as_str) == Some("workers")
+        && args
+            .get(1)
+            .is_some_and(|arg| matches!(arg.as_str(), "list" | "set" | "apply"))
+    {
+        let workspace = find_workspace().or_else(|_| std::env::current_dir())?;
+        return squad::worker_config::run_command(
+            &workspace,
+            &args[1],
+            &args[2..],
+            &mut std::io::stdin().lock(),
+            &mut std::io::stdout(),
+        );
+    }
     let mut args = args.into_iter();
     if args.next().as_deref() != Some("workers") {
         bail!(USAGE);
@@ -1387,6 +1401,12 @@ COMMANDS
   squad init [--refresh-roles]              Initialize workspace (`--refresh-roles` rewrites builtin roles only)
   squad config workers [--global] [--timeout <secs>]
                                              Choose worker models (local .squad or ~/.squad with --global)
+  squad config workers list [--json] [--global]
+                                             Inspect saved tiers, staleness and local CLI discovery
+  squad config workers set --engine ENGINE --tier TIER --model ID [--name LABEL] [--effort LEVEL] [--source SOURCE] [--global] --yes
+                                             Save one tier after explicit human confirmation
+  squad config workers apply --from-json FILE|- [--global] --yes
+                                             Merge validated JSON tiers after explicit human confirmation
   squad join <id> [--role <role>] [--client <claude|codex|gemini|opencode|grok|agy|ccr>] [--protocol-version <n>]
                                              Join as agent (role defaults to id; omitted metadata stays NULL)
   squad leave <id>                           Archive agent

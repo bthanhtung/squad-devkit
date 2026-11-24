@@ -20,6 +20,11 @@ fn validates_saved_selections_and_discovered_models() {
         let value = serde_json::json!({"version":1,"engines":{"codex":{"fast":{"model":"fixture","effort":effort}}}});
         assert!(parse_config(&value.to_string()).is_err());
     }
+    for (length, valid) in [(1024, true), (1025, false)] {
+        let value =
+            serde_json::json!({"version":1,"engines":{"codex":{"source":"é".repeat(length)}}});
+        assert_eq!(parse_config(&value.to_string()).is_ok(), valid);
+    }
     assert!(parse_config(r#"{"version":2,"engines":{}}"#).is_err());
     assert!(parse_config(r#"{"version":1,"engines":{"ccr":{}}}"#).is_err());
     let catalog = serde_json::json!({"models":[
@@ -272,4 +277,181 @@ fn global_setup_works_without_workspace_and_preserves_on_cancel() {
         .env_remove("HOME")
         .assert()
         .failure();
+}
+
+#[test]
+#[cfg(unix)]
+fn noninteractive_config_requires_confirmation_and_merges_validated_tiers() {
+    let f = Fixture::new();
+    let set = [
+        "config",
+        "workers",
+        "set",
+        "--engine",
+        "codex",
+        "--tier",
+        "fast",
+        "--model",
+        "fixture-fast",
+    ];
+    f.command()
+        .args(set)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("human confirmation"));
+    assert!(!f.saved().exists());
+    f.command().args(set).arg("--yes").assert().success();
+    let original = fs::read_to_string(f.saved()).unwrap();
+    for flags in [
+        vec!["--engine", "unknown"],
+        vec!["--model", "bad value"],
+        vec!["--engine", "claude", "--effort", "high"],
+        vec!["--tier", "invalid"],
+        vec!["--name", "bad\nname"],
+        vec!["--source", "bad\nsource"],
+    ] {
+        f.command()
+            .args(set)
+            .arg("--yes")
+            .args(flags)
+            .assert()
+            .failure();
+        assert_eq!(fs::read_to_string(f.saved()).unwrap(), original);
+    }
+    let payload = r#"{"version":1,"engines":{"codex":{"strong":{"model":"fixture-strong","effort":"high"}},"claude":{"fast":{"model":"haiku"},"fetched_at":"2020-01-01T00:00:00Z"}}}"#;
+    f.command()
+        .args(["config", "workers", "apply", "--from-json", "-"])
+        .write_stdin(payload)
+        .assert()
+        .failure();
+    f.command()
+        .args(["config", "workers", "apply", "--from-json", "-", "--yes"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+    let config = parse_config(&fs::read_to_string(f.saved()).unwrap()).unwrap();
+    assert_eq!(
+        config.engines["codex"].fast.as_ref().unwrap().model,
+        "fixture-fast"
+    );
+    assert!(config.engines["codex"].fetched_at.is_some());
+    let output = f
+        .command()
+        .args(["config", "workers", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let list: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(list["engines"]["claude"]["stale"], true);
+    assert_eq!(list["engines"]["codex"]["stale"], false);
+    assert_eq!(list["engines"].as_object().unwrap().len(), 4);
+    f.command()
+        .args(set)
+        .args(["--yes", "--global"])
+        .assert()
+        .success();
+    assert!(f.dir.path().join("home/.squad/worker-models.json").exists());
+    f.command()
+        .args(["config", "workers", "list", "--json", "--global"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fixture-fast"));
+    assert!(fs::read_dir(f.saved().parent().unwrap())
+        .unwrap()
+        .all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("tmp-")));
+}
+
+#[test]
+#[cfg(unix)]
+fn config_atomic_save_preserves_old_file_on_failure_and_creates_directory() {
+    use squad::worker_config::{save_config, WorkerConfig};
+    let dir = TempDir::new().unwrap();
+    save_config(dir.path(), &WorkerConfig::default()).unwrap();
+    let path = dir.path().join(".squad/worker-models.json");
+    let old = fs::read_to_string(&path).unwrap();
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&tmp, "existing temporary file").unwrap();
+    let config =
+        parse_config(r#"{"version":1,"engines":{"codex":{"fast":{"model":"new"}}}}"#).unwrap();
+    assert!(save_config(dir.path(), &config).is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), old);
+    assert_eq!(fs::read_to_string(&tmp).unwrap(), "existing temporary file");
+    fs::remove_file(tmp).unwrap();
+    // An open reader retains the complete old file across the atomic replacement.
+    let mut reader = fs::File::open(&path).unwrap();
+    save_config(dir.path(), &config).unwrap();
+    let mut previous = String::new();
+    std::io::Read::read_to_string(&mut reader, &mut previous).unwrap();
+    assert_eq!(previous, old);
+    assert_eq!(
+        parse_config(&fs::read_to_string(path).unwrap()).unwrap(),
+        config
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn list_uses_offline_cache_and_apply_rejects_invalid_payloads_without_writing() {
+    let f = Fixture::new();
+    f.cli("codex", "#!/bin/sh\nexit 1\n");
+    fs::write(f.dir.path().join("home/.codex/models_cache.json"), r#"{"fetched_at":"2020-01-01T00:00:00Z","models":[{"slug":"offline-model","visibility":"list"}]}"#).unwrap();
+    f.command()
+        .args(["config", "workers", "list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("offline-model"));
+    assert!(!f.saved().exists());
+    for payload in [
+        r#"{"version":1,"engines":{"codex":{"typo":{"model":"valid"}}}}"#,
+        r#"{"version":1,"engines":{"unknown":{}}}"#,
+        r#"{"version":1,"engines":{"claude":{"fast":{"model":"valid","effort":"high"}}}}"#,
+        r#"{"version":1,"engines":{"codex":{"fast":{"model":"-bad"}}}}"#,
+    ] {
+        f.command()
+            .args(["config", "workers", "apply", "--from-json", "-", "--yes"])
+            .write_stdin(payload)
+            .assert()
+            .failure();
+        assert!(!f.saved().exists());
+    }
+    let payload = f.dir.path().join("models.json");
+    fs::write(
+        &payload,
+        r#"{"version":1,"engines":{"grok":{"balanced":{"model":"fixture"}}}}"#,
+    )
+    .unwrap();
+    f.command()
+        .args(["config", "workers", "apply", "--yes", "--from-json"])
+        .arg(payload)
+        .assert()
+        .success();
+    assert_eq!(
+        parse_config(&fs::read_to_string(f.saved()).unwrap())
+            .unwrap()
+            .engines["grok"]
+            .balanced
+            .as_ref()
+            .unwrap()
+            .model,
+        "fixture"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn option_values_do_not_change_config_scope() {
+    let f = Fixture::new();
+    f.command()
+        .args([
+            "config", "workers", "set", "--engine", "codex", "--tier", "fast", "--model",
+            "fixture", "--source", "--global", "--yes",
+        ])
+        .assert()
+        .success();
+    assert!(f.saved().exists());
+    assert!(!f.dir.path().join("home/.squad/worker-models.json").exists());
 }
