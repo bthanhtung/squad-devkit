@@ -92,7 +92,25 @@ learn_sandbox_check() {
 learn_inject() {
   local owned="$1" id hash extra file paths glob path quoted size used=0 match
   learn_notes=""; learn_ids=""; learn_warnings=""
-  [[ -n "$owned" && -f "$learn_store/INDEX" ]] || return 0
+  [[ -n "$owned" ]] || return 0
+  while IFS= read -r file; do
+    [[ -f "$file" && ! -L "$file" ]] || continue
+    paths="$(sed -n '1d; /^---$/q; s/^paths: //p' "$file")"
+    match=0
+    while IFS= read -r glob; do
+      [[ -n "$glob" ]] || continue
+      while IFS= read -r path; do
+        # shellcheck disable=SC2053 # The paths field intentionally contains globs.
+        [[ "$path" != $glob ]] || match=1
+      done < <(printf '%s\n' "$owned" | tr ',' '\n' | sed 's/^ *//;s/ *$//')
+    done < <(printf '%s\n' "$paths" | tr ',' '\n' | sed 's/^ *//;s/ *$//')
+    (( match )) || continue
+    quoted="$(LC_ALL=C tr -d '\000-\011\013-\037\177' <"$file" | sed 's/^/> /')"
+    size="$(printf '%s\n' "$quoted" | wc -c | tr -d ' ')"
+    (( used + size <= 2048 )) || continue
+    used=$((used + size)); learn_notes+="$quoted"$'\n'; learn_ids+="${learn_ids:+,}rule:$(basename "$file" .md)"
+  done < <(find "$learn_root/.squad/rules" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null | LC_ALL=C sort)
+  [[ -f "$learn_store/INDEX" ]] || return 0
   # Generated IDs sort by creation time; no untrusted filename reaches a command.
   while read -r id hash extra; do
     if ! learn_id "$id" || [[ ! "$hash" =~ ^[a-f0-9]{64}$ || -n "$extra" ]]; then
@@ -121,6 +139,32 @@ learn_inject() {
     learn_ids+="${learn_ids:+,}$id"
   done < <(LC_ALL=C sort -r "$learn_store/INDEX")
 }
+learn_verify() {
+  local json=0 stale=0 file paths glob found path id hash extra source_hash expected_hash matched_paths
+  [[ "${1:-}" == --json ]] && json=1
+  local -a issues=()
+  while IFS= read -r file; do
+    [[ -f "$file" && ! -L "$file" ]] || continue
+    paths="$(sed -n '1d; /^---$/q; s/^paths: //p' "$file")"
+    expected_hash="$(sed -n '2,/^---$/s/^source[s]*_sha256: *//p' "$file" | head -n 1)"
+    matched_paths=""
+    while IFS= read -r glob; do
+      [[ -n "$glob" ]] || continue; found=0
+      while IFS= read -r path; do
+        # shellcheck disable=SC2053 # Glob is inert data matched against repo paths.
+        if [[ "$path" == $glob ]]; then found=1; matched_paths+="$path"$'\n'; fi
+      done < <(cd "$learn_root" && find . -type f -not -path './.git/*' -not -path './.squad/knowledge/*' -print | sed 's#^./##')
+      if (( ! found )); then stale=1; issues+=("$(basename "$file"): $glob"); fi
+    done < <(printf '%s\n' "$paths" | tr ',' '\n' | sed 's/^ *//;s/ *$//')
+    if [[ -n "$expected_hash" ]]; then
+      source_hash="$(while IFS= read -r path; do [[ -n "$path" ]] || continue; printf '%s\0' "$path"; cat "$learn_root/$path"; printf '\0'; done < <(printf '%s' "$matched_paths" | LC_ALL=C sort -u) | learn_hash)"
+      if [[ "$expected_hash" != "$source_hash" ]]; then stale=1; issues+=("$(basename "$file"): stale (source changed)"); fi
+    fi
+  done < <(find "$learn_root/.squad/rules" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null | LC_ALL=C sort; [[ -f "$learn_store/INDEX" ]] && while read -r id hash extra; do learn_id "$id" && [[ "$hash" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] && printf '%s\n' "$learn_store/$id.md"; done <"$learn_store/INDEX")
+  if (( json )); then printf '%s\n' "${issues[@]}" | python3 -c 'import json,sys; print(json.dumps([x.rstrip("\n") for x in sys.stdin if x.rstrip("\n")]))';
+  elif (( stale )); then printf 'Stale rules: %s\n' "${issues[*]}"; else echo 'Rules are current'; fi
+  (( ! stale ))
+}
 learn_main() {
   local command="${1:-}" id title="" paths="" input="" body tmp note disabled file source_file link_target staging
   [[ $# -eq 0 ]] || shift
@@ -133,6 +177,7 @@ learn_main() {
   learn_script_dir="$(cd "$(dirname "$source_file")" && pwd)"
   learn_init "${SQUAD_LEARN_PROJECT:-$PWD}"
   case "$command" in
+    verify) [[ $# -le 1 && ( $# -eq 0 || "$1" == --json ) ]] || { echo 'Usage: squad-learn verify [--json]' >&2; return 2; }; learn_verify "${1:-}" ;;
     propose)
       while (( $# )); do
         [[ $# -ge 2 ]] || { echo 'Missing option value' >&2; return 2; }
@@ -214,7 +259,7 @@ learn_main() {
         mv "$staging" "$learn_store"
       fi
       ;;
-    *) echo 'Usage: squad-learn propose --title T --paths GLOBS [--file F] | list | show ID | reject ID | approve ID | enable | disable' >&2; return 2 ;;
+    *) echo 'Usage: squad-learn propose --title T --paths GLOBS [--file F] | list | show ID | reject ID | approve ID | enable | disable | verify [--json]' >&2; return 2 ;;
   esac
 }
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

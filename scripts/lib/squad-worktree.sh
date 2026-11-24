@@ -127,9 +127,15 @@ worktree_patch() {
 
 # Applies a patch to the repository's working tree with a three-way merge.
 # A temporary index built from the working tree stands in for the real one,
-# which stays untouched; conflicts leave standard markers in the files.
+# which stays untouched. Older binaries retain the legacy conflict behavior.
 worktree_apply() {
   local root="$1" patch="$2" index status=0
+  if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] && command -v squad >/dev/null 2>&1 &&
+    squad merge --help 2>/dev/null | grep -q 'squad merge apply'; then
+    echo "worktree_apply_used_rust=1"
+    squad merge apply --repo "$root" --patch "$patch" --workspace "${SQUAD_WORKTREE_WORKSPACE:-$root}" --from-harness
+    return $?
+  fi
   index="$(mktemp)"
   rm -f "$index"
   if git -C "$root" rev-parse -q --verify HEAD >/dev/null; then

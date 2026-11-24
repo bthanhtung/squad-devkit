@@ -49,13 +49,13 @@ trap release_resume_claim EXIT
 
 usage() {
   cat <<'EOF'
-Usage: squad-worker <worker-id> [--engine ENGINE] (--brief TEXT | --brief-file FILE | --task [ID])
+Usage: squad-worker <worker-id|auto> [--engine ENGINE] (--brief TEXT | --brief-file FILE | --task [ID])
                     [--role ROLE] [--title TITLE] [--project DIR]
                     [--profile PROFILE] [--model MODEL] [--mcp NAME]... [--all-mcp]
                     [--timeout MINUTES] [--manager ID] [--sandbox | --no-sandbox]
                     [--plan FILE | --no-plan "REASON"] [--clone URL] [--init]
                     [--own PATHS] [--no-plan-context] [--parent ID]
-                    [--budget-tokens N] [--max-children N]
+                    [--budget-tokens N] [--budget-usd F] [--max-children N]
                     [--tier-reason REASON] [--skip-plan-review REASON] [--verify COMMAND]
        squad-worker --run-plan PLAN --manager ID [--dry-run] [--jobs N]
                     [--retry ID ...] [--max-launches N] [--merge-if-green]
@@ -130,10 +130,11 @@ Options:
                      With --merge: merge despite a missing review of a high-risk or
                      sensitive patch; the reason is recorded in the plan
   --parent ID        Parent worker ID for hierarchy tracking (depth 2)
-  --budget-tokens N  Token budget for a sub-manager branch (default 600000;
-                     requires --role sub-manager)
+  --budget-usd F     Per-worker USD soft limit (unknown usage does not trigger).
+  --budget-tokens N  Worker token limit (sub-manager branch default 600000)
   --max-children N   Maximum children for a sub-manager (1-6, default 3;
                      requires --role sub-manager)
+  --headless         Run without terminal panes (also SQUAD_WORKER_HEADLESS=1)
   --list             Show worker runs that are still running
   --tree [--json]    Show worker hierarchy and branch token totals (text or JSON)
   --stop ID|all      Stop a running worker (or all of them); it reports to the manager
@@ -200,6 +201,8 @@ report_lines="${SQUAD_WORKER_REPORT_LINES-40}"
 models=0
 catalog_incompatible=0
 manager_id="${SQUAD_RESUME_MANAGER:-${SQUAD_MANAGER_ID:-manager}}"
+headless=0
+[[ "${SQUAD_WORKER_HEADLESS:-0}" != 1 ]] || headless=1
 required_split=0
 [[ -z "${SQUAD_MANAGER_ID:-}" ]] || required_split=1
 manager_flag_set=""
@@ -243,6 +246,9 @@ parent_id=""
 parent_flag_set=""
 depth=1
 budget_tokens=""
+budget_usd=""
+budget_exceeded=0
+budget_mode=soft
 max_children=""
 tree_json=0
 prompt_file=""
@@ -261,7 +267,7 @@ one_line_reason() {
 while (( $# > 0 )); do
   case "$1" in --models|--engine|--project) ;; *) catalog_incompatible=1 ;; esac
   case "$1" in
-    --run-plan|--jobs|--retry|--max-launches|--plan-task|--resume|--engine-alive|--engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own|--parent|--budget-tokens|--max-children|--tier-reason|--skip-plan-review|--verify|--gate|--expect-file|--loop)
+    --run-plan|--jobs|--retry|--max-launches|--on-failure|--dep-mode|--plan-task|--resume|--engine-alive|--engine|--role|--title|--brief|--brief-file|--profile|--model|--model-tier|--mcp|--manager|--project|--timeout|--stop|--merge|--discard|--diff|--plan|--no-plan|--clone|--override-review|--own|--parent|--budget-usd|--budget-tokens|--max-children|--tier-reason|--skip-plan-review|--verify|--gate|--expect-file|--loop)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "Missing value for $1" >&2
         exit 2
@@ -269,7 +275,7 @@ while (( $# > 0 )); do
       case "$1" in --brief|--brief-file) brief_source_set=1 ;; esac
       case "$1" in
         --run-plan) run_plan_command=1 ;;
-        --jobs|--retry|--max-launches) dag_options=1 ;;
+        --jobs|--retry|--max-launches|--on-failure|--dep-mode) dag_options=1 ;;
         --plan-task) plan_task="$2" ;;
         --resume) action=resume; stop_target="$2" ;;
         --engine-alive) action="engine-alive"; stop_target="$2" ;;
@@ -305,6 +311,7 @@ while (( $# > 0 )); do
         --own) owned_paths="${owned_paths:+$owned_paths,}$2" ;;
         --override-review) override_review="$(one_line_reason --override-review "$2")" || exit 2 ;;
         --parent) parent_id="$2"; parent_flag_set=1 ;;
+        --budget-usd) budget_usd="$2" ;;
         --budget-tokens) budget_tokens="$2" ;;
         --max-children) max_children="$2" ;;
         --project) project_directory="$2" ;;
@@ -324,6 +331,7 @@ while (( $# > 0 )); do
         shift
       fi
       ;;
+    --headless) headless=1 ;;
     --retry-escalate) retry_escalate=1 ;;
     --dry-run) dag_options=1 ;;
     --merge-if-green) merge_if_green=1 ;;
@@ -405,8 +413,8 @@ if (( tree_json == 1 )) && [[ "$action" != tree ]]; then
   echo "--json only applies to --tree" >&2
   exit 2
 fi
-if [[ -n "$budget_tokens" || -n "$max_children" ]] && [[ "$role" != sub-manager ]]; then
-  echo "--budget-tokens/--max-children need --role sub-manager" >&2
+if [[ -n "$max_children" ]] && [[ "$role" != sub-manager ]]; then
+  echo "--max-children needs --role sub-manager" >&2
   exit 2
 fi
 if [[ "$role" == sub-manager && -n "$parent_id" ]]; then
@@ -429,6 +437,28 @@ if [[ "$role" == sub-manager ]]; then
     exit 2
   fi
 fi
+
+if [[ -n "$budget_tokens" && ! "$budget_tokens" =~ ^[1-9][0-9]*$ ]]; then
+  echo '--budget-tokens must be a positive integer' >&2; exit 2
+fi
+if [[ -n "$budget_usd" ]] && { [[ ! "$budget_usd" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk -v n="$budget_usd" 'BEGIN {exit !(n>0)}'; }; then
+  echo '--budget-usd must be a positive decimal' >&2; exit 2
+fi
+if [[ "$engine" == grok && "$sandbox_mode" != 0 && ( "$role" == reviewer || "$role" == scout ) ]]; then
+  echo 'grok has no read-only mode; use --no-sandbox explicitly' >&2; exit 2
+fi
+
+if [[ ! "${SQUAD_BUDGET_USED_TOKENS:-0}" =~ ^[0-9]+$ || ! "${SQUAD_BUDGET_USED_USD:-0}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo 'Invalid accumulated budget usage' >&2; exit 2
+fi
+
+redact_text() {
+  if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] && squad --help 2>&1 | grep -q 'squad redact'; then
+    squad redact
+  else
+    cat
+  fi
+}
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -522,6 +552,29 @@ cap_report_lines() {
   '
 }
 
+# Prefer the authoritative writer; old binaries keep the atomic file fallback.
+status_write_supported() {
+  [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] && command -v squad >/dev/null 2>&1 &&
+    squad help 2>/dev/null | grep -q 'squad run write '
+}
+
+persist_status() {
+  local file="$1" directory workspace tmp
+  directory="$(cd "$(dirname "$file")" && pwd -P)" || return 1
+  workspace="$(dirname "$(dirname "$directory")")"
+  if status_write_supported; then
+    squad run write --workspace "$workspace" --status-file "$directory/$(basename "$file")"
+  else
+    tmp="$(mktemp "$file.XXXXXX.tmp")" || return 1
+    if cat >"$tmp" && mv "$tmp" "$file"; then
+      squad_record_status "$file"
+    else
+      rm -f "$tmp"
+      return 1
+    fi
+  fi
+}
+
 # A failed kill probe can mean permission denied; only a successful process
 # table snapshot proves absence. Start time prevents signalling a reused PID.
 reconcile_status() {
@@ -545,8 +598,8 @@ reconcile_status() {
   awk '!/^(state|reason|finished|exit)=/' "$file" >"$tmp"
   printf 'state=lost\nreason=%s; report may be incomplete\nfinished=%s\nexit=\n' "$reason" "$(date +%s)" >>"$tmp"
   if [[ "$(status_get "$file" state)" == running ]]; then
-    mv "$tmp" "$file"
-    squad_record_status "$file"
+    persist_status "$file" <"$tmp" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
   else rm -f "$tmp"; fi
 }
 
@@ -587,8 +640,7 @@ record_worktree_action() {
   local file
   while IFS= read -r file; do
     if [[ "$(status_get "$file" worktree)" == "$home/$target" ]]; then
-      printf '%s=%s\n' "$1" "$(date +%s)" >>"$file"
-      squad_record_status "$file"
+      { cat "$file"; printf '%s=%s\n' "$1" "$(date +%s)"; [[ -z "${merge_state:-}" ]] || printf 'merge_state=%s\n' "$merge_state"; } | persist_status "$file"
       break
     fi
   done < <(worker_status_files "$target")
@@ -879,6 +931,9 @@ if [[ "$action" == resume ]]; then
     fi
   fi
   resume_args=("$stop_target")
+  if (( headless == 1 )) || [[ "$(status_get "$resume_status" headless)" == 1 ]]; then
+    resume_args+=(--headless)
+  fi
   for key in engine model model_tier role owned project profile title plan_task; do
     value="$(status_get "$resume_status" "$key")"
     [[ -n "$value" ]] || continue
@@ -924,7 +979,7 @@ if [[ "$action" == resume ]]; then
   export SQUAD_RESUME_MANAGER="${manager_id:-manager}"
   SQUAD_DEVKIT_YOLO="$(status_get "$resume_status" yolo)"
   export SQUAD_DEVKIT_YOLO="${SQUAD_DEVKIT_YOLO:-0}"
-  unset SQUAD_LOOP_ITER
+  unset SQUAD_LOOP_ITER SQUAD_LOOP_FAILURE_SIGNATURE
   exec "$script_dir/squad-worker.sh" "${resume_args[@]}" --brief "Previous run was interrupted; inspect the worktree and finish the task.
 
 $(cat "$resume_brief")"
@@ -1147,6 +1202,7 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
   (( ${#targets[@]} > 0 )) || { echo "No unmerged worktrees."; exit 0; }
   exit_status=0
   for target in "${targets[@]}"; do
+    merge_state=""
     root=""
     if [[ -n "$project_directory" ]]; then
       root="$(worktree_repository_root "$project_directory" || true)"
@@ -1185,10 +1241,27 @@ if [[ "$action" == merge || "$action" == discard || "$action" == diff ]]; then
     elif ! review_gate "$target" "$patch_file"; then
       exit_status=3
     elif apply_output="$(worktree_apply "$root" "$patch_file")"; then
+      merge_state="$(printf '%s\n' "$apply_output" | sed -n 's/^merge_state=//p')"
+      [[ -z "$merge_state" ]] || echo "merge_state=$merge_state"
       worktree_remove "$root" "$target"
       record_worktree_action merged
       echo "Merged $target into $root ($(git apply --numstat "$patch_file" | wc -l | tr -d ' ') files, uncommitted). Worktree removed."
     else
+      merge_state="$(printf '%s\n' "$apply_output" | sed -n 's/^merge_state=//p')"
+      if [[ -n "$merge_state" ]] || [[ "$apply_output" == *"worktree_apply_used_rust=1"* ]]; then
+        record_worktree_action merge_failed
+        printf '%s\n' "$apply_output" >&2
+        case "$merge_state" in
+          rolled_back_conflict) echo "Merge rolled back cleanly on conflict." >&2 ;;
+          rolled_back_verify_fail) echo "Merge rolled back on post-merge gate failure." >&2 ;;
+          locked) echo "Merge locked by another process." >&2 ;;
+          *) echo "merge failed or aborted cleanly; working tree unchanged" >&2 ;;
+        esac
+        echo "Merge failed; worktree retained at $home/$target." >&2
+        exit_status=1
+        rm -f "$patch_file"
+        continue
+      fi
       conflicted="$(printf '%s\n' "$apply_output" | sed -n "s/^Applied patch to '\(.*\)' with conflicts\.$/\1/p")"
       echo "Merged $target into $root with conflicts; resolve the markers in:" >&2
       printf '  %s\n' $conflicted >&2
@@ -1527,10 +1600,35 @@ if [[ -z "$title" ]]; then
   title_default=1
   title="$(printf '%s\n' "$brief" | awk '
     /^[[:space:]]*Goal:/ { sub(/^[[:space:]]*Goal:[[:space:]]*/, ""); goal=$0; exit }
-    /^[[:space:]]*(Model selection|Fix round|Continue round|Task:)/ { next }
+    /^[[:space:]]*Engine[[:space:]].*Task:[[:space:]]*/ {
+      sub(/^.*Task:[[:space:]]*/, "")
+      sub(/,[[:space:]]*(risk|complexity)[[:space:]]+.*$/, "")
+      if ($0 != "") { goal=$0; exit }
+    }
+    /^[[:space:]]*Task:[[:space:]]*[^[:space:]]/ {
+      sub(/^[[:space:]]*Task:[[:space:]]*/, "")
+      sub(/,[[:space:]]*(risk|complexity)[[:space:]]+.*$/, "")
+      if ($0 != "") { goal=$0; exit }
+    }
+    /^[[:space:]]*(Model selection|Fix round|Continue round|Task:|Engine[[:space:]]|Risk:|Complexity:)/ { next }
     /[^[:space:]]/ && !first { first=$0 }
     END { print goal ? goal : first }
-  ' | cut -c1-80)"
+  ' | cut -c1-120)"
+fi
+
+if [[ "$worker_id" == auto ]]; then
+  auto_slug="$(printf '%s' "$title" | LC_ALL=C tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-36 | sed 's/-$//')"
+  [[ -n "$auto_slug" && "$auto_slug" =~ ^[a-z0-9] ]] || auto_slug="${role}-worker"
+  candidate="$auto_slug"
+  if [[ -d "${workspace_root:-$PWD}/.squad/workers" ]]; then
+    suffix=2
+    while compgen -G "${workspace_root:-$PWD}/.squad/workers/${candidate}-*.status" >/dev/null 2>&1 || [[ -f "${workspace_root:-$PWD}/.squad/workers/${candidate}.status" ]]; do
+      candidate="${auto_slug:0:32}-${suffix}"
+      suffix=$((suffix + 1))
+    done
+  fi
+  worker_id="$candidate"
+  [[ "$task_id" == auto || -z "$task_id" ]] && task_id="$worker_id"
 fi
 
 require_command squad
@@ -1618,7 +1716,11 @@ finish_run() {
   terminate_engine
   if [[ -n "$status_file" && -f "$status_file" ]] && grep -qx 'state=running' "$status_file"; then
     stop_reason="${stop_reason:-wrapper exited before finalization (exit $exit_status)}"
-    write_status failed "$exit_status"
+    if [[ "$stop_reason" == "stopped by request" ]]; then
+      write_status stopped "$exit_status"
+    else
+      write_status failed "$exit_status"
+    fi
   fi
   [[ -z "$prompt_file" ]] || rm -f "$prompt_file"
   squad leave "$worker_id" >/dev/null 2>&1 || true
@@ -1853,12 +1955,29 @@ cost_status=unknown
 patch_file=""
 
 run_sandbox=none
-if [[ "$engine" == codex ]]; then
-  run_sandbox=workspace-write
+if [[ "$engine" == codex || "$engine" == claude ]]; then
+  run_sandbox="workspace-write"
   [[ "$sandbox_mode" != 0 ]] || run_sandbox=danger-full-access
   [[ "$role" != reviewer && "$role" != scout ]] || run_sandbox=read-only
   [[ "$yolo" != 1 ]] || run_sandbox=danger-full-access
 fi
+
+if [[ "$engine" == opencode && ( "$role" == reviewer || "$role" == scout ) ]]; then run_sandbox=read-only; fi
+if [[ "$engine" == ccr ]]; then run_sandbox=tools-only; fi
+
+emit_event() {
+  (( headless == 1 )) || return 0
+  squad_jq -cn --arg event "$1" --arg state "$2" \
+    --argjson timestamp "$(date +%s)" --arg worker "$worker_id" --arg engine "$engine" \
+    --arg exit_code "${3:-}" --arg verify "$verify" --arg verify_exit "$verify_exit" \
+    --arg tokens_in "$tokens_in" --arg tokens_cached "$tokens_cached" \
+    --arg tokens_out "$tokens_out" --arg tokens_reasoning "$tokens_reasoning" \
+    '{event:$event,timestamp:$timestamp,worker:$worker,engine:$engine,state:$state,
+      exit_code:($exit_code | tonumber? // null),verify:$verify,verify_exit:($verify_exit | tonumber? // null),
+      tokens_in:($tokens_in | tonumber? // null),tokens_cached:($tokens_cached | tonumber? // null),
+      tokens_out:($tokens_out | tonumber? // null),tokens_reasoning:($tokens_reasoning | tonumber? // null)}' \
+    >>"$output_directory/$run_name.events.jsonl"
+}
 
 write_status() {
   local state="$1" value recovery_index
@@ -1877,8 +1996,10 @@ write_status() {
     printf 'title=%s\ntask=%s\nstate=%s\nreason=%s\n' \
       "$(printf '%s' "$title" | tr '\n' ' ')" "$task_id" "$state" "${failure_reason:-$stop_reason}"
     printf 'host=%s\nengine_pid=%s\nengine_pgid=%s\nengine_started=%s\nsandbox=%s\n' "$worker_host" "$run_engine_pid" "$engine_pgid" "$engine_started" "$run_sandbox"
+    printf 'headless=%s\n' "$headless"
     printf 'sandbox_enabled=%s\nyolo=%s\n' "$sandbox_mode" "$yolo"
     printf 'plan_task=%s\nplan_task_sha256=%s\n' "$plan_task" "$plan_task_sha256"
+    printf 'dag_attempt=%s\n' "${SQUAD_DAG_ATTEMPT:-}"
     printf 'verify_command_hex=%s\n' "$(printf '%s' "$verify_command" | recovery_encode)"
     for ((recovery_index=0; recovery_index<gate_count; recovery_index++)); do
       [[ "${gate_names[$recovery_index]}" == verify ]] || printf 'gate_command_hex=%s\n' "$(printf '%s=%s' "${gate_names[$recovery_index]}" "${gate_commands[$recovery_index]}" | recovery_encode)"
@@ -1886,6 +2007,8 @@ write_status() {
     for value in ${expect_paths[@]+"${expect_paths[@]}"}; do printf 'expect_path=%s\n' "$value"; done
     printf 'process_started=%s\n' "$process_started"
     printf 'pid=%s\nstarted=%s\nfinished=%s\nexit=%s\n' "$$" "$started_at" "$finished" "$exit_status"
+    printf 'budget_exceeded=%s\nbudget_mode=%s\nbudget_usd=%s\n' "$budget_exceeded" "$budget_mode" "$budget_usd"
+    printf 'budget_used_tokens=%s\nbudget_used_usd=%s\n' "${SQUAD_BUDGET_USED_TOKENS:-0}" "${SQUAD_BUDGET_USED_USD:-0}"
     printf 'tokens_in=%s\ntokens_cached=%s\ntokens_out=%s\n' "$tokens_in" "$tokens_cached" "$tokens_out"
     printf 'tokens_reasoning=%s\ncost_usd=%s\ncost_status=%s\nplan_snapshot=%s\nplan_sha256=%s\n' "$tokens_reasoning" "$cost_usd" "$cost_status" "$plan_snapshot" "$plan_sha256"
     printf 'verdict=%s\nowned=%s\nscope_violation=%s\n' "$verdict" "$owned_paths" "$scope_violation"
@@ -1901,10 +2024,13 @@ write_status() {
     printf 'parent=%s\ndepth=%s\nbudget_tokens=%s\nmax_children=%s\n' \
       "$parent_id" "$depth" "$budget_tokens" "$max_children"
     printf 'manager=%s\n' "$manager_id"
-  } >"$status_file.tmp"
-  mv "$status_file.tmp" "$status_file"
-  squad_record_status "$status_file"
+  } | persist_status "$workspace_root/$status_file" || return 1
+  [[ "$state" == running ]] || emit_event "$state" "$state" "$exit_status"
 }
+if (( headless == 1 )) && ! squad_has_jq; then
+  echo 'squad-worker: headless events require jq' >&2
+  exit 1
+fi
 : >"$log_file"
 : >"$report_file"
 # Serialize enabling knowledge with the sandbox decision and published run identity.
@@ -1923,6 +2049,7 @@ learn_sandbox_check "$run_sandbox" "$yolo"
 # shellcheck disable=SC2154 # learn_init sets the canonical store parent.
 printf '%s\n' "$workspace_root/$status_file" >>"$learn_base/RUNS"
 write_status running
+emit_event started running
 learn_lock_release
 learn_inject "$owned_paths"
 if [[ -n "$learn_notes" ]]; then
@@ -1935,6 +2062,7 @@ printf 'squad-worker: %s (%s) %s\n' "$worker_id" "$engine" "$(squad_worker_model
 
 # Live monitor for this run beside the manager (see lib/squad-panes.sh).
 open_monitor_pane() {
+  (( headless == 0 )) || return 0
   if [[ "$view" == orchestration || "$view" == orchestration-branches ]]; then
     local root_mgr=""
     local root_mgr_from_parent=0
@@ -2109,6 +2237,7 @@ if ! failure_reason="$(open_monitor_pane 2>&1)"; then
   failure_reason="$(printf '%s' "$failure_reason" | tr '\r\n' '  ')"
   write_status failed 1
   message="$worker_id ($engine) failed on task $task_id: $failure_reason"
+  message="$(printf '%s' "$message" | redact_text)"
   squad send --task-id "$task_id" "$worker_id" "$manager_id" "$message" >/dev/null || true
   echo "$message" >&2
   exit 1
@@ -2178,6 +2307,67 @@ output_age() {
   printf '%d' "$newest"
 }
 
+read_budget_usage() {
+tokens_in="" tokens_cached="" tokens_out="" tokens_reasoning=""
+if squad_has_jq && [[ -s "$log_file" ]]; then
+  usage_line="$(squad_jq -R -r -s '
+    [split("\n")[] | fromjson? | select(type == "object")] as $events
+    | ([$events[] | select(.type == "result") | .usage | select(type == "object")] | last) as $result
+    | (if $result != null then [$result]
+       else [$events[] | select(.type == "assistant") | .message | select(.usage != null)]
+         | group_by(.id) | map(last.usage) end) as $claude
+    | ($claude + [$events[] | (select(.type == "turn.completed") | .usage),
+        (select(.type == "step_finish") | .part.tokens // empty)] | map(select(type == "object")))
+    | map(if has("input_tokens") then
+        {in: ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)),
+         cached: (.cached_input_tokens // .cache_read_input_tokens // 0),
+         out: (.output_tokens // 0), reasoning: (.reasoning_output_tokens // .reasoning_tokens // .output_tokens_details.reasoning_tokens // 0)}
+      else
+        {in: ((.input // 0) + (.cache.read // 0) + (.cache.write // 0)),
+         cached: (.cache.read // 0),
+         out: ((.output // 0) + (.reasoning // 0)), reasoning: (.reasoning // 0)}
+      end)
+    | if length == 0 then "" else
+      [ (map(.in) | add), (map(.cached) | add), (map(.out) | add), (map(.reasoning) | add) ] | map(tostring) | join(" ") end' "$log_file" 2>/dev/null || true)"
+  if [[ -n "$usage_line" ]]; then
+    read -r tokens_in tokens_cached tokens_out tokens_reasoning <<<"$usage_line"
+  fi
+fi
+
+}
+
+accumulate_prior_budget_usage() {
+  local prior prior_task prior_tokens prior_out prior_usd prior_attempt prior_loop_iter
+  local total_tokens=0 total_usd=0
+  if (( attempt == 1 && loop_iter == 1 )); then
+    export SQUAD_BUDGET_USED_TOKENS=0 SQUAD_BUDGET_USED_USD=0
+    return
+  fi
+  while IFS= read -r prior; do
+    [[ "$prior" != "$status_file" ]] || continue
+    [[ "$(status_get "$prior" worker)" == "$worker_id" ]] || continue
+    prior_task="$(status_get "$prior" plan_task)"
+    [[ "$prior_task" == "$plan_task" ]] || continue
+    prior_attempt="$(status_get "$prior" attempt)"
+    prior_loop_iter="$(status_get "$prior" loop_iter)"
+    prior_tokens="$(status_get "$prior" tokens_in)"
+    [[ "$prior_tokens" =~ ^[0-9]+$ ]] || prior_tokens=0
+    prior_out="$(status_get "$prior" tokens_out)"
+    [[ "$prior_out" =~ ^[0-9]+$ ]] || prior_out=0
+    prior_tokens=$((prior_tokens + prior_out))
+    prior_usd="$(status_get "$prior" cost_usd)"
+    [[ "$prior_tokens" =~ ^[0-9]+$ ]] && total_tokens=$((total_tokens + prior_tokens))
+    if [[ "$prior_usd" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      total_usd="$(awk -v a="$total_usd" -v b="$prior_usd" 'BEGIN {printf "%.6f", a+b}')"
+    fi
+    if [[ "$(status_get "$prior" merged)" == *=* ]] ||
+      [[ -z "$prior_attempt" && ( -z "$prior_loop_iter" || "$prior_loop_iter" == 1 ) ]] ||
+      [[ ( -z "$prior_attempt" || "$prior_attempt" -le 1 ) && ( -z "$prior_loop_iter" || "$prior_loop_iter" -le 1 ) ]]; then
+      break
+    fi
+  done < <(cd "$workspace_root" && worker_status_files "$worker_id")
+  export SQUAD_BUDGET_USED_TOKENS="$total_tokens" SQUAD_BUDGET_USED_USD="$total_usd"
+}
 write_live() {
   local summary metrics activity input cached output tmp
   case "$engine" in codex|claude|ccr|opencode) ;; *) return 0 ;; esac
@@ -2191,6 +2381,8 @@ write_live() {
   tmp="$(mktemp "$status_file.live.XXXXXX")" || return 0
   { printf 'tokens_in=%s\ntokens_cached=%s\ntokens_out=%s\nactivity=%s\nupdated=%s\n' "$input" "$cached" "$output" "$activity" "$(date +%s)" >"$tmp" && mv "$tmp" "${status_file%.status}.live"; } || rm -f "$tmp"
 }
+
+accumulate_prior_budget_usage
 
 timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 stall_seconds="${SQUAD_WORKER_STALL_SECONDS:-$(( stall_minutes * 60 ))}"
@@ -2208,6 +2400,7 @@ if (( status == 0 )); then
   # so a stuck worker reports back instead of leaving its pane pending.
   model_log_size=-1
   live_log_size=0
+  budget_log_size=-1
   live_updated=0
   live_pid=""
   live_interval="${SQUAD_WORKER_LIVE_INTERVAL:-15}"
@@ -2225,6 +2418,15 @@ if (( status == 0 )); then
       fi
       [[ "$model_changed" == 0 ]] || write_status running
     fi
+    if [[ -n "$budget_tokens" && "$current_log_size" != "$budget_log_size" && ( "$engine" == claude || "$engine" == codex ) ]]; then
+      budget_log_size="$current_log_size"
+      read_budget_usage
+      if [[ "$tokens_in" =~ ^[0-9]+$ && "$tokens_out" =~ ^[0-9]+$ ]] &&
+         (( ${SQUAD_BUDGET_USED_TOKENS:-0} + tokens_in + tokens_out > budget_tokens )); then
+        budget_exceeded=1; budget_mode=hard
+        stop_reason="token budget exceeded"
+      fi
+    fi
     live_now="$(date +%s)"
     if [[ "$current_log_size" != "$live_log_size" ]] && (( live_now - live_updated >= live_interval )) &&
        { [[ -z "$live_pid" ]] || ! kill -0 "$live_pid" 2>/dev/null; }; then
@@ -2240,6 +2442,12 @@ if (( status == 0 )); then
     fi
     if [[ -n "$stop_reason" ]]; then
       terminate_engine
+      if (( budget_exceeded == 1 )); then
+        sleep 1
+        kill -KILL -- "-$engine_pgid" 2>/dev/null || true
+        pkill -KILL -P "$engine_pid" 2>/dev/null || true
+        kill -KILL "$engine_pid" 2>/dev/null || true
+      fi
       break
     fi
   done
@@ -2264,26 +2472,7 @@ reported_model="$(squad_engine reported_models "$log_file")"
 
 # Token usage, summed from the engine's JSON events, for the monitor and the
 # savings summary.
-if squad_has_jq && [[ -s "$log_file" ]]; then
-  usage_line="$(squad_jq -R -r -s '
-    [split("\n")[] | fromjson? | select(type == "object")
-     | (select(.type == "turn.completed") | .usage), (select(.type == "result") | .usage // empty),
-       (select(.type == "step_finish") | .part.tokens // empty)]
-    | map(if has("input_tokens") then
-        {in: ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)),
-         cached: (.cached_input_tokens // .cache_read_input_tokens // 0),
-         out: (.output_tokens // 0), reasoning: (.reasoning_output_tokens // .reasoning_tokens // .output_tokens_details.reasoning_tokens // 0)}
-      else
-        {in: ((.input // 0) + (.cache.read // 0) + (.cache.write // 0)),
-         cached: (.cache.read // 0),
-         out: ((.output // 0) + (.reasoning // 0)), reasoning: (.reasoning // 0)}
-      end)
-    | if length == 0 then "" else
-      [ (map(.in) | add), (map(.cached) | add), (map(.out) | add), (map(.reasoning) | add) ] | map(tostring) | join(" ") end' "$log_file" 2>/dev/null || true)"
-  if [[ -n "$usage_line" ]]; then
-    read -r tokens_in tokens_cached tokens_out tokens_reasoning <<<"$usage_line"
-  fi
-fi
+read_budget_usage
 
 if squad_has_jq; then
   reported_cost="$(squad_jq -Rrs '[split("\n")[] | fromjson? | select(.type == "result") | .total_cost_usd | select(type == "number" and . >= 0)] | last // empty' "$log_file" 2>/dev/null || true)"
@@ -2306,6 +2495,23 @@ if squad_has_jq; then
   fi
 fi
 
+if [[ "$tokens_in" =~ ^[0-9]+$ && "$tokens_out" =~ ^[0-9]+$ ]]; then
+  current_run_tokens=$((tokens_in + tokens_out))
+  effective_tokens=$(( ${SQUAD_BUDGET_USED_TOKENS:-0} + current_run_tokens ))
+  export SQUAD_BUDGET_USED_TOKENS="$effective_tokens"
+  if [[ -n "$budget_tokens" ]] && (( effective_tokens > budget_tokens )); then budget_exceeded=1; fi
+fi
+if [[ "$cost_status" != unknown ]]; then
+  current_run_usd="$cost_usd"
+  export SQUAD_BUDGET_USED_USD
+  SQUAD_BUDGET_USED_USD="$(awk -v a="${SQUAD_BUDGET_USED_USD:-0}" -v b="$current_run_usd" 'BEGIN {printf "%.8f", a+b}')"
+  if [[ -n "$budget_usd" ]] && awk -v a="$SQUAD_BUDGET_USED_USD" -v b="$budget_usd" 'BEGIN {exit !(a>b)}'; then budget_exceeded=1; fi
+fi
+if (( budget_exceeded == 1 )); then
+  status=1
+  stop_reason="budget exceeded ($budget_mode)"
+fi
+
 # Keep the worker's changes on its branch and as a patch for review and merge.
 worktree_note=""
 if [[ -n "$worktree_path" ]]; then
@@ -2325,6 +2531,16 @@ if [[ -n "$worktree_path" ]]; then
   fi
 fi
 
+# Redact before publishing reports, retry context, or failure log excerpts.
+redact_tmp="$(mktemp "$report_file.redact.XXXXXX")"
+if redact_text <"$report_file" >"$redact_tmp"; then
+  mv "$redact_tmp" "$report_file"
+else
+  rm -f "$redact_tmp"
+  : >"$report_file"
+  echo 'squad-worker: report redaction failed; refusing publication' >&2
+  exit 1
+fi
 report=""
 if [[ -s "$report_file" ]]; then
   report="$(cat "$report_file")"
@@ -2344,9 +2560,10 @@ if (( status != 0 )) || [[ -z "${report//[[:space:]]/}" ]]; then
   report="$(cat "$report_file")"
   if [[ -n "$plan_note" ]]; then printf '%s\n%s\n\n%s\n' "$plan_line" "$plan_note" "$report" >"$report_file"; fi
   message="$worker_id ($engine) ${stop_reason:-failed} on task $task_id (exit status $status). Log: $workspace_root/$log_file. Reassign or rerun the task."
+  message="$(printf '%s' "$message" | redact_text)"
   squad send --task-id "$task_id" "$worker_id" "$manager_id" "$message" >/dev/null || true
   echo "$message" >&2
-  tail -n 20 "$log_file" 2>/dev/null | bounded_lines 300 >&2 || true
+  tail -n 20 "$log_file" 2>/dev/null | redact_text | bounded_lines 300 >&2 || true
   exit "$status"
 fi
 
@@ -2375,7 +2592,20 @@ if (( $gate_count > 0 || $expect_count > 0 )); then
     fi
     verify_log="$output_directory/$run_name.gate-$gate_name.log"
     [[ "$gate_name" != verify ]] || verify_log="$output_directory/$run_name.verify.log"
-  (cd "$engine_directory" && exec bash -c "$gate_command") >"$verify_log" 2>&1 &
+  (cd "$engine_directory"
+    if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] && squad --help 2>&1 | grep -q 'sandbox'; then
+      gate_tmp="$(mktemp -d)"
+      trap 'rm -rf "$gate_tmp"' EXIT
+      gate_args=(sandbox exec --worktree "$engine_directory" --run-tmp "$gate_tmp" --profile "${SQUAD_SANDBOX_PROFILE:-workspace}")
+      [[ "$role" != reviewer && "$role" != scout ]] || gate_args+=(--readonly)
+      squad "${gate_args[@]}" -- bash -c "$gate_command"
+    elif [[ "${SQUAD_SANDBOX_PROFILE:-workspace}" == strict ]]; then
+      echo 'squad-worker: strict sandbox unavailable; refusing to run gate on host' >&2
+      exit 1
+    else
+      exec bash -c "$gate_command"
+    fi
+  ) >"$verify_log" 2>&1 &
   verify_pid=$!
   verify_started="$(date +%s)"
   verify=pass
@@ -2394,9 +2624,11 @@ if (( $gate_count > 0 || $expect_count > 0 )); then
   if [[ "$stop_reason" == "stopped by request" ]]; then
     verify=fail
     (( verify_exit != 0 )) || verify_exit=143
+    emit_event verify running "$verify_exit"
     write_status stopped "$verify_exit"
     message="$worker_id ($engine) $stop_reason on task $task_id (exit status $verify_exit). Log: $workspace_root/$log_file. Reassign or rerun the task."
-    squad send --task-id "$task_id" "$worker_id" "$manager_id" "$message" >/dev/null || true
+    message="$(printf '%s' "$message" | redact_text)"
+  squad send --task-id "$task_id" "$worker_id" "$manager_id" "$message" >/dev/null || true
     echo "$message" >&2
     exit "$verify_exit"
   fi
@@ -2405,6 +2637,7 @@ if (( $gate_count > 0 || $expect_count > 0 )); then
   elif (( verify_exit != 0 )); then
     verify=fail
   fi
+  emit_event verify running "$verify_exit"
   gates="${gates:+$gates,}$gate_name:$verify"
   if [[ "$verify" != pass ]]; then
     failing_name="$gate_name"; failing_command="$gate_command"; failing_log="$verify_log"
@@ -2459,14 +2692,36 @@ $report"
   fi
 fi
 write_status completed 0
-if [[ -n "$loop_max" && "$verify" != pass ]] && (( loop_iter < loop_max )); then
+loop_repeated=0
+if [[ -n "$loop_max" && "$verify" != pass ]]; then
   feedback=""
-  [[ -z "$failing_log" ]] || feedback="$(tail -n 60 "$failing_log" | bounded_lines 200)"
+  [[ -z "$failing_log" ]] || feedback="$( { grep -iE 'error|fail|panic|exception|fatal' "$failing_log" | tail -n 30; tail -n 30 "$failing_log"; } | bounded_lines 200)"
+  feedback="$(printf '%s' "$feedback" | redact_text)"
+  normalized_failure="$(printf '%s\n' "$feedback" | sed -E 's/[[:space:]]+/ /g; s/0x[[:xdigit:]]+/ADDR/g; s/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ]/DATE /g; s/[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?/TIME/g')"
+  failure_signature="$(printf '%s\n' "$failing_name" "$verify_exit" "$normalized_failure" | git hash-object --stdin)"
+  if [[ "$loop_iter" != 1 && "$failure_signature" == "${SQUAD_LOOP_FAILURE_SIGNATURE:-}" ]]; then
+    loop_repeated=1
+    echo 'squad-worker: identical failure signature repeated; stopping loop early' >&2
+    report="identical failure signature repeated; stopping loop early
+$report"
+  fi
+  diff_stat=""
+  [[ -z "$worktree_path" ]] || diff_stat="$(git -C "$worktree_path" diff --stat "$worktree_base_commit" 2>/dev/null | head -n 40)"
   repair_brief="$brief
 
-Gate $failing_name failed (command: $failing_command). Last 60 lines:
+## Previous loop failure
+Gate: $failing_name
+Command: $failing_command
+Exit code: $verify_exit
+Diff stat:
+$diff_stat
+Errors / bounded output tail:
 $feedback
 Fix only this failure."
+  repair_brief="$(printf '%s' "$repair_brief" | redact_text)"
+fi
+if [[ -n "$loop_max" && "$verify" != pass ]] && (( loop_iter < loop_max && loop_repeated == 0 )); then
+  export SQUAD_LOOP_FAILURE_SIGNATURE="$failure_signature"
   retry_arguments=(); skip_value=0; skip_task_id=0
   for argument in "${original_arguments[@]}"; do
     if (( skip_value == 1 )); then skip_value=0; continue; fi
@@ -2490,6 +2745,7 @@ report="$plan_line${plan_note:+
 $plan_note}
 
 $report"
+report="$(printf '%s\n' "$report" | redact_text)"
 printf '%s\n' "$report" >"$report_file"
 report_summary="$(cap_report_lines "$report_lines" "$workspace_root/$report_file" <"$report_file")"
 escalating_loop=0
@@ -2501,6 +2757,7 @@ if (( escalating_loop == 0 )); then
 loop_message=""
 if [[ -n "$loop_max" ]]; then
   if [[ "$verify" == pass ]]; then loop_message=" passed on iteration $loop_iter/$loop_max;"
+  elif (( loop_repeated == 1 && loop_iter < loop_max )); then loop_message=" identical failure signature repeated; stopping loop early;"
   else loop_message=" loop exhausted $loop_iter/$loop_max; last failing gate: $failing_name;"; fi
 fi
 squad send --task-id "$task_id" "$worker_id" "$manager_id" \
@@ -2517,6 +2774,7 @@ if (( retry_escalate == 1 )) && { [[ "$verify" == fail ]] || { [[ -n "$loop_max"
 
 Repair the failed acceptance command: ${failing_command:-$verify_command}
 $(if [[ -n "$failing_log" ]]; then tail -n 20 "$failing_log" | bounded_lines 200; fi)"
+    repair_brief="$(printf '%s' "$repair_brief" | redact_text)"
     retry_arguments=()
     skip_value=0
     skip_task_id=0
@@ -2538,12 +2796,16 @@ $(if [[ -n "$failing_log" ]]; then tail -n 20 "$failing_log" | bounded_lines 200
     finish_run 0
     trap - EXIT
     cd "$launch_directory"
-    unset SQUAD_LOOP_ITER
+    unset SQUAD_LOOP_ITER SQUAD_LOOP_FAILURE_SIGNATURE
     export SQUAD_RETRY_PREVIOUS_STATUS="$workspace_root/$status_file"
     exec "$script_dir/squad-worker.sh" "${retry_arguments[@]}" --model-tier "$next_tier" --brief "$repair_brief"
   else
     echo 'squad-worker: verification failed; no higher configured tier available, retaining evidence.' >&2
   fi
+fi
+if (( loop_repeated == 1 && loop_iter < loop_max )); then
+  write_status failed 1
+  exit 1
 fi
 if (( merge_if_green == 1 )); then
   if [[ "$verify" != pass || -n "$scope_violation" || -z "$worktree_path" ]]; then

@@ -27,7 +27,11 @@ function checkTone(value: string): string | undefined {
 }
 
 function detail(run: Run): string {
-  return run.state === 'running' ? run.activity : run.title
+  if (run.state === 'running') {
+    if (run.title !== '' && run.activity !== '') return `${run.title} · ${run.activity}`
+    return run.activity || run.title
+  }
+  return run.title
 }
 
 function Card({ Box, Text }: Ui, run: Run, now: number) {
@@ -55,10 +59,24 @@ function Card({ Box, Text }: Ui, run: Run, now: number) {
         {run.verdict !== '' && <Text dimColor> · </Text>}
         {run.verdict !== '' && <Text color={checkTone(run.verdict)}>{run.verdict}</Text>}
       </Text>
-      <Text wrap="truncate-end" dimColor>
-        {'  '}
-        {detail(run)}
-      </Text>
+      {run.title !== '' && (
+        <Text wrap="truncate-end" dimColor>
+          {'  '}
+          {run.title}
+        </Text>
+      )}
+      {run.state === 'running' && run.activity !== '' && (
+        <Text wrap="truncate-end" color={ACCENT}>
+          {'  → '}
+          {run.activity}
+        </Text>
+      )}
+      {run.state !== 'running' && !!run.reason && (
+        <Text wrap="truncate-end" color="error">
+          {'  ! '}
+          {run.reason}
+        </Text>
+      )}
     </Box>
   )
 }
@@ -146,9 +164,17 @@ export function Deck(
             <Box flexDirection="column" marginTop={1}>
               <Text bold>{`Needs you (${attention.length})`}</Text>
               {attention.map(item => (
-                <Text key={item.run.id} wrap="truncate-end">
-                  {`  ${item.run.id} · ${item.reason} · ${item.action}`}
-                </Text>
+                <Box key={item.run.id} flexDirection="column">
+                  <Text wrap="truncate-end">
+                    <Text color={item.kind === 'merge' ? 'success' : 'error'}>{'  ● '}</Text>
+                    <Text bold>{item.run.id}</Text>
+                    <Text>{` · ${item.reason}`}</Text>
+                    {item.run.title !== '' && <Text dimColor>{` — ${item.run.title}`}</Text>}
+                  </Text>
+                  <Text wrap="truncate-end" dimColor>
+                    {`    → ${item.action}`}
+                  </Text>
+                </Box>
               ))}
             </Box>
           )}

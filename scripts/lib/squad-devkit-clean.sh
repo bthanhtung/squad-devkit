@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Removes squad-devkit's own leftovers from a squad workspace: finished worker
-# runs (status, log, report, monitor script) older than the retention period,
+# runs (status, log, report, monitor script) and orphan worker files older than
+# the retention period,
 # then the oldest finished runs while .squad/workers exceeds the size limit,
 # plus old manager handoff notes and an oversized router log. Running workers,
 # runs whose git worktree is not merged or discarded yet, plans, and anything
@@ -64,6 +65,47 @@ while IFS= read -r file; do
     remove_run "$file"
   fi
 done < <(finished_runs_oldest_first)
+
+# Remove old files that do not belong to a known run. Manager redirects such as
+# <worker-id>.out have no timestamped status-file base of their own.
+known_runs=""
+for status in "$workers"/*.status; do
+  [[ -f "$status" ]] || continue
+  status_name="${status##*/}"
+  status_stem="${status_name%.status}"
+  worker_name="$(status_value "$status" worker)"
+  if is_running "$status"; then
+    run_state=running
+  else
+    run_state=stopped
+  fi
+  known_runs="${known_runs}${status_stem}|${worker_name}|${run_state}
+"
+done
+for orphan in "$workers"/*; do
+  [[ -f "$orphan" ]] || continue
+  orphan_name="${orphan##*/}"
+  [[ "$orphan_name" == ccr-server.log || "$orphan_name" == ccr-server.log.tmp ]] && continue
+  stem="${orphan_name%%.*}"
+  known_run=0
+  running_run=0
+  [[ -f "$workers/$orphan_name.status" ]] && continue
+  while IFS='|' read -r status_stem worker_name run_state; do
+    [[ -n "$status_stem" ]] || continue
+    if [[ "$status_stem" == "$stem" || "$status_stem" == "$stem-"* || "$worker_name" == "$stem" ]]; then
+      known_run=1
+      if [[ "$run_state" == running ]]; then
+        running_run=1
+        break
+      fi
+    fi
+  done <<< "$known_runs"
+  (( running_run == 1 || known_run == 1 )) && continue
+  if [[ -n "$(find "$orphan" -prune -mtime +"$retention_days" -print)" ]]; then
+    rm -f "$orphan"
+    removed=$(( removed + 1 ))
+  fi
+done
 
 while (( $(du -sk "$workers" | cut -f 1) > max_kilobytes )); do
   oldest="$(finished_runs_oldest_first | head -n 1 || true)"

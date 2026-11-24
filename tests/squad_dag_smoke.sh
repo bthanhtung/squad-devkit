@@ -35,7 +35,7 @@ source "$REPO/scripts/lib/squad-plan.sh"
 hash="$(plan_task_entry "$plan" "$id" | shasum -a 256 | awk '{print $1}')"
 echo "$id start" >>calls
 sleep "${DELAY:-0}"
-printf 'worker=%s\nplan=%s\nplan_task=%s\nplan_task_sha256=%s\nstate=%s\nverify=pass\n' "$id" "$plan" "$id" "$hash" "${RESULT:-done}" >".squad/workers/$id.status"
+printf 'engine=codex\nworker=%s\nplan=%s\nplan_task=%s\nplan_task_sha256=%s\nstate=%s\nverify=pass\ndag_attempt=%s\n' "$id" "$plan" "$id" "$hash" "${RESULT:-completed}" "${SQUAD_DAG_ATTEMPT:-}" >".squad/workers/$id.status"
 echo "$id end" >>calls
 WORKER
 chmod +x worker
@@ -70,7 +70,7 @@ for kind in duplicate unknown cycle tier; do
   expect 2 --run-plan bad --manager mgr
 done
 # Independent tasks run together, within the job limit, then finish later waves.
-rm -f .squad/workers/*.status calls
+rm -f .squad/workers/*.status .squad/messages.db* calls
 cat >parallel.md <<'PLAN'
 ## Tasks
 - p (codex strong, dev): p. Files: p. Depends on: none. Verify: `true`
@@ -83,11 +83,11 @@ expect 3 --run-plan parallel.md --manager mgr --jobs 2
 [[ $(grep -c start calls) == 3 ]]
 awk '$2=="start" {active++; if(active>2) exit 1} $2=="end" {active--} END {if(active) exit 1}' calls
 unset DELAY
-rm -f .squad/workers/*.status calls
+rm -f .squad/workers/*.status .squad/messages.db* calls
 expect 3 --run-plan parallel.md --manager mgr --jobs 1 --max-launches 1
 [[ $(grep -c start calls) == 1 ]]
 # A failed root is terminal, blocks its dependent, and requires explicit retry.
-rm -f .squad/workers/*.status calls
+rm -f .squad/workers/*.status .squad/messages.db* calls
 export RESULT=failed
 expect 3 --run-plan plan.md --manager mgr --merge-if-green
 expect 3 --run-plan plan.md --manager mgr
@@ -103,12 +103,12 @@ for state in running lost stopped; do
   [[ $(grep -c start calls) == 2 ]]
 done
 for verify in fail timeout; do
-  printf 'state=done\nverify=%s\n' "$verify" >>.squad/workers/a.status
+  printf 'state=completed\nverify=%s\n' "$verify" >>.squad/workers/a.status
   expect 3 --run-plan plan.md --manager mgr
   [[ $(grep -c start calls) == 2 ]]
 done
 # Merge refusal stops the dependent, and never requests a review override.
-rm -f .squad/workers/*.status calls
+rm -f .squad/workers/*.status .squad/messages.db* calls
 export REFUSE=1
 expect 3 --run-plan plan.md --manager mgr --merge-if-green
 ! grep -q 'b start' calls
@@ -120,7 +120,7 @@ expect 3 --run-plan other.md --manager mgr
 [[ $(grep -c 'a start' calls) == 2 ]]
 # A live runner excludes a second invocation. Foreign locks stay untouched;
 # a provably dead local owner can be reclaimed.
-rm -f .squad/workers/*.status calls
+rm -f .squad/workers/*.status .squad/messages.db* calls
 export DELAY=2
 run --run-plan parallel.md --manager mgr --jobs 1 &
 runner=$!
@@ -131,6 +131,7 @@ squad_dag_run "$worker" --run-plan parallel.md --manager mgr >second 2>&1 || rc=
 grep -q 'Another runner' second
 wait "$runner" || [[ "$?" == 3 ]]
 unset DELAY
+if [[ "${SQUAD_RUST_DISABLE:-0}" == 1 ]]; then
 lock=".squad/run-plan/$(printf '%s' "$tmp/parallel.md" | shasum -a 256 | awk '{print $1}').lock"
 mkdir "$lock"
 printf 'pid=99999999\nhost=foreign.invalid\nstarted=1\n' >"$lock/owner"
@@ -139,6 +140,7 @@ expect 3 --run-plan parallel.md --manager mgr --dry-run
 printf 'pid=99999999\nhost=%s\nstarted=1\n' "$(hostname -s)" >"$lock/owner"
 expect 3 --run-plan parallel.md --manager mgr --dry-run
 [[ ! -d "$lock" ]]
+fi
 # Exercise the public command and real status writer with an isolated fake engine.
 unset SQUAD_DEVKIT_MANAGER_WRAPPER_PID SQUAD_WORKER_REQUIRE_PLAN TMUX TMUX_PANE HERDR_ENV HERDR_PANE_ID
 export HOME="$tmp/home" TERM_PROGRAM=test-terminal SQUAD_DEVKIT_NOTIFY=0
@@ -188,4 +190,16 @@ grep -qx "plan_task_sha256=$hash" "$file"
 for id in integration integration-two integration-three; do
   grep -qx 'state=completed' .squad/workers/$id-*.status
 done
+if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]]; then
+  cd "$(pwd -P)"
+  printf 'retained payload\n' >payload.txt
+  squad artifact publish --plan plan.md --task integration --attempt "$(status_get "$file" dag_attempt)" --root "$PWD" payload.txt
+  squad artifact fetch --plan plan.md --from integration --dest "$PWD/consumer-artifacts"
+  [[ "$(cat consumer-artifacts/payload.txt)" == 'retained payload' ]]
+  [[ "$(stat -f '%Sp' consumer-artifacts/payload.txt 2>/dev/null || stat -c '%A' consumer-artifacts/payload.txt)" != *w* ]]
+  if squad artifact publish --plan plan.md --task integration --attempt traversal --root "$PWD" ../payload.txt >out 2>&1; then
+    echo 'Traversal publish unexpectedly succeeded' >&2; exit 1
+  fi
+  chmod u+w consumer-artifacts
+fi
 echo 'PASS: DAG runner'

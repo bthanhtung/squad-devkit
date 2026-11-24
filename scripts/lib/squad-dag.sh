@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 # Foreground scheduler; all launches and merges use the normal worker entry point.
 squad_dag_run() (
-  local launcher="$1" plan="" manager="${SQUAD_MANAGER_ID:-}" jobs=3 cap="" dry=0 merge=0
+  local launcher="$1" plan="" manager="${SQUAD_MANAGER_ID:-}" jobs=3 cap="" dry=0 merge=0 failure=stop-dependents
   local retries=' ' arg id entry header deps file state lock owner host pid started actual
   local i j n count=0 active done_count launched_count progress workspace
   local ids=() engines=() tiers=() roles=() owns=() verifies=() dependencies=() hashes=() states=() files=() launched=() children=() visited=()
   shift
+  if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] && squad_supports run-plan; then
+    SQUAD_DAG_LAUNCHER="$launcher" squad run-plan "$@"
+    exit $?
+  fi
   while (( $# )); do
     arg="$1"; shift
     case "$arg" in
       --dry-run) dry=1;;
       --merge-if-green) merge=1;;
-      --run-plan|--manager|--jobs|--max-launches|--retry)
+      --run-plan|--plan|--manager|--jobs|--max-launches|--retry|--on-failure|--dep-mode)
         (( $# )) && [[ -n "$1" ]] || { echo "Missing value for $arg" >&2; exit 2; }
         case "$arg" in
-          --run-plan) plan="$1";; --manager) manager="$1";; --jobs) jobs="$1";;
+          --run-plan|--plan) plan="$1";; --manager) manager="$1";; --jobs) jobs="$1";;
           --max-launches) cap="$1";;
+          --on-failure)
+            [[ "$1" == stop-dependents || "$1" == fail-fast ]] || { echo 'Invalid failure policy' >&2; exit 2; }
+            failure="$1";;
+          --dep-mode) [[ "$1" == merged ]] || { echo 'artifact-ready requires Rust run-plan' >&2; exit 2; };;
           --retry)
             [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'Invalid retry task ID'; exit 2; }
             retries="$retries$1 ";;
@@ -164,6 +172,11 @@ squad_dag_run() (
         fi
       done
       (( progress == 0 )) || continue
+    fi
+    if [[ "$failure" == fail-fast ]]; then
+      for state in "${states[@]}"; do
+        [[ "$state" != failed && "$state" != changed ]] || exit 3
+      done
     fi
     children=(); launched_count=0
     for ((i=0;i<count;i++)); do

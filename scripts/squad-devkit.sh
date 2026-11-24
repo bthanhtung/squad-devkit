@@ -61,6 +61,8 @@ Without an objective the manager opens an interactive chat and asks for one firs
   --split-test  With --doctor, open and verify a monitor split
   --stats       Show run statistics for the last 30 days (--days N)
   --eval [RUN]  Score finished worker runs for the last 30 days (--days N)
+  --update-prices
+                Update .squad/prices.json from OpenRouter API (or --from-file / --url / --set / --global)
   --ghostty     Open the manager in a new Ghostty window instead of this terminal
   --tmux        Run the manager in a tmux session; re-running attaches to it
                 (or set SQUAD_DEVKIT_BACKEND=here|ghostty|tmux)
@@ -105,6 +107,8 @@ doctor=0
 split_test=0
 stats=0
 eval_runs=0
+update_prices=0
+update_prices_args=()
 stats_days=30
 devkit_action=""
 seen_positional=0
@@ -149,6 +153,12 @@ while (( $# > 0 )); do
     --setup) setup=1; reload_passthrough_args+=("$1") ;;
     --stats) stats=1 ;;
     --eval) eval_runs=1 ;;
+    --update-prices) update_prices=1 ;;
+    --url|--from-file|--set|--target)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then echo "Missing value for $1" >&2; exit 2; fi
+      update_prices_args+=("$1" "$2"); shift ;;
+    --global|--no-fetch)
+      update_prices_args+=("$1") ;;
     --split-test) split_test=1 ;;
     --days)
       if (( $# < 2 )) || [[ ! "$2" =~ ^[0-9]+$ ]] || (( ${#2} > 5 )); then echo "Invalid --days value" >&2; exit 2; fi
@@ -731,6 +741,14 @@ run_doctor() {
 }
 
 if (( split_test && ! doctor )); then echo '--split-test requires --doctor' >&2; exit 2; fi
+if (( update_prices )); then
+  source "$script_dir/lib/squad-cost.sh"
+  if (( dry_run )); then
+    update_prices_args+=(--dry-run)
+  fi
+  squad_cost_update_prices ${update_prices_args[@]+"${update_prices_args[@]}"}
+  exit $?
+fi
 if (( eval_runs )); then
   if [[ -n "$objective" ]]; then echo "Only one run name is allowed" >&2; exit 2; fi
   source "$script_dir/lib/squad-eval.sh"

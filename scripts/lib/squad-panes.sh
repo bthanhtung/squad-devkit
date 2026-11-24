@@ -102,6 +102,7 @@ squad_panes_herdr_manager() {
 }
 
 squad_open_monitor() {
+  [[ "${SQUAD_WORKER_HEADLESS:-0}" != 1 ]] || return 0
   local command_script="$1" title="$2" workspace="$3" state="$4" dashboard_script="$5"
   local required="${6:-}"
   if [[ "${SQUAD_WORKER_PANES:-1}" == 0 ]]; then
