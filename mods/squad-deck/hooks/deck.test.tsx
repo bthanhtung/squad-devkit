@@ -240,7 +240,7 @@ test('needs you chooses the latest run and sorts actionable items', () => {
   const items = needsYou([
     run('merge', 'completed', 40, 'worktree=/tmp/merge\nverify=pass\n'),
     run('verify', 'completed', 50, 'verify=timeout\n'),
-    run('failed', 'failed', 10),
+    run('failed', 'failed', 10, 'reason=exit 1 on npm test\n'),
     run('lost', 'lost', 20),
     run('superseded', 'failed', 1),
     run('superseded', 'completed', 2),
@@ -250,12 +250,12 @@ test('needs you chooses the latest run and sorts actionable items', () => {
     run('reviewer', 'completed', 90),
     run('verify-fail', 'completed', 30, 'verify=fail\n'),
   ])
-  expect(items.map(item => [item.run.id, item.kind, item.action])).toEqual([
-    ['lost', 'failed', 'rerun or split'],
-    ['failed', 'failed', 'rerun or split'],
-    ['verify', 'verify', 'fix or discard'],
-    ['verify-fail', 'verify', 'fix or discard'],
-    ['merge', 'merge', 'review diff, then squad-worker --merge merge'],
+  expect(items.map(item => [item.run.id, item.kind, item.reason, item.action])).toEqual([
+    ['lost', 'failed', 'worker lost', 'Say: inspect & rerun lost, or discard'],
+    ['failed', 'failed', 'worker failed: exit 1 on npm test', 'Say: inspect & rerun failed, or discard'],
+    ['verify', 'verify', 'verify timed out', 'Say: inspect/rerun verify verify, or discard'],
+    ['verify-fail', 'verify', 'verify failed', 'Say: fix verify-fail, or discard'],
+    ['merge', 'merge', 'ready to merge', 'Say: review & merge merge (or --merge merge)'],
   ])
   expect(needsYou([])).toEqual([])
 })

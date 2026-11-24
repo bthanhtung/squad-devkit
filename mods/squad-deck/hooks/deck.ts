@@ -4,7 +4,7 @@
 import type { Kind, Perms, Run as BaseRun, Verdict } from '../types'
 
 export type { Kind, Perms, Verdict }
-export type Run = BaseRun & { worktree?: string; merged?: boolean; discarded?: boolean }
+export type Run = BaseRun & { worktree?: string; merged?: boolean; discarded?: boolean; reason?: string }
 
 export const MAX_RUNS = 30
 export const TAIL_BYTES = 16384
@@ -93,7 +93,8 @@ export function parseStatus(text: string, fallbackId = ''): Run | null {
     verdict: word(f.verdict, 24),
     tokensIn: count(f.tokens_in),
     tokensOut: count(f.tokens_out),
-    title: clean(f.title ?? '', 80),
+    title: clean(f.title ?? '', 120),
+    reason: clean(f.reason ?? '', 100),
     isScopeViolation: (f.scope_violation ?? '') !== '',
     log: f.log ?? '',
     activity: '',
@@ -124,11 +125,27 @@ export function needsYou(runs: Run[]) {
   for (const run of pickRuns(runs, 0)) {
     if (run.state === 'running') continue
     if (['failed', 'stopped', 'lost', 'timeout', 'error'].includes(run.state)) {
-      items.push({ run, kind: 'failed', reason: run.state, action: 'rerun or split' })
+      const detail = run.reason ? `: ${run.reason}` : ''
+      items.push({
+        run,
+        kind: 'failed',
+        reason: `worker ${run.state}${detail}`,
+        action: `Say: inspect & rerun ${run.id}, or discard`,
+      })
     } else if (run.verify === 'fail' || run.verify === 'timeout') {
-      items.push({ run, kind: 'verify', reason: `verify ${run.verify}`, action: 'fix or discard' })
+      const reason = run.verify === 'timeout' ? 'verify timed out' : 'verify failed'
+      const hint =
+        run.verify === 'timeout'
+          ? `Say: inspect/rerun verify ${run.id}, or discard`
+          : `Say: fix ${run.id}, or discard`
+      items.push({ run, kind: 'verify', reason, action: hint })
     } else if (run.state === 'completed' && !!run.worktree && !run.merged && !run.discarded) {
-      items.push({ run, kind: 'merge', reason: 'ready to merge', action: `review diff, then squad-worker --merge ${run.id}` })
+      items.push({
+        run,
+        kind: 'merge',
+        reason: 'ready to merge',
+        action: `Say: review & merge ${run.id} (or --merge ${run.id})`,
+      })
     }
   }
   const rank = { failed: 0, verify: 1, merge: 2 }

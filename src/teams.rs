@@ -48,10 +48,13 @@ pub fn default_team(name: &str) -> Option<TeamConfig> {
 }
 
 pub fn load_team(workspace: &Path, name: &str) -> Result<TeamConfig> {
-    let custom_path = workspace
-        .join(".squad")
-        .join("teams")
-        .join(format!("{name}.yaml"));
+    let teams_dir = workspace.join(".squad").join("teams");
+    let yaml_path = teams_dir.join(format!("{name}.yaml"));
+    let custom_path = if yaml_path.exists() {
+        yaml_path
+    } else {
+        teams_dir.join(format!("{name}.yml"))
+    };
     if custom_path.exists() {
         let content = std::fs::read_to_string(&custom_path)
             .with_context(|| format!("failed to read team: {}", custom_path.display()))?;

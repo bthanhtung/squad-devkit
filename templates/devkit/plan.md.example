@@ -32,7 +32,8 @@
      Tier is fast|balanced|strong. Files is comma-separated and required except
      for reviewers. Verify is optional, in backticks. Dependencies are exact IDs,
      comma-separated, or none; cycles and unknown IDs are rejected. -->
-- <worker-id> (<engine> <tier>, <role>): <task>. Files: <owned files>. Depends on: <none|worker-id[, worker-id]>. Verify: `<command>`
+<!-- Use descriptive kebab-case worker IDs (e.g. fix-e2e-auth, add-rate-limit) rather than generic dev-1/dev-2. -->
+- <descriptive-worker-id> (<engine> <tier>, <role>): <task>. Files: <owned files>. Depends on: <none|worker-id[, worker-id]>. Verify: `<command>`
 
 ## Acceptance
 - <checkable criterion>; verify with `<command>` → <expected result>

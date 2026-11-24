@@ -1007,7 +1007,7 @@ Regenerate with `vhs scripts/demo/<name>.tape`.
 
 Environment variables that tune a run. Related settings appear in the sections above.
 
-`.squad/prices.json` optionally sets per-model USD prices per million tokens; copy `templates/devkit/prices.json.example` and fill its `input`, `cached_input`, and `output` rates. Missing prices leave cost `unknown`.
+`.squad/prices.json` optionally sets per-model USD prices per million tokens; copy `templates/devkit/prices.json.example` and fill its `input`, `cached_input`, and `output` rates, or run `squad-devkit --update-prices` to fetch and merge rates from OpenRouter (with optional `--from-file PATH`, `--url URL`, `--set MODEL=IN,CACHED,OUT`, `--global`, `--no-fetch`, and `--dry-run`). Missing prices leave cost `unknown`.
 
 | Variable | Default | Purpose |
 |---|---|---|

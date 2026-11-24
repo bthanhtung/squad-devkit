@@ -264,12 +264,14 @@ expect_allow "$(bash_payload 'ls -la')"
 expect_allow "$(bash_payload 'git status')"
 expect_allow "$(bash_payload "cd $project && git push")"
 
-# Disabled, and fail open.
+# Disabled, default fail-closed, and explicit fail-open.
 SQUAD_DEVKIT_GUARD=0 run_guard "$(edit_payload Write src/x.rs)"
 [[ -z "$out" ]] || fail
-status=0
-run_guard 'not json' || status=$?
-[[ -z "$out" && "$status" == 0 && "$err" == *squad-devkit-manager-guard* ]] || fail
+# Legacy Bash remains fail-open; this new security default belongs to Rust.
+PHASE4_GUARD_PARITY=0 SQUAD_DEVKIT_GUARD_FAIL_OPEN=0 expect_deny 'not json'
+[[ "$err" == *squad-devkit-manager-guard* ]] || fail
+SQUAD_DEVKIT_GUARD_FAIL_OPEN=1 expect_allow 'not json'
+[[ "$err" == *squad-devkit-manager-guard* ]] || fail
 expect_allow '{"tool_name":"Read","tool_input":{"file_path":"src/x.rs"}}'
 
 # Manager settings: a fake claude copies the --settings file it is given.

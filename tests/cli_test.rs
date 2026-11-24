@@ -1111,6 +1111,24 @@ fn test_receive_wait_timeout_suggests_checking_again() {
 }
 
 #[test]
+fn test_receive_wait_lock_is_in_squad_directory() {
+    let tmp = TempDir::new().unwrap();
+    squad(tmp.path()).arg("init").assert().success();
+    squad(tmp.path()).args(["join", "worker"]).assert().success();
+
+    squad(tmp.path())
+        .args(["receive", "worker", "--wait", "--timeout", "0"])
+        .assert()
+        .success();
+
+    assert!(tmp
+        .path()
+        .join(".squad/locks/worker.receive.lock")
+        .exists());
+    assert!(!tmp.path().join("locks").exists());
+}
+
+#[test]
 fn test_receive_wait_message_includes_continue_listening_prompt() {
     let tmp = TempDir::new().unwrap();
     squad(tmp.path()).arg("init").assert().success();

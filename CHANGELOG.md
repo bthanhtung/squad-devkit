@@ -6,6 +6,10 @@ releases.
 
 ## [Unreleased]
 
+### Fixed
+- `squad receive --wait` writes its lock under `.squad/locks/` instead of a `locks/` directory in the project root.
+- The cleaner prunes orphan worker files (for example, `<id>.out`) older than the retention period; `mods/squad-deck/tsconfig.json` is gitignored.
+
 ### Removed
 - Removed agy as a worker engine: Antigravity blocks CLI calls from other AI agents. agy remains available as a manager. A saved `workers=` or `SQUAD_DEVKIT_WORKERS` that names agy is ignored with a one-line note; `squad-worker --engine agy` and `squad-devkit --workers agy` exit 2. Sub-managers run on `claude` or `codex`, and their children default to `opencode`.
 

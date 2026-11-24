@@ -35,6 +35,22 @@ PY
 source "$learn"
 learn_init "$PWD"
 [[ "$learn_store" != "$PWD"/* && "$learn_store" == "$(cd "$SQUAD_DEVKIT_CONFIG" && pwd -P)"/* ]]
+mkdir -p .squad/rules
+mkdir -p scripts; touch scripts/example.sh
+source_hash="$( { printf 'scripts/example.sh\0'; cat scripts/example.sh; printf '\0'; } | shasum -a 256 | awk '{print $1}')"
+printf '%s\n' '---' 'paths: scripts/*' "sources_sha256: $source_hash" '---' 'Use the repository scripts.' >.squad/rules/scripts.md
+printf '%s\n' '---' 'paths: missing/*' '---' 'This rule has drifted.' >.squad/rules/stale.md
+if "$learn" verify >/dev/null 2>&1; then echo 'stale repo rule was accepted' >&2; exit 1; fi
+grep -q 'stale.md' <<<"$("$learn" verify --json)"
+rm .squad/rules/stale.md
+"$learn" verify >/dev/null
+printf 'changed\n' >scripts/example.sh
+if "$learn" verify >"$tmp/stale-source" 2>&1; then echo 'changed rule source was accepted' >&2; exit 1; fi
+grep -q 'stale (source changed)' "$tmp/stale-source"
+printf 'fixture\n' >scripts/example.sh
+learn_inject 'scripts/example.sh'
+[[ "$learn_ids" == rule:scripts && "$learn_notes" == *'> Use the repository scripts.'* ]]
+rm .squad/rules/scripts.md
 id="$(printf '%s\n' '```' '$(touch SHOULD-NOT-EXIST)' '---' 'paths: $(touch ALSO-NOT)' | "$learn" propose --title '$(false)' --paths 'scripts/*')"
 pty_run "$learn" approve "$id" >"$tmp/approval"
 [[ -f "$learn_store/INDEX" ]]
@@ -46,7 +62,7 @@ if (printf 'forbidden' >"$learn_store/worker-write") 2>/dev/null; then
 fi
 chmod 755 "$learn_store"
 learn_inject 'scripts/example.sh'
-[[ "$learn_ids" == "$id" && "$learn_notes" == *'> $(touch SHOULD-NOT-EXIST)'* ]] || exit 1
+[[ ",$learn_ids," == *",$id,"* && "$learn_notes" == *'> $(touch SHOULD-NOT-EXIST)'* ]] || exit 1
 [[ ! -e SHOULD-NOT-EXIST && ! -e ALSO-NOT ]]
 [[ "$(printf '%s' "$learn_notes" | wc -c)" -le 2048 ]]
 if printf '%s' "$learn_notes" | grep -v '^> '; then echo 'unquoted note line' >&2; exit 1; fi
@@ -60,7 +76,7 @@ learn_sandbox_check workspace-write 0
 chmod 644 "$learn_store/$id.md"
 printf 'tampered\n' >>"$learn_store/$id.md"
 learn_inject 'scripts/example.sh'
-[[ -z "$learn_ids" && "$learn_warnings" == *'hash mismatch'* ]]
+[[ "$learn_ids" == rule:scripts && "$learn_warnings" == *'hash mismatch'* ]]
 pty_run "$learn" disable >"$tmp/disable"
 [[ ! -e "$learn_store/INDEX" ]]
 learn_sandbox_check none 0
@@ -68,7 +84,7 @@ archive="$(find "$learn_base" -name 'disabled-*' -type d | head -n 1)"
 [[ ! -e "$archive/INDEX" ]]
 pty_run "$learn" enable >"$tmp/enable"
 grep -q tampered "$tmp/enable"
-learn_inject 'scripts/example.sh'; [[ "$learn_ids" == "$id" ]] || exit 1
+learn_inject 'scripts/example.sh'; [[ ",$learn_ids," == *",$id,"* ]] || exit 1
 # Shared lock refuses both launch decisions and enable; foreign locks remain intact.
 learn_lock_acquire
 if pty_run "$learn" enable >"$tmp/locked"; then echo 'lock bypassed' >&2; exit 1; fi
@@ -136,7 +152,7 @@ squad init >/dev/null
 cp "$repo/templates/devkit/dev.md" .squad/roles/dev.md
 squad join manager --role manager-devkit --client claude --protocol-version 2 >/dev/null
 worker="$repo/scripts/squad-worker.sh"
-if "$worker" unsafe --engine claude --model test-model --model-tier strong --no-worktree --no-plan 'learn fixture' --brief test >"$tmp/out" 2>"$tmp/err"; then
+if "$worker" unsafe --engine opencode --model test-model --model-tier strong --no-worktree --no-plan 'learn fixture' --brief test >"$tmp/out" 2>"$tmp/err"; then
   echo 'launcher accepted unsafe worker' >&2; exit 1
 fi
 grep -q 'squad-learn disable' "$tmp/err"

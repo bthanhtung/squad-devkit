@@ -25,9 +25,31 @@ fn main() -> Result<()> {
     let command = args.next().unwrap_or_else(|| "help".to_string());
 
     match command.as_str() {
+        "sandbox" => {
+            let code = squad::sandbox::command(&args.collect::<Vec<_>>())?;
+            std::process::exit(code);
+        }
+        "trace" => cmd_trace(args.collect()),
+        "eval" => cmd_eval(args.collect()),
+        "run-plan" => {
+            let code = squad::dag::command(&args.collect::<Vec<_>>())?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        "artifact" => squad::dag::artifact_command(&args.collect::<Vec<_>>()),
         "jq" => jq::command(args.collect()),
+        "merge" => {
+            let code = squad::merge::command(&args.collect::<Vec<_>>())?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         "run" => squad::runs::command(&args.collect::<Vec<_>>(), find_workspace),
         "guard" => squad::guard::command(&args.collect::<Vec<_>>()),
+        "redact" => squad::redact::command(&args.collect::<Vec<_>>()),
         "plan" => {
             if !squad::plan::command(&args.collect::<Vec<_>>())? {
                 std::process::exit(1);
@@ -35,6 +57,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         "init" => cmd_init(args.collect()),
+        "harness" => cmd_harness(args.collect()),
         "config" => cmd_config(args.collect()),
         "join" => {
             let id = args.next().unwrap_or_default();
@@ -598,18 +621,69 @@ fn print_json_messages(
 
 // --- Commands ---
 
+fn cmd_harness(args: Vec<String>) -> Result<()> {
+    use squad::harness_config::{parse_harness_toml, render_harness_toml};
+    const USAGE: &str = "Usage: squad harness validate [--file PATH] | show [--json] [--file PATH]";
+    let action = args.first().map(String::as_str).unwrap_or("");
+    if !matches!(action, "validate" | "show") {
+        bail!("{USAGE}");
+    }
+    let mut json = false;
+    let mut file = None;
+    let mut options = args.iter().skip(1);
+    while let Some(option) = options.next() {
+        match option.as_str() {
+            "--json" if action == "show" && !json => json = true,
+            "--file" if file.is_none() => {
+                file = Some(PathBuf::from(options.next().context(USAGE)?))
+            }
+            _ => bail!("{USAGE}"),
+        }
+    }
+    let path = match file {
+        Some(path) => path,
+        None => find_workspace()?.join(".squad/harness.toml"),
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let config =
+        parse_harness_toml(&text).with_context(|| format!("invalid {}", path.display()))?;
+    if action == "validate" {
+        println!("Valid harness manifest: {}", path.display());
+    } else if json {
+        println!("{}", serde_json::to_string_pretty(&config)?);
+    } else {
+        print!("{}", render_harness_toml(&config));
+    }
+    Ok(())
+}
+
 fn cmd_init(args: Vec<String>) -> Result<()> {
     let mut refresh_roles = false;
+    let mut harness = false;
+    let mut force = false;
     for arg in args {
         match arg.as_str() {
             "--refresh-roles" => refresh_roles = true,
-            _ => bail!("Usage: squad init [--refresh-roles]"),
+            "--harness" => harness = true,
+            "--force" => force = true,
+            _ => bail!("Usage: squad init [--refresh-roles] [--harness [--force]]"),
         }
     }
 
+    if force && !harness {
+        bail!("--force requires --harness");
+    }
     let workspace = std::env::current_dir()?;
     squad::init::init_workspace_with_options(&workspace, refresh_roles)?;
     println!("Initialized squad workspace.");
+    if harness {
+        if squad::init::init_harness(&workspace, force)? {
+            println!("Created .squad/harness.toml");
+        } else {
+            println!("Preserved existing .squad/harness.toml; use --harness --force to overwrite.");
+        }
+    }
 
     // Auto-update outdated slash commands
     let updated = squad::setup::check_and_update_commands();
@@ -662,7 +736,21 @@ fn offer_worker_setup(workspace: &Path) {
 }
 
 fn cmd_config(args: Vec<String>) -> Result<()> {
-    const USAGE: &str = "Usage: squad config workers [--global] [--timeout <secs>]";
+    const USAGE: &str = "Usage: squad config workers [--global] [--timeout <secs>] | list [--json] [--global] | set --engine ENGINE --tier TIER --model ID [--name LABEL] [--effort LEVEL] [--source SOURCE] [--global] --yes | apply --from-json FILE|- [--global] --yes";
+    if args.first().map(String::as_str) == Some("workers")
+        && args
+            .get(1)
+            .is_some_and(|arg| matches!(arg.as_str(), "list" | "set" | "apply"))
+    {
+        let workspace = find_workspace().or_else(|_| std::env::current_dir())?;
+        return squad::worker_config::run_command(
+            &workspace,
+            &args[1],
+            &args[2..],
+            &mut std::io::stdin().lock(),
+            &mut std::io::stdout(),
+        );
+    }
     let mut args = args.into_iter();
     if args.next().as_deref() != Some("workers") {
         bail!(USAGE);
@@ -896,7 +984,7 @@ fn cmd_receive(agent: &str, wait: bool, timeout_secs: u64, json: bool) -> Result
     if wait {
         // Acquire exclusive file lock to prevent multiple concurrent receive --wait
         // processes from competing for the same agent's messages.
-        let lock_dir = workspace.join("locks");
+        let lock_dir = workspace.join(".squad").join("locks");
         std::fs::create_dir_all(&lock_dir)?;
         let lock_path = lock_dir.join(format!("{}.receive.lock", agent));
         let lock_file = std::fs::File::create(&lock_path)
@@ -1372,21 +1460,139 @@ fn print_usage() {
     print!("{HELP_TEXT}");
 }
 
+fn cmd_trace(args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("normalize") {
+        bail!("Usage: squad trace normalize --engine <E> --log <FILE> [--out <FILE]");
+    }
+    let (mut engine, mut log, mut out) = (None, None, None);
+    let mut i = 1;
+    while i < args.len() {
+        let slot = match args[i].as_str() {
+            "--engine" => &mut engine,
+            "--log" => &mut log,
+            "--out" => &mut out,
+            flag => bail!("unknown trace option: {flag}"),
+        };
+        *slot = Some(args.get(i + 1).context("option requires a value")?.clone());
+        i += 2;
+    }
+    let engine = engine.context("--engine is required")?;
+    if !["claude", "codex", "opencode", "ccr"].contains(&engine.as_str()) {
+        bail!("unsupported engine: {engine}");
+    }
+    let input = std::fs::read_to_string(log.context("--log is required")?)?;
+    let lines = squad::trace::normalize(&engine, &input)
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .join("\n")
+        + "\n";
+    if let Some(path) = out {
+        std::fs::write(path, lines)?;
+    } else {
+        print!("{lines}");
+    }
+    Ok(())
+}
+
+fn cmd_eval(args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("fixture") {
+        bail!("Usage: squad eval fixture --suite <FILE> [--trials N] [--baseline <FILE>] [--out <FILE>] [--json]");
+    }
+    let (mut suite, mut trials, mut baseline, mut out, mut json): (
+        Option<std::path::PathBuf>,
+        Option<usize>,
+        Option<std::path::PathBuf>,
+        Option<std::path::PathBuf>,
+        bool,
+    ) = (None, None, None, None, false);
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--suite" => {
+                suite = Some(std::path::PathBuf::from(
+                    args.get(i + 1).context("--suite requires a value")?,
+                ));
+                i += 2;
+            }
+            "--trials" => {
+                trials = Some(
+                    args.get(i + 1)
+                        .context("--trials requires a value")?
+                        .parse()?,
+                );
+                i += 2;
+            }
+            "--baseline" => {
+                baseline = Some(
+                    args.get(i + 1)
+                        .context("--baseline requires a value")?
+                        .into(),
+                );
+                i += 2;
+            }
+            "--out" => {
+                out = Some(args.get(i + 1).context("--out requires a value")?.into());
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            flag => bail!("unknown eval option: {flag}"),
+        }
+    }
+    let suite = suite.context("--suite is required")?;
+    let report = squad::eval::run_fixture_suite(&suite, trials)?;
+    if let Some(path) = baseline {
+        let old: squad::eval::Report = serde_json::from_slice(&std::fs::read(path)?)?;
+        squad::eval::check_baseline(&report, &old)?;
+    }
+    let rendered = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = out {
+        std::fs::write(path, &rendered)?;
+    }
+    if json {
+        println!("{rendered}");
+    } else {
+        for t in report.tasks {
+            println!(
+                "{} pass@1={:.3} first_pass_rate={:.3} avg_duration_ms={}",
+                t.id, t.pass_at_k[0], t.first_pass_rate, t.avg_duration_ms
+            );
+        }
+    }
+    Ok(())
+}
+
 const HELP_TEXT: &str = r#"squad — Multi-AI-agent terminal collaboration
 
 COMMANDS
+  squad run-plan --plan <file> --manager <id> [--jobs N] [--dep-mode merged|artifact-ready]
+  squad artifact publish|fetch --plan <file>
   squad plan validate|context|check-patch <file>
                                              Validate plans, extract shared context or flag sensitive patches
   squad plan approves <dir> <action> <repo> [<repo_path>]
                                              List approving plans, newest first
+  squad sandbox exec --worktree <dir> [--profile strict|workspace|off] -- <cmd>
   squad guard pre-tool-use <project_dir>    Evaluate manager hook JSON from stdin
+  squad run write --workspace <dir> --status-file <file>
+                                             Save stdin to SQLite and atomically project status
   squad run record --status-file <file> [--workspace <dir>]
                                              Upsert a worker status into SQLite
   squad run list --json [--workspace <dir>] [--directory <dir>] [--metrics]
                                              List indexed runs; optionally import changed legacy status files
-  squad init [--refresh-roles]              Initialize workspace (`--refresh-roles` rewrites builtin roles only)
+  squad init [--refresh-roles] [--harness [--force]]  Initialize workspace and optional harness manifest
+  squad harness validate [--file PATH]     Validate harness manifest
+  squad harness show [--json] [--file PATH] Show harness configuration
   squad config workers [--global] [--timeout <secs>]
                                              Choose worker models (local .squad or ~/.squad with --global)
+  squad config workers list [--json] [--global]
+                                             Inspect saved tiers, staleness and local CLI discovery
+  squad config workers set --engine ENGINE --tier TIER --model ID [--name LABEL] [--effort LEVEL] [--source SOURCE] [--global] --yes
+                                             Save one tier after explicit human confirmation
+  squad config workers apply --from-json FILE|- [--global] --yes
+                                             Merge validated JSON tiers after explicit human confirmation
   squad join <id> [--role <role>] [--client <claude|codex|gemini|opencode|grok|agy|ccr>] [--protocol-version <n>]
                                              Join as agent (role defaults to id; omitted metadata stays NULL)
   squad leave <id>                           Archive agent

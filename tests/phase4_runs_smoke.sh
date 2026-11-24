@@ -50,8 +50,10 @@ chmod +x "$tmp/bin/squad"
 # Reconciliation must update both persistent representations.
 source "$root/scripts/lib/squad-plan.sh"
 sed -n '/^status_get() {/,/^# Status files of runs/{ /^# Status files of runs/d; p; }' "$root/scripts/squad-worker.sh" >"$tmp/helpers.sh"
+action=run
+run_plan_command=0
 source "$tmp/helpers.sh"
-printf 'worker=lost-worker\nengine=codex\nstate=running\npid=999999999\n' >"$tmp/.squad/workers/lost.status"
+printf 'worker=lost-worker\nengine=codex\nstate=running\npid=999999999\nhost=%s\n' "$worker_host" >"$tmp/.squad/workers/lost.status"
 squad_record_status "$tmp/.squad/workers/lost.status"
 reconcile_status "$tmp/.squad/workers/lost.status"
 squad run list --json --workspace "$tmp" | jq -e 'any(.run_name == "lost" and .state == "lost")' >/dev/null
@@ -78,4 +80,13 @@ for spec in codex:1:40:2 claude:1:13:3 agy:2:38:10 unknown:3:78:12; do
   squad run record --workspace "$tmp/metrics" --status-file "$tmp/metrics/.squad/workers/run.status"
   squad run list --json --workspace "$tmp/metrics" --metrics | jq -e --argjson calls "$calls" --argjson input "$input" --argjson output "$output" '.[0].metrics | .calls == $calls and .tokens_in == $input and .tokens_out == $output' >/dev/null
 done
+# The v2 writer preserves ordered recovery fields and ignores stale projections.
+mkdir -p "$tmp/v2/.squad/workers"
+v2_status="$tmp/v2/.squad/workers/run.status"
+printf 'worker=v2\nengine=codex\nstate=completed\ngate_command_hex=61\ngate_command_hex=62\nexpect_path=a\nexpect_path=b\n' | squad run write --workspace "$tmp/v2" --status-file "$v2_status"
+[[ "$(grep -c '^gate_command_hex=' "$v2_status")" == 2 ]]
+[[ "$(grep -c '^expect_path=' "$v2_status")" == 2 ]]
+printf 'worker=stale\nengine=codex\nstate=running\n' >"$v2_status"
+squad run list --json --workspace "$tmp/v2" --directory "$tmp/v2/.squad/workers" | jq -e '.[0] | .state == "completed" and ([.entries[] | select(.[0] == "gate_command_hex")] | length) == 2 and ([.entries[] | select(.[0] == "expect_path")] | length) == 2' >/dev/null
+[[ -z "$(find "$tmp/v2/.squad/workers" -name '*.tmp' -print)" ]]
 printf 'phase4_runs_smoke: ok\n'

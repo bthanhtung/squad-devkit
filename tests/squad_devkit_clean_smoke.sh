@@ -32,8 +32,16 @@ make_run recent-done completed $(( now - 3600 ))
 make_run old-running running $(( now - 30 * 86400 )) "$$"
 make_run old-lost running $(( now - 30 * 86400 )) 999999
 make_run old-unmerged completed $(( now - 30 * 86400 ))
+make_run fix-1-20261115-110134 completed $(( now - 30 * 86400 ))
+printf 'stray\n' >"$workers/stray.out"
+printf 'fresh\n' >"$workers/fresh.out"
+printf 'live redirect\n' >"$workers/live-1.out"
+make_run live-1-20260101-000000 running $(( now - 30 * 86400 )) "$$"
+printf 'router\n' >"$workers/ccr-server.log"
+touch -t 202501010000 "$workers/stray.out" "$workers/live-1.out" "$workers/ccr-server.log"
 mkdir -p "$temp_directory/worktree"
 printf 'worktree=%s\n' "$temp_directory/worktree" >>"$workers/old-unmerged.status"
+printf 'worktree=%s\n' "$temp_directory/worktree" >>"$workers/fix-1-20261115-110134.status"
 printf 'keep\n' >"$workspace/.squad/plans/plan.md"
 printf 'keep\n' >"$workspace/reports/report.html"
 
@@ -41,11 +49,15 @@ printf 'keep\n' >"$workspace/reports/report.html"
 [[ ! -e "$workers/old-done.status" && ! -e "$workers/old-done.log" && ! -e "$workers/old-done.md" ]] || fail
 [[ ! -e "$workers/old-done.verify.log" && ! -e "$workers/old-done.live" ]] || fail
 [[ ! -e "$workers/old-lost.status" ]] || fail
+[[ ! -e "$workers/stray.out" ]] || fail
+[[ -e "$workers/fresh.out" && -e "$workers/live-1.out" && -e "$workers/ccr-server.log" ]] || fail
 [[ -e "$workers/recent-done.status" && -e "$workers/recent-done.md" ]] || fail
 [[ -e "$workers/old-running.status" ]] || fail
 [[ -e "$workers/old-unmerged.status" ]] || fail
+[[ -e "$workers/fix-1-20261115-110134.status" && -e "$workers/fix-1-20261115-110134.log" && -e "$workers/fix-1-20261115-110134.md" ]] || fail
 [[ -e "$workspace/.squad/plans/plan.md" && -e "$workspace/reports/report.html" ]] || fail
-grep -q 'removed 2 finished worker run' "$temp_directory/log"
+# Two runs and the old stray.out file were actually removed.
+grep -q 'removed 3 finished worker run' "$temp_directory/log"
 
 "$clean" "$workspace" --quiet 2>"$temp_directory/log"
 [[ ! -s "$temp_directory/log" ]] || fail
@@ -61,10 +73,11 @@ SQUAD_DEVKIT_MAX_MB=1 "$clean" "$workspace" --quiet 2>/dev/null
 [[ -e "$workers/old-running.status" ]] || fail
 
 "$clean" "$workspace" --all 2>"$temp_directory/log"
-[[ -z "$(ls "$workers"/*.status 2>/dev/null | grep -v -e old-running -e old-unmerged || true)" ]] || fail
+[[ -z "$(ls "$workers"/*.status 2>/dev/null | grep -v -e old-running -e old-unmerged -e fix-1-20261115-110134 -e live-1-20260101-000000 || true)" ]] || fail
 rmdir "$temp_directory/worktree"
 "$clean" "$workspace" --all 2>/dev/null
 [[ ! -e "$workers/old-unmerged.status" ]] || fail
+[[ ! -e "$workers/fix-1-20261115-110134.status" ]] || fail
 [[ -e "$workers/old-running.status" ]] || fail
 grep -q 'removed' "$temp_directory/log"
 

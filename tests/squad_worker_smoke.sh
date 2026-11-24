@@ -762,4 +762,12 @@ for engine in grok opencode ccr; do
   if "$worker" yolo-unsupported --engine "$engine" --yolo --brief test >/dev/null 2>&1; then fail; fi
 done
 
+# Verify default title extraction strips Engine/Task/risk boilerplate.
+"$worker" title-extract --engine codex --no-worktree --brief 'Engine codex (CLI default model). Task: root-cause 3 flaky e2e tests, risk moderate, complexity moderate.' >/dev/null
+grep -qx 'title=root-cause 3 flaky e2e tests' "$(ls -t .squad/workers/title-extract-*.status | head -n 1)" || fail "default title extraction"
+
+# Verify `auto` derives a descriptive worker ID from the title/brief.
+"$worker" auto --engine codex --no-worktree --title 'Fix flaky e2e login' --brief 'Goal: Fix flaky e2e login' >/dev/null
+ls .squad/workers/fix-flaky-e2e-login-*.status >/dev/null 2>&1 || fail "auto worker id"
+
 echo 'PASS: squad-worker engines, worktrees, panes in every terminal, flicker-free monitor, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'
