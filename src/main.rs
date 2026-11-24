@@ -25,6 +25,8 @@ fn main() -> Result<()> {
     let command = args.next().unwrap_or_else(|| "help".to_string());
 
     match command.as_str() {
+        "trace" => cmd_trace(args.collect()),
+        "eval" => cmd_eval(args.collect()),
         "jq" => jq::command(args.collect()),
         "run" => squad::runs::command(&args.collect::<Vec<_>>(), find_workspace),
         "guard" => squad::guard::command(&args.collect::<Vec<_>>()),
@@ -1368,6 +1370,111 @@ fn cmd_setup(target: Option<&str>) -> Result<()> {
     }
 }
 
+fn cmd_trace(args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("normalize") {
+        bail!("Usage: squad trace normalize --engine <E> --log <FILE> [--out <FILE]");
+    }
+    let (mut engine, mut log, mut out) = (None, None, None);
+    let mut i = 1;
+    while i < args.len() {
+        let slot = match args[i].as_str() {
+            "--engine" => &mut engine,
+            "--log" => &mut log,
+            "--out" => &mut out,
+            flag => bail!("unknown trace option: {flag}"),
+        };
+        *slot = Some(args.get(i + 1).context("option requires a value")?.clone());
+        i += 2;
+    }
+    let engine = engine.context("--engine is required")?;
+    if !["claude", "codex", "opencode", "ccr"].contains(&engine.as_str()) {
+        bail!("unsupported engine: {engine}");
+    }
+    let input = std::fs::read_to_string(log.context("--log is required")?)?;
+    let lines = squad::trace::normalize(&engine, &input)
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .join("\n")
+        + "\n";
+    if let Some(path) = out {
+        std::fs::write(path, lines)?;
+    } else {
+        print!("{lines}");
+    }
+    Ok(())
+}
+
+fn cmd_eval(args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) != Some("fixture") {
+        bail!("Usage: squad eval fixture --suite <FILE> [--trials N] [--baseline <FILE>] [--out <FILE>] [--json]");
+    }
+    let (mut suite, mut trials, mut baseline, mut out, mut json): (
+        Option<std::path::PathBuf>,
+        Option<usize>,
+        Option<std::path::PathBuf>,
+        Option<std::path::PathBuf>,
+        bool,
+    ) = (None, None, None, None, false);
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--suite" => {
+                suite = Some(std::path::PathBuf::from(
+                    args.get(i + 1).context("--suite requires a value")?,
+                ));
+                i += 2;
+            }
+            "--trials" => {
+                trials = Some(
+                    args.get(i + 1)
+                        .context("--trials requires a value")?
+                        .parse()?,
+                );
+                i += 2;
+            }
+            "--baseline" => {
+                baseline = Some(
+                    args.get(i + 1)
+                        .context("--baseline requires a value")?
+                        .into(),
+                );
+                i += 2;
+            }
+            "--out" => {
+                out = Some(args.get(i + 1).context("--out requires a value")?.into());
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            flag => bail!("unknown eval option: {flag}"),
+        }
+    }
+    let suite = suite.context("--suite is required")?;
+    let report = squad::eval::run_fixture_suite(&suite, trials)?;
+    if let Some(path) = baseline {
+        let old: squad::eval::Report = serde_json::from_slice(&std::fs::read(path)?)?;
+        squad::eval::check_baseline(&report, &old)?;
+    }
+    let rendered = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = out {
+        std::fs::write(path, &rendered)?;
+    }
+    if json {
+        println!("{rendered}");
+    } else {
+        for t in report.tasks {
+            println!(
+                "{} pass@1={:.3} first_pass_rate={:.3} avg_duration_ms={}",
+                t.id, t.pass_at_k[0], t.first_pass_rate, t.avg_duration_ms
+            );
+        }
+    }
+    Ok(())
+}
+
 fn print_usage() {
     print!("{HELP_TEXT}");
 }
@@ -1375,6 +1482,10 @@ fn print_usage() {
 const HELP_TEXT: &str = r#"squad — Multi-AI-agent terminal collaboration
 
 COMMANDS
+  squad trace normalize --engine <E> --log <FILE> [--out <FILE>]
+                                             Normalize an engine trace
+  squad eval fixture --suite <FILE> [--trials N] [--baseline <FILE>] [--out <FILE>] [--json]
+                                             Run a fixture evaluation suite
   squad plan validate|context|check-patch <file>
                                              Validate plans, extract shared context or flag sensitive patches
   squad plan approves <dir> <action> <repo> [<repo_path>]
