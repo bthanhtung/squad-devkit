@@ -1380,6 +1380,8 @@ COMMANDS
   squad plan approves <dir> <action> <repo> [<repo_path>]
                                              List approving plans, newest first
   squad guard pre-tool-use <project_dir>    Evaluate manager hook JSON from stdin
+  squad run write --workspace <dir> --status-file <file>
+                                             Save stdin to SQLite and atomically project status
   squad run record --status-file <file> [--workspace <dir>]
                                              Upsert a worker status into SQLite
   squad run list --json [--workspace <dir>] [--directory <dir>] [--metrics]
