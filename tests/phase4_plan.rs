@@ -44,3 +44,98 @@ fn quick_plan_perspectives() {
         }
     }
 }
+
+#[test]
+fn task_commands_and_approval_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("p.md");
+    fs::write(&file, "## Tasks\n- one (codex high, developer): Ship\n  details\n### empty\n- dup: first\n- dup: second\n## Acceptance\nWorks\n").unwrap();
+    for (op, expected) in [
+        ("task", "Ship\n  details\n"),
+        (
+            "task-entry",
+            "- one (codex high, developer): Ship\n  details\n",
+        ),
+    ] {
+        Command::cargo_bin("squad")
+            .unwrap()
+            .args(["plan", op])
+            .arg(&file)
+            .arg("one")
+            .assert()
+            .success()
+            .stdout(expected);
+        for id in ["missing", "dup"] {
+            Command::cargo_bin("squad")
+                .unwrap()
+                .args(["plan", op])
+                .arg(&file)
+                .arg(id)
+                .assert()
+                .code(1)
+                .stdout("");
+        }
+    }
+    Command::cargo_bin("squad")
+        .unwrap()
+        .args(["plan", "task"])
+        .arg(&file)
+        .arg("empty")
+        .assert()
+        .code(1);
+    for line in [
+        "- push: *",
+        "- review-override: ",
+        "- review-override: ok\n- push: *",
+        "- plan-review-override: bad\r",
+    ] {
+        let before = fs::read(&file).unwrap();
+        Command::cargo_bin("squad")
+            .unwrap()
+            .args(["plan", "append-approval"])
+            .arg(&file)
+            .arg(line)
+            .assert()
+            .code(2);
+        assert_eq!(fs::read(&file).unwrap(), before);
+    }
+    for line in [
+        "- review-override: accepted",
+        "- plan-review-override: accepted",
+    ] {
+        Command::cargo_bin("squad")
+            .unwrap()
+            .args(["plan", "append-approval"])
+            .arg(&file)
+            .arg(line)
+            .assert()
+            .success();
+        assert!(fs::read_to_string(&file).unwrap().contains(line));
+    }
+}
+
+#[test]
+fn context_truncates_at_utf8_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("p.md");
+    fs::write(&file, "").unwrap();
+    let text = "Việt🙂\n";
+    fs::write(dir.path().join("p.context.md"), text).unwrap();
+    for max in 0..=text.len() + 1 {
+        let mut end = max.min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Command::cargo_bin("squad")
+            .unwrap()
+            .args(["plan", "context"])
+            .arg(&file)
+            .env("SQUAD_WORKER_MAX_CONTEXT_BYTES", max.to_string())
+            .assert()
+            .success()
+            .stdout(format!(
+                "### Shared Context (p.context.md)\n{}\n\n",
+                &text[..end]
+            ));
+    }
+}
