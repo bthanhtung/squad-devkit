@@ -29,6 +29,7 @@ const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_NAME_CHARS: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Selection {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,6 +39,7 @@ pub struct Selection {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast: Option<Selection>,
@@ -76,6 +78,7 @@ impl EngineConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     pub version: u32,
     #[serde(default)]
@@ -153,7 +156,7 @@ pub fn parse_config(text: &str) -> Result<WorkerConfig> {
         if entry
             .source
             .as_ref()
-            .is_some_and(|s| s.chars().any(char::is_control) || s.len() > 1024)
+            .is_some_and(|s| s.chars().any(char::is_control) || s.chars().count() > 1024)
             || entry
                 .fetched_at
                 .as_deref()
@@ -220,6 +223,7 @@ fn write_atomic(path: &Path, content: &str) -> Result<()> {
 pub fn save_config(workspace: &Path, config: &WorkerConfig) -> Result<()> {
     let text = serde_json::to_string_pretty(config)? + "\n";
     parse_config(&text)?;
+    std::fs::create_dir_all(workspace.join(".squad"))?;
     write_atomic(&config_path(workspace), &text)
 }
 
@@ -268,6 +272,177 @@ fn store_cache(workspace: &Path, lists: &BTreeMap<String, ModelList>) -> Result<
         engines,
     })? + "\n";
     write_atomic(&workspace.join(".squad").join(CACHE_FILE), &text)
+}
+
+/// Non-interactive commands share the launcher's validated configuration schema.
+pub fn run_command(
+    workspace: &Path,
+    command: &str,
+    args: &[String],
+    input: &mut dyn Read,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let mut options = BTreeMap::new();
+    let mut yes = false;
+    let mut global = false;
+    let mut json = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--yes" if command != "list" => yes = true,
+            "--json" if command == "list" => json = true,
+            "--global" => global = true,
+            "--engine" | "--tier" | "--model" | "--name" | "--effort" | "--source"
+                if command == "set" =>
+            {
+                options.insert(
+                    arg.as_str(),
+                    args.next().context("missing option value")?.as_str(),
+                );
+            }
+            "--from-json" if command == "apply" => {
+                options.insert(
+                    arg.as_str(),
+                    args.next().context("missing --from-json value")?.as_str(),
+                );
+            }
+            _ => bail!("unexpected option {arg} for config workers {command}"),
+        }
+    }
+    if command != "list" && !yes {
+        bail!("explicit human confirmation required; pass --yes only after human confirmation");
+    }
+    let global_home = if global {
+        let home = std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .context("--global requires a nonempty HOME directory")?;
+        let home = PathBuf::from(home);
+        if !home.is_absolute() || !home.is_dir() {
+            bail!("--global requires an existing absolute HOME directory");
+        }
+        Some(home)
+    } else {
+        None
+    };
+    let workspace = global_home.as_deref().unwrap_or(workspace);
+    let mut config = load_config(workspace)?;
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    match command {
+        "list" => {
+            let (cache, _) = load_cache(workspace);
+            let mut engines = serde_json::Map::new();
+            for engine in CONFIG_ENGINES {
+                let saved = config.engines.get(engine);
+                let installed = crate::setup::is_installed(engine);
+                let models = fallback_list(engine, &cache).or_else(|| {
+                    if installed && DISCOVERY_ENGINES.contains(&engine) {
+                        discover(engine, Duration::from_secs(2)).ok()
+                    } else {
+                        None
+                    }
+                });
+                let stale = saved
+                    .and_then(|entry| entry.fetched_at.as_deref())
+                    .and_then(parse_time)
+                    .is_none_or(|time| {
+                        Utc::now().signed_duration_since(time)
+                            > chrono::Duration::days(STALE_AFTER_DAYS)
+                    });
+                engines.insert(
+                    engine.to_string(),
+                    serde_json::json!({
+                        "installed": installed, "saved": saved, "stale": stale, "discovery": models
+                    }),
+                );
+            }
+            if json {
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"version": 1, "engines": engines})
+                    )?
+                )?;
+            } else {
+                for (engine, entry) in engines {
+                    writeln!(
+                        out,
+                        "{engine}: installed={}, stale={}",
+                        entry["installed"], entry["stale"]
+                    )?;
+                    if !entry["discovery"].is_null() {
+                        writeln!(out, "  discovery: {}", entry["discovery"])?;
+                    }
+                }
+                print_review(out, &config)?;
+            }
+            return Ok(());
+        }
+        "set" => {
+            let required = |key| {
+                options
+                    .get(key)
+                    .copied()
+                    .with_context(|| format!("missing {key}"))
+            };
+            let engine = required("--engine")?;
+            let tier = required("--tier")?;
+            if !CONFIG_ENGINES.contains(&engine) {
+                bail!("unsupported engine {engine}");
+            }
+            if !TIERS.contains(&tier) {
+                bail!("invalid tier {tier}; use fast, balanced, or strong");
+            }
+            let entry = config.engines.entry(engine.to_string()).or_default();
+            *entry.tier_mut(tier) = Some(Selection {
+                model: required("--model")?.to_string(),
+                name: options.get("--name").map(|value| value.to_string()),
+                effort: options.get("--effort").map(|value| value.to_string()),
+            });
+            entry.source = Some(
+                options
+                    .get("--source")
+                    .copied()
+                    .unwrap_or("manual")
+                    .to_string(),
+            );
+            entry.fetched_at = Some(now);
+        }
+        "apply" => {
+            let path = options
+                .get("--from-json")
+                .context("missing --from-json <FILE|->")?;
+            let mut text = String::new();
+            if *path == "-" {
+                input.take(MAX_OUTPUT_BYTES + 1).read_to_string(&mut text)?;
+            } else {
+                std::fs::File::open(path)?
+                    .take(MAX_OUTPUT_BYTES + 1)
+                    .read_to_string(&mut text)?;
+            }
+            if text.len() as u64 > MAX_OUTPUT_BYTES {
+                bail!("worker model JSON is too large");
+            }
+            let patch = parse_config(&text)?;
+            for (engine, mut incoming) in patch.engines {
+                incoming.fetched_at.get_or_insert_with(|| now.clone());
+                let entry = config.engines.entry(engine).or_default();
+                for tier in TIERS {
+                    if let Some(selection) = incoming.tier(tier) {
+                        *entry.tier_mut(tier) = Some(selection.clone());
+                    }
+                }
+                if incoming.source.is_some() {
+                    entry.source = incoming.source;
+                }
+                entry.fetched_at = incoming.fetched_at;
+            }
+        }
+        _ => bail!("unknown config workers command {command}"),
+    }
+    save_config(workspace, &config)?;
+    writeln!(out, "Saved {}", config_path(workspace).display())?;
+    Ok(())
 }
 
 // --- Discovery ---

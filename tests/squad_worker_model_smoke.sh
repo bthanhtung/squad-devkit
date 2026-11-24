@@ -208,3 +208,30 @@ if squad_worker_next_tier 2>/dev/null; then exit 1; fi
 model_tier=strong
 if squad_worker_next_tier; then exit 1; fi
 echo 'PASS: next tier mapping and terminal tier'
+
+# Manager CLI writes the same schema consumed by the launcher.
+squad_cli="${SQUAD_BIN:-$root/target/debug/squad}"
+if [[ ! -x "$squad_cli" ]]; then
+  echo "Build squad first (cargo build) or set SQUAD_BIN" >&2
+  exit 1
+fi
+cd "$tmp/project"
+rm -f .squad/worker-models.json
+if "$squad_cli" config workers set --engine codex --tier balanced --model cli-balanced 2>"$tmp/error"; then exit 1; fi
+grep -q 'human confirmation' "$tmp/error"
+[[ ! -e .squad/worker-models.json ]]
+"$squad_cli" config workers set --engine codex --tier balanced --model cli-balanced --effort high --yes
+"$squad_cli" config workers list --json >"$tmp/config-list"
+jq -e '.engines.codex.saved.balanced.model == "cli-balanced" and .engines.codex.stale == false' "$tmp/config-list" >/dev/null
+printf '%s\n' '{"version":1,"engines":{"codex":{"fast":{"model":"cli-fast"}}}}' |
+  "$squad_cli" config workers apply --from-json - --yes
+project_directory="$tmp/project"; engine=codex; model_tier=balanced; model=''
+squad_worker_select_model
+[[ "$model" == cli-balanced && "$model_effort" == high && "$model_source" == saved ]]
+model_tier=fast; model=''; squad_worker_select_model
+[[ "$model" == cli-fast ]]
+"$squad_cli" config workers set --engine codex --tier strong --model cli-global --global --yes
+cd "$tmp/outside"
+project_directory="$tmp/outside"; model_tier=strong; model=''; squad_worker_select_model
+[[ "$model" == cli-global ]]
+echo 'PASS: non-interactive manager config and launcher schema compatibility'
