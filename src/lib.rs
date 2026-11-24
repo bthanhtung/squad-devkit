@@ -1,4 +1,5 @@
 pub mod guard;
+pub mod harness_config;
 pub mod init;
 pub mod plan;
 pub mod roles;

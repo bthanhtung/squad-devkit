@@ -103,3 +103,26 @@ fn append_section_if_missing(
     writeln!(file, "\n{content}")?;
     Ok(())
 }
+
+/// Returns false when an existing manifest was preserved.
+pub fn init_harness(workspace: &Path, force: bool) -> Result<bool> {
+    use crate::harness_config::{detect_default_harness, render_harness_toml};
+    use std::io::Write;
+    let path = workspace.join(".squad/harness.toml");
+    std::fs::create_dir_all(workspace.join(".squad"))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(e) if !force && e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("failed to write {}", path.display())),
+    };
+    file.write_all(render_harness_toml(&detect_default_harness(workspace)).as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(true)
+}
