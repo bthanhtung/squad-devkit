@@ -35,6 +35,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         "init" => cmd_init(args.collect()),
+        "harness" => cmd_harness(args.collect()),
         "config" => cmd_config(args.collect()),
         "join" => {
             let id = args.next().unwrap_or_default();
@@ -598,18 +599,69 @@ fn print_json_messages(
 
 // --- Commands ---
 
+fn cmd_harness(args: Vec<String>) -> Result<()> {
+    use squad::harness_config::{parse_harness_toml, render_harness_toml};
+    const USAGE: &str = "Usage: squad harness validate [--file PATH] | show [--json] [--file PATH]";
+    let action = args.first().map(String::as_str).unwrap_or("");
+    if !matches!(action, "validate" | "show") {
+        bail!("{USAGE}");
+    }
+    let mut json = false;
+    let mut file = None;
+    let mut options = args.iter().skip(1);
+    while let Some(option) = options.next() {
+        match option.as_str() {
+            "--json" if action == "show" && !json => json = true,
+            "--file" if file.is_none() => {
+                file = Some(PathBuf::from(options.next().context(USAGE)?))
+            }
+            _ => bail!("{USAGE}"),
+        }
+    }
+    let path = match file {
+        Some(path) => path,
+        None => find_workspace()?.join(".squad/harness.toml"),
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let config =
+        parse_harness_toml(&text).with_context(|| format!("invalid {}", path.display()))?;
+    if action == "validate" {
+        println!("Valid harness manifest: {}", path.display());
+    } else if json {
+        println!("{}", serde_json::to_string_pretty(&config)?);
+    } else {
+        print!("{}", render_harness_toml(&config));
+    }
+    Ok(())
+}
+
 fn cmd_init(args: Vec<String>) -> Result<()> {
     let mut refresh_roles = false;
+    let mut harness = false;
+    let mut force = false;
     for arg in args {
         match arg.as_str() {
             "--refresh-roles" => refresh_roles = true,
-            _ => bail!("Usage: squad init [--refresh-roles]"),
+            "--harness" => harness = true,
+            "--force" => force = true,
+            _ => bail!("Usage: squad init [--refresh-roles] [--harness [--force]]"),
         }
     }
 
+    if force && !harness {
+        bail!("--force requires --harness");
+    }
     let workspace = std::env::current_dir()?;
     squad::init::init_workspace_with_options(&workspace, refresh_roles)?;
     println!("Initialized squad workspace.");
+    if harness {
+        if squad::init::init_harness(&workspace, force)? {
+            println!("Created .squad/harness.toml");
+        } else {
+            println!("Preserved existing .squad/harness.toml; use --harness --force to overwrite.");
+        }
+    }
 
     // Auto-update outdated slash commands
     let updated = squad::setup::check_and_update_commands();
@@ -1384,7 +1436,9 @@ COMMANDS
                                              Upsert a worker status into SQLite
   squad run list --json [--workspace <dir>] [--directory <dir>] [--metrics]
                                              List indexed runs; optionally import changed legacy status files
-  squad init [--refresh-roles]              Initialize workspace (`--refresh-roles` rewrites builtin roles only)
+  squad init [--refresh-roles] [--harness [--force]]  Initialize workspace and optional harness manifest
+  squad harness validate [--file PATH]     Validate harness manifest
+  squad harness show [--json] [--file PATH] Show harness configuration
   squad config workers [--global] [--timeout <secs>]
                                              Choose worker models (local .squad or ~/.squad with --global)
   squad join <id> [--role <role>] [--client <claude|codex|gemini|opencode|grok|agy|ccr>] [--protocol-version <n>]
