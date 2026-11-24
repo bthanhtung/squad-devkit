@@ -417,6 +417,29 @@ cap_report_lines() {
   '
 }
 
+# Prefer the authoritative writer; old binaries keep the atomic file fallback.
+status_write_supported() {
+  [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] && command -v squad >/dev/null 2>&1 &&
+    squad help 2>/dev/null | grep -q 'squad run write '
+}
+
+persist_status() {
+  local file="$1" directory workspace tmp
+  directory="$(cd "$(dirname "$file")" && pwd -P)" || return 1
+  workspace="$(dirname "$(dirname "$directory")")"
+  if status_write_supported; then
+    squad run write --workspace "$workspace" --status-file "$directory/$(basename "$file")"
+  else
+    tmp="$(mktemp "$file.XXXXXX.tmp")" || return 1
+    if cat >"$tmp" && mv "$tmp" "$file"; then
+      squad_record_status "$file"
+    else
+      rm -f "$tmp"
+      return 1
+    fi
+  fi
+}
+
 # A failed kill probe can mean permission denied; only a successful process
 # table snapshot proves absence. Start time prevents signalling a reused PID.
 reconcile_status() {
@@ -439,8 +462,8 @@ reconcile_status() {
   awk '!/^(state|reason|finished|exit)=/' "$file" >"$tmp"
   printf 'state=lost\nreason=%s; report may be incomplete\nfinished=%s\nexit=\n' "$reason" "$(date +%s)" >>"$tmp"
   if [[ "$(status_get "$file" state)" == running ]]; then
-    mv "$tmp" "$file"
-    squad_record_status "$file"
+    persist_status "$file" <"$tmp" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
   else rm -f "$tmp"; fi
 }
 
@@ -474,8 +497,7 @@ record_worktree_action() {
   local file
   while IFS= read -r file; do
     if [[ "$(status_get "$file" worktree)" == "$home/$target" ]]; then
-      printf '%s=%s\n' "$1" "$(date +%s)" >>"$file"
-      squad_record_status "$file"
+      { cat "$file"; printf '%s=%s\n' "$1" "$(date +%s)"; } | persist_status "$file"
       break
     fi
   done < <(worker_status_files "$target")
@@ -1553,9 +1575,7 @@ write_status() {
       "$parent_id" "$depth" "$budget_tokens" "$max_children"
     printf 'timeout_seconds=%s\n' "$timeout_seconds"
     printf 'manager=%s\n' "$manager_id"
-  } >"$status_file.tmp"
-  mv "$status_file.tmp" "$status_file"
-  squad_record_status "$status_file"
+  } | persist_status "$workspace_root/$status_file" || return 1
 }
 : >"$log_file"
 : >"$report_file"

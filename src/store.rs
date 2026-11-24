@@ -117,6 +117,29 @@ impl Store {
              );",
         )
         .context("failed to initialize database schema")?;
+        // Serialize the v2 migration so concurrent first opens cannot race ALTER TABLE.
+        let migration =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
+        migration.execute_batch(
+            "CREATE TABLE IF NOT EXISTS squad_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
+        let has_entries: bool = migration.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('worker_runs') WHERE name='entries_json')",
+            [], |row| row.get(0),
+        )?;
+        if !has_entries {
+            migration.execute_batch("ALTER TABLE worker_runs ADD COLUMN entries_json TEXT;")?;
+        }
+        let has_authoritative: bool = migration.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('worker_runs') WHERE name='authoritative')",
+            [], |row| row.get(0),
+        )?;
+        if !has_authoritative {
+            migration.execute_batch(
+                "ALTER TABLE worker_runs ADD COLUMN authoritative INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        migration.commit()?;
         // Migrations: add columns if missing (existing DBs)
         let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN session_token TEXT;");
         let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN last_seen INTEGER;");

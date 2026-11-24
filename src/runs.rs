@@ -1,4 +1,4 @@
-//! Additive worker-run index. Legacy status files remain the recovery source.
+//! SQLite worker-run source of truth with legacy status projections.
 use crate::store::Store;
 use anyhow::{bail, Context, Result};
 use rusqlite::params;
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -23,6 +23,7 @@ pub struct RunRecord {
     pub worktree: Option<String>,
     pub status_file: String,
     pub details: BTreeMap<String, String>,
+    pub entries: Vec<(String, String)>,
     pub metrics: Option<RunMetrics>,
 }
 
@@ -134,12 +135,21 @@ fn fingerprint(path: &Path) -> Result<(String, u64)> {
         meta.len(),
     ))
 }
-fn read_status(path: &Path) -> Result<RunRecord> {
+fn parse_status(path: &Path, input: &str) -> Result<RunRecord> {
     let mut details = BTreeMap::new();
-    for line in fs::read_to_string(path)?.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            details.insert(key.to_owned(), value.to_owned());
+    let mut entries = Vec::new();
+    for line in input.lines() {
+        let (key, value) = line
+            .split_once('=')
+            .context("status line requires key=value")?;
+        if key.is_empty() || key.contains('\0') || value.contains('\0') {
+            bail!("invalid status entry");
         }
+        if matches!(key, "started" | "finished" | "pid") || key.starts_with("tokens_") {
+            numeric(&BTreeMap::from([(key.to_owned(), value.to_owned())]), key)?;
+        }
+        entries.push((key.to_owned(), value.to_owned()));
+        details.insert(key.to_owned(), value.to_owned());
     }
     for key in ["worker", "engine", "state"] {
         if details.get(key).is_none_or(|v| v.is_empty()) {
@@ -170,6 +180,7 @@ fn read_status(path: &Path) -> Result<RunRecord> {
         worktree: details.get("worktree").filter(|v| !v.is_empty()).cloned(),
         status_file: path.to_string_lossy().into_owned(),
         details,
+        entries,
         metrics: None,
     })
 }
@@ -177,41 +188,105 @@ impl Store {
     pub fn record_run(&self, workspace: &Path, status_file: &Path) -> Result<()> {
         let path = fs::canonicalize(status_file)?;
         let (mtime, size) = fingerprint(&path)?;
-        let run = read_status(&path)?;
+        let run = parse_status(&path, &fs::read_to_string(&path)?)?;
+        self.upsert_run(workspace, &run, &mtime, size, false)
+    }
+    fn upsert_run(
+        &self,
+        workspace: &Path,
+        run: &RunRecord,
+        mtime: &str,
+        size: u64,
+        authoritative: bool,
+    ) -> Result<()> {
         self.conn.execute("INSERT INTO worker_runs
-            (workspace, run_name, worker_id, engine, state, verdict, tokens_in, tokens_cached, tokens_out, worktree, status_file, status_mtime, status_size, details)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            (workspace, run_name, worker_id, engine, state, verdict, tokens_in, tokens_cached, tokens_out, worktree, status_file, status_mtime, status_size, details, entries_json, authoritative)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             ON CONFLICT(workspace, run_name) DO UPDATE SET
               worker_id=excluded.worker_id, engine=excluded.engine, state=excluded.state,
               verdict=excluded.verdict, tokens_in=excluded.tokens_in, tokens_cached=excluded.tokens_cached,
               tokens_out=excluded.tokens_out, worktree=excluded.worktree, status_file=excluded.status_file,
-              status_mtime=excluded.status_mtime, status_size=excluded.status_size, details=excluded.details
-              WHERE excluded.status_mtime >= worker_runs.status_mtime",
-            params![workspace.to_string_lossy(), run.run_name, run.worker_id, run.engine, run.state, run.verdict, run.tokens_in, run.tokens_cached, run.tokens_out, run.worktree, run.status_file, mtime, size, serde_json::to_string(&run.details)?])?;
+              status_mtime=excluded.status_mtime, status_size=excluded.status_size, details=excluded.details, entries_json=excluded.entries_json, authoritative=excluded.authoritative
+              WHERE excluded.authoritative = 1 OR (worker_runs.authoritative = 0 AND excluded.status_mtime >= worker_runs.status_mtime)",
+            params![workspace.to_string_lossy(), run.run_name, run.worker_id, run.engine, run.state, run.verdict, run.tokens_in, run.tokens_cached, run.tokens_out, run.worktree, run.status_file, mtime, size, serde_json::to_string(&run.details)?, serde_json::to_string(&run.entries)?, authoritative])?;
         Ok(())
+    }
+    pub fn write_run(&self, workspace: &Path, status_file: &Path, input: &str) -> Result<()> {
+        let parent = fs::canonicalize(
+            status_file
+                .parent()
+                .context("status file requires a parent")?,
+        )?;
+        let path = parent.join(
+            status_file
+                .file_name()
+                .context("status file requires a name")?,
+        );
+        let run = parse_status(&path, input)?;
+        // Keep concurrent writers' database commits and projections in the same order.
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(workspace.join(".squad/runs-write.lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let tmp = parent.join(format!(".{}.{}.tmp", run.run_name, uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            for (key, value) in &run.entries {
+                writeln!(file, "{key}={value}")?;
+            }
+            file.sync_all()?;
+            let (mtime, size) = fingerprint(&tmp)?;
+            let tx = rusqlite::Transaction::new_unchecked(
+                &self.conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            self.upsert_run(workspace, &run, &mtime, size, true)?;
+            self.conn.execute("INSERT INTO squad_meta(key, value) VALUES ('runs_sot_version', '2') ON CONFLICT(key) DO UPDATE SET value='2'", [])?;
+            tx.commit()?;
+            fs::rename(&tmp, &path).context("SQLite saved; status projection failed")?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        result
     }
     /// Import changed legacy files in one process, retaining historical database-only runs.
     pub fn sync_runs(&self, workspace: &Path, directory: &Path) -> Result<()> {
         if !directory.is_dir() {
             return Ok(());
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT status_file, status_mtime, status_size FROM worker_runs WHERE workspace=?1",
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
         )?;
-        let known: BTreeMap<String, (String, u64)> = stmt
+        let mut stmt = self.conn.prepare(
+            "SELECT run_name, status_mtime, status_size, authoritative FROM worker_runs WHERE workspace=?1",
+        )?;
+        let known: BTreeMap<String, (String, u64, bool)> = stmt
             .query_map([workspace.to_string_lossy()], |r| {
-                Ok((r.get(0)?, (r.get(1)?, r.get(2)?)))
+                Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let tx = self.conn.unchecked_transaction()?;
         for entry in fs::read_dir(directory)? {
             let path = entry?.path();
             if path.extension().is_none_or(|e| e != "status") {
                 continue;
             }
             let path = fs::canonicalize(path)?;
-            if known.get(path.to_string_lossy().as_ref()) == Some(&fingerprint(&path)?) {
-                continue;
+            let name = path
+                .file_stem()
+                .context("status file requires a name")?
+                .to_string_lossy();
+            if let Some((mtime, size, authoritative)) = known.get(name.as_ref()) {
+                if *authoritative || (mtime.clone(), *size) == fingerprint(&path)? {
+                    continue;
+                }
             }
             self.record_run(workspace, &path)?;
         }
@@ -219,7 +294,7 @@ impl Store {
         Ok(())
     }
     pub fn list_runs(&self, workspace: &Path, directory: Option<&Path>) -> Result<Vec<RunRecord>> {
-        let mut stmt = self.conn.prepare("SELECT run_name, worker_id, engine, state, verdict, tokens_in, tokens_cached, tokens_out, worktree, status_file, details FROM worker_runs WHERE workspace=?1 ORDER BY run_name DESC")?;
+        let mut stmt = self.conn.prepare("SELECT run_name, worker_id, engine, state, verdict, tokens_in, tokens_cached, tokens_out, worktree, status_file, details, entries_json FROM worker_runs WHERE workspace=?1 ORDER BY run_name DESC")?;
         let mut rows = stmt.query([workspace.to_string_lossy()])?;
         let mut result = vec![];
         while let Some(row) = rows.next()? {
@@ -239,6 +314,11 @@ impl Store {
                 worktree: row.get(8)?,
                 status_file,
                 details: serde_json::from_str(&row.get::<_, String>(10)?)?,
+                entries: row
+                    .get::<_, Option<String>>(11)?
+                    .map(|v| serde_json::from_str(&v))
+                    .transpose()?
+                    .unwrap_or_default(),
                 metrics: None,
             };
             result.push(run);
@@ -285,9 +365,10 @@ pub fn command(args: &[String], default_workspace: impl FnOnce() -> Result<PathB
             flag => bail!("unknown run flag: {flag}"),
         }
     }
-    if (op == "record" && (status.is_none() || directory.is_some() || json || metrics))
+    if (matches!(op.as_str(), "record" | "write")
+        && (status.is_none() || directory.is_some() || json || metrics))
         || (op == "list" && (!json || status.is_some()))
-        || !["record", "list"].contains(&op.as_str())
+        || !["record", "write", "list"].contains(&op.as_str())
     {
         bail!("Usage: squad run record --status-file <file> | list --json [--directory <dir>]");
     }
@@ -299,7 +380,11 @@ pub fn command(args: &[String], default_workspace: impl FnOnce() -> Result<PathB
         bail!("Not a squad workspace");
     }
     let store = Store::open(&workspace.join(".squad/messages.db"))?;
-    if op == "record" {
+    if op == "write" {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+        store.write_run(&workspace, &status.unwrap(), &input)?;
+    } else if op == "record" {
         store.record_run(&workspace, &status.unwrap())?;
     } else {
         let directory = directory.map(fs::canonicalize).transpose()?;
