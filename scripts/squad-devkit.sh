@@ -697,6 +697,17 @@ run_doctor() {
   elif [[ -z "${TMUX:-}" && "$term_prog" == "ghostty" ]] && command -v "$osascript_cmd" >/dev/null 2>&1; then
     pane_support="Ghostty (splits supported on launch)"
   fi
+  local notification_status="unavailable" notify_app="${SQUAD_DEVKIT_NOTIFY_APP:-${XDG_DATA_HOME:-$HOME/.local/share}/squad-devkit/SquadNotifier.app}"
+  if [[ "${SQUAD_DEVKIT_NOTIFY:-1}" == 0 ]]; then
+    notification_status='disabled (SQUAD_DEVKIT_NOTIFY=0)'
+  elif [[ "$(uname -s)" == Darwin ]]; then
+    if [[ -x "$notify_app/Contents/MacOS/squad-notifier" ]]; then notification_status='SquadNotifier.app (clickable)'
+    elif command -v terminal-notifier >/dev/null 2>&1; then notification_status='terminal-notifier (clickable)'
+    else notification_status='osascript (not clickable; run ./install.sh or squad-devkit reload to build SquadNotifier.app)'
+    fi
+  elif [[ "$(uname -s)" == Linux ]] && command -v notify-send >/dev/null 2>&1; then notification_status='notify-send'
+  fi
+  printf '  Desktop notifications: %s\n' "$notification_status"
   printf '  Monitor pane mode: %s\n' "$pane_support"
   printf '  View: %s (%s)\n' "$view_opt" "$view_source"
   if (( split_test )); then

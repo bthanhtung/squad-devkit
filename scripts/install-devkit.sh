@@ -8,12 +8,14 @@ source "$script_dir/lib/squad-devkit-agents.sh"
 
 usage() {
   cat <<'EOF'
-Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill] [--no-deck] [--build-squad]
+Usage: install-devkit.sh [--manager CLI] [--no-prompt] [--no-hud] [--no-skill] [--no-deck] [--no-notify-app] [--build-squad]
 
 Link squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask, and squad-telegram into ~/.local/bin (or SQUAD_DEVKIT_BIN_DIR)
 and choose the manager CLI. Claude Code is the default when installed; without
 it, the installer asks which installed CLI should manage and saves the answer.
 Re-run it, or run squad-devkit --setup, to change the choice.
+
+Pass --no-notify-app or set SQUAD_DEVKIT_SKIP_NOTIFY_APP=1 to skip the macOS notifier build.
 
 Pass --build-squad to compile the squad message bus binary from source using cargo
 instead of downloading a prebuilt release binary.
@@ -40,6 +42,7 @@ no_prompt=0
 configure_hud=1
 install_skill=1
 install_deck=1
+install_notify_app=1
 build_squad=0
 while (( $# > 0 )); do
   case "$1" in
@@ -56,6 +59,7 @@ while (( $# > 0 )); do
     --no-hud) configure_hud=0 ;;
     --no-skill) install_skill=0 ;;
     --no-deck) install_deck=0 ;;
+    --no-notify-app) install_notify_app=0 ;;
     --build-squad) build_squad=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -207,6 +211,12 @@ ln -sfn "$script_dir/squad-route.sh" "$bin_directory/squad-route"
 ln -sfn "$script_dir/squad-ask.sh" "$bin_directory/squad-ask"
 ln -sfn "$script_dir/squad-telegram.sh" "$bin_directory/squad-telegram"
 printf 'Linked squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask, and squad-telegram into %s\n' "$bin_directory"
+
+if [[ "$(uname -s)" == Darwin ]] && (( install_notify_app )) && ! is_truthy "${SQUAD_DEVKIT_SKIP_NOTIFY_APP:-}"; then
+  if ! "$script_dir/lib/squad-notify-macos-build.sh" --quiet; then
+    printf 'Notifier: warning: build failed; desktop notifications will use a fallback\n' >&2
+  fi
+fi
 
 # The skill is a link into this repository, so pulling updates it.
 if (( install_skill == 1 )); then

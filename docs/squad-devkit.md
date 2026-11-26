@@ -624,7 +624,7 @@ The `cards` layout (`--layout cards`, key `c`) shows live activity and output ag
 
 In cards, tree and pipeline, Flow wraps message text and pins unanswered questions ahead of recent messages. `v` cycles all, questions and failures (`--flow-filter`, or `SQUAD_ORCHESTRATION_FLOW_FILTER`); `e` expands earlier worker rows (`SQUAD_ORCHESTRATION_EXPAND=1` starts expanded). `SQUAD_ORCHESTRATION_STALE_SECS` defaults to 120. These controls preserve `f` for focus and `p` for pinning.
 
-Use `j`/`k` or the arrow keys to select a worker and `i` to toggle details; `Esc` closes details or exits zoom. `d` pages its diff, `r` its report, `s` requests a stop (confirm with `y`), and `m` opens a monitor split. These actions are disabled in `--once`. Worker completion notifications use macOS or Linux desktop notifications when available; set `SQUAD_DEVKIT_NOTIFY=0` to disable them.
+Use `j`/`k` or the arrow keys to select a worker and `i` to toggle details; `Esc` closes details or exits zoom. `d` pages its diff, `r` its report, `s` requests a stop (confirm with `y`), and `m` opens a monitor split. These actions are disabled in `--once`. Worker completion notifications use macOS or Linux desktop notifications when available. On macOS, installs and reloads build SquadNotifier.app for clickable notifications that focus the terminal app and active pane or tab; if unavailable, notifications fall back to terminal-notifier, then osascript; set `SQUAD_DEVKIT_NOTIFY=0` to disable them.
 
 `PAGER` must be a single executable name or path; embedded arguments such as `PAGER='less -R'` are unsupported.
 
@@ -951,6 +951,10 @@ Environment variables that tune a run. Related settings appear in the sections a
 | `SQUAD_DEVKIT_MAX_MB` | `200` | Size cap for `.squad/workers` |
 | `SQUAD_DEVKIT_STATUSLINE` | `1` | `0` turns off the squad status-line label |
 | `SQUAD_DEVKIT_NOTIFY` | `1` | `0` disables desktop notifications |
+| `SQUAD_DEVKIT_NOTIFY_BACKEND` | `auto` | macOS backend: `auto`, `app`, `terminal-notifier`, or `osascript` |
+| `SQUAD_DEVKIT_NOTIFY_APP` | `$XDG_DATA_HOME/squad-devkit/SquadNotifier.app` | Override the notifier app path (defaults to `~/.local/share` when `XDG_DATA_HOME` is unset) |
+| `SQUAD_DEVKIT_NOTIFY_BUNDLE_ID` | inferred | Override the terminal app bundle ID |
+| `SQUAD_DEVKIT_SKIP_NOTIFY_APP` | unset | Set to a truthy value to skip the macOS notifier build during installation and reload |
 | `SQUAD_DEVKIT_DECK` | `1` | `0` (or `deck=off` in config) keeps the [squad deck](#squad-deck) mod out of the Claude Code manager |
 | `SQUAD_WORKER_CLAUDE_MODEL` | `haiku` | Default model for Claude workers |
 | `SQUAD_WORKER_CODEX_PROFILE` | CLI configuration | Default Codex profile for workers |
