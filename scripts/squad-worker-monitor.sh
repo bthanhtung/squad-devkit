@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+monitor_orca_closed=0
+close_orca_pane_on_exit() {
+  (( monitor_orca_closed == 0 )) && [[ "${SQUAD_ORCA_CLOSE_ON_EXIT:-0}" == 1 ]] || return 0
+  monitor_orca_closed=1
+  if ! declare -F squad_panes_orca_close_self >/dev/null 2>&1; then
+    local source_file="${BASH_SOURCE[0]}" source_dir link_target monitor_script_dir
+    while [[ -L "$source_file" ]]; do
+      source_dir="$(cd -P "$(dirname "$source_file")" && pwd)"
+      link_target="$(readlink "$source_file")"
+      if [[ "$link_target" == /* ]]; then source_file="$link_target"; else source_file="$source_dir/$link_target"; fi
+    done
+    monitor_script_dir="$(cd -P "$(dirname "$source_file")" && pwd)"
+    source "$monitor_script_dir/lib/squad-panes.sh"
+  fi
+  squad_panes_orca_close_self
+}
+
 usage() {
   cat <<'EOF'
 Usage: squad-worker-monitor <status-file> [--once]
@@ -470,6 +487,11 @@ fi
 if [[ -z "$status_file" ]]; then
   usage >&2
   exit 2
+fi
+if (( once == 0 )) && [[ "${SQUAD_ORCA_CLOSE_ON_EXIT:-0}" == 1 ]]; then
+  trap 'close_orca_pane_on_exit' EXIT
+  trap 'close_orca_pane_on_exit; trap - INT; kill -INT "$$"' INT
+  trap 'close_orca_pane_on_exit; trap - TERM; kill -TERM "$$"' TERM
 fi
 for _ in $(seq 1 20); do
   [[ -f "$status_file" ]] && break

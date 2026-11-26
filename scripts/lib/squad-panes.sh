@@ -102,6 +102,8 @@ squad_panes_herdr_manager() {
 }
 
 squad_open_monitor() {
+  # shellcheck disable=SC2034 # read by callers (squad-worker.sh)
+  SQUAD_PANES_LAST_BACKEND="" SQUAD_PANES_LAST_CREATED="" SQUAD_PANES_LAST_FILE=""
   local command_script="$1" title="$2" workspace="$3" state="$4" dashboard_script="$5"
   local required="${6:-}"
   if [[ "${SQUAD_WORKER_PANES:-1}" == 0 ]]; then
@@ -150,11 +152,15 @@ squad_open_monitor() {
     local last_file="$state/.$backend-${manager//[^A-Za-z0-9_-]/_}.last" previous="" created=""
     [[ -f "$last_file" ]] && previous="$(cat "$last_file")"
     local errfile="$state/.$backend.err" detail=""
-    if ! created="$("squad_panes_$backend" "$manager" "$previous" "$command_script" "$title" "$workspace" 2>"$errfile")"; then created=""; fi
+    if ! created="$("squad_panes_$backend" "$manager" "$previous" "$command_script" "$title" "$workspace" "$state" 2>"$errfile")"; then created=""; fi
     [[ "$backend" != orca || ! -s "$errfile" ]] || detail="$(head -c 400 "$errfile" | tr -c '[:print:]\n' ' ' | tr '\n' ' ')"
     rm -f "$errfile"
     [[ "$created" != *[[:space:]]* ]] || created=""
-    [[ -n "$created" ]] && printf '%s\n' "$created" >"$last_file"
+    if [[ -n "$created" ]]; then
+      printf '%s\n' "$created" >"$last_file"
+      # shellcheck disable=SC2034 # read by callers (squad-worker.sh)
+      SQUAD_PANES_LAST_BACKEND="$backend" SQUAD_PANES_LAST_CREATED="$created" SQUAD_PANES_LAST_FILE="$last_file"
+    fi
     squad_panes_unlock "$state"
     [[ -n "$created" ]] && return 0
     if [[ "$required" == required ]]; then
@@ -187,19 +193,147 @@ squad_panes_orca_fail() {
   printf 'orca %s failed (exit %s): %s\n' "$stage" "$status" "${cause:-no output}" >&2
 }
 
+squad_panes_orca_close() {
+  local handle="${1:-}" manager="${2:-}" cli
+  [[ -n "$handle" && "$handle" != *[[:space:]]* && "$handle" != "$manager" && "$handle" != "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]] || return 1
+  cli="$(squad_panes_orca_cli)"
+  command -v "$cli" >/dev/null 2>&1 || return 1
+  "$cli" terminal close --terminal "$handle" --json >/dev/null 2>&1
+}
+
+squad_panes_orca_close_self() {
+  local handle="${ORCA_TERMINAL_HANDLE:-}" cli
+  [[ "${SQUAD_ORCA_CLOSE_ON_EXIT:-0}" == 1 && -n "$handle" && "$handle" != *[[:space:]]* && "$handle" != "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]] || return 0
+  cli="$(squad_panes_orca_cli)"
+  command -v "$cli" >/dev/null 2>&1 || return 0
+  if [[ "${SQUAD_ORCA_CLOSE_SYNC:-0}" == 1 ]]; then
+    "$cli" terminal close --terminal "$handle" --json >/dev/null 2>&1 || true
+  else
+    (trap '' HUP; "$cli" terminal close --terminal "$handle" --json >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &
+  fi
+  return 0
+}
+
+squad_panes_orca_record_handle() {
+  local state="$1" manager="$2" handle="$3" title="${4:-}" file tmp
+  [[ -n "$state" && -n "$manager" && -n "$handle" && "$handle" != *[[:space:]]* ]] || return 0
+  file="$state/.orca-${manager//[^A-Za-z0-9_-]/_}.handles"
+  tmp="$(mktemp "$file.XXXXXX")" || return 0
+  [[ ! -f "$file" ]] || awk -F '\t' -v h="$handle" '$1 != h' "$file" >"$tmp"
+  title="${title//$'\t'/ }"; title="${title//$'\n'/ }"; title="${title//$'\r'/ }"
+  printf '%s\t%s\n' "$handle" "$title" >>"$tmp"
+  tail -n 32 "$tmp" >"$tmp.tail" && mv -f "$tmp.tail" "$file"
+  rm -f "$tmp" "$tmp.tail"
+}
+
+squad_panes_orca_forget_handle() {
+  local state="$1" manager="$2" handle="$3" file tmp
+  [[ -n "$state" && -n "$manager" && -n "$handle" ]] || return 0
+  file="$state/.orca-${manager//[^A-Za-z0-9_-]/_}.handles"
+  [[ -f "$file" ]] || return 0
+  tmp="$(mktemp "$file.XXXXXX")" || return 0
+  awk -F '\t' -v h="$handle" '$1 != h' "$file" >"$tmp"
+  if [[ -s "$tmp" ]]; then mv -f "$tmp" "$file"; else rm -f "$tmp" "$file"; fi
+}
+
+squad_close_monitor_pane() {
+  local backend="${1:-}" handle="${2:-}" manager="${3:-}" last_file="${4:-}" state="${5:-}" current
+  [[ "$backend" == orca && -n "$handle" ]] || return 0
+  squad_panes_orca_close "$handle" "$manager" || true
+  if [[ -f "$last_file" ]]; then
+    current="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$last_file")"
+    [[ "$current" != "$handle" ]] || rm -f "$last_file"
+  fi
+  [[ -z "$state" || -z "$manager" ]] || squad_panes_orca_forget_handle "$state" "$manager" "$handle"
+  return 0
+}
+
+squad_panes_orca_reap_stale() {
+  local manager="${1:-}" manager_tab="${2:-}" workspace="${3:-}" replace_title="${4:-}" state="${5:-}"
+  local cli manager_worktree="" output="" file="" tmp="" handle="" recorded_title="" candidates=""
+  SQUAD_PANES_REAPED=0 SQUAD_PANES_ORCA_CLOSED_HANDLES=""
+  [[ -n "$manager" ]] || return 0
+  cli="$(squad_panes_orca_cli)"
+  command -v "$cli" >/dev/null 2>&1 && squad_has_jq || return 0
+  if [[ -z "$manager_tab" ]]; then
+    output="$("$cli" terminal show --terminal "$manager" --json 2>/dev/null || true)"
+    manager_tab="$(printf '%s' "$output" | squad_jq -r 'select(.ok == true) | .result.terminal.tabId // empty' 2>/dev/null || true)"
+    manager_worktree="$(printf '%s' "$output" | squad_jq -r 'select(.ok == true) | .result.terminal.worktreePath // empty' 2>/dev/null || true)"
+  fi
+  [[ -n "$manager_tab" ]] || return 0
+  if [[ -n "$state" ]]; then
+    file="$state/.orca-${manager//[^A-Za-z0-9_-]/_}.handles"
+    if [[ -f "$file" ]]; then
+      tmp="$(mktemp "$file.XXXXXX")" || return 0
+      while IFS=$'\t' read -r handle recorded_title || [[ -n "$handle" ]]; do
+        [[ -n "$handle" ]] || continue
+        if [[ "$handle" == "$manager" || "$handle" == "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]]; then
+          printf '%s\t%s\n' "$handle" "$recorded_title" >>"$tmp"; continue
+        fi
+        output="$("$cli" terminal show --terminal "$handle" --json 2>/dev/null || true)"
+        if ! printf '%s' "$output" | squad_jq -e '.ok == true' >/dev/null 2>&1; then
+          if ! printf '%s' "$output" | squad_jq -e '.ok == false and (.error.code != "runtime_unavailable" and .error.code != "timeout")' >/dev/null 2>&1; then
+            printf '%s\t%s\n' "$handle" "$recorded_title" >>"$tmp"
+          fi
+          continue
+        fi
+        if [[ $'\n'"$SQUAD_PANES_ORCA_CLOSED_HANDLES"$'\n' != *$'\n'"$handle"$'\n'* ]] &&
+          printf '%s' "$output" | squad_jq -e --arg tab "$manager_tab" --arg title "$replace_title" --arg recorded "$recorded_title" '
+            .result.terminal | .tabId == $tab and
+            (.connected == false or .writable == false or .orphaned == true or
+             (($title | startswith("squad · ")) and ($recorded == $title or .paneTitle == $title)) or
+             ($title == "--reap-all-orchestration" and (($recorded | startswith("squad · ")) or ((.paneTitle // "") | startswith("squad · ")))))' >/dev/null 2>&1 &&
+          squad_panes_orca_close "$handle" "$manager"; then
+          SQUAD_PANES_REAPED=$((SQUAD_PANES_REAPED + 1))
+          SQUAD_PANES_ORCA_CLOSED_HANDLES="${SQUAD_PANES_ORCA_CLOSED_HANDLES}${SQUAD_PANES_ORCA_CLOSED_HANDLES:+$'\n'}$handle"
+        elif [[ $'\n'"$SQUAD_PANES_ORCA_CLOSED_HANDLES"$'\n' != *$'\n'"$handle"$'\n'* ]]; then
+          printf '%s\t%s\n' "$handle" "$recorded_title" >>"$tmp"
+        fi
+      done <"$file"
+      if [[ -s "$tmp" ]]; then mv -f "$tmp" "$file"; else rm -f "$tmp" "$file"; fi
+    fi
+  fi
+  workspace="${manager_worktree:-$workspace}"
+  [[ -n "$workspace" ]] || return 0
+  output="$("$cli" terminal list --worktree "path:$workspace" --json 2>/dev/null || true)"
+  candidates="$(printf '%s' "$output" | squad_jq -r --arg mgr "$manager" --arg tab "$manager_tab" --arg title "$replace_title" '
+    select(.ok == true) | .result.terminals[]? |
+    select(.handle != $mgr and .tabId == $tab and (.paneTitle | type == "string")) |
+    select(((.connected == false or .writable == false or .orphaned == true) and
+      ((.paneTitle | startswith("squad · ")) or .paneTitle == "squad split test" or (.paneTitle | endswith(" monitor")))) or
+      (($title | startswith("squad · ")) and .paneTitle == $title) or
+      ($title == "--reap-all-orchestration" and (.paneTitle | startswith("squad · ")))) |
+    .handle | select(type == "string" and length > 0)' 2>/dev/null || true)"
+  while IFS= read -r handle; do
+    [[ -n "$handle" && $'\n'"$SQUAD_PANES_ORCA_CLOSED_HANDLES"$'\n' != *$'\n'"$handle"$'\n'* ]] || continue
+    if squad_panes_orca_close "$handle" "$manager"; then
+      SQUAD_PANES_REAPED=$((SQUAD_PANES_REAPED + 1))
+      SQUAD_PANES_ORCA_CLOSED_HANDLES="${SQUAD_PANES_ORCA_CLOSED_HANDLES}${SQUAD_PANES_ORCA_CLOSED_HANDLES:+$'\n'}$handle"
+      [[ -z "$state" ]] || squad_panes_orca_forget_handle "$state" "$manager" "$handle"
+    fi
+  done <<< "$candidates"
+  return 0
+}
+
 squad_panes_orca() {
-  local manager="$1" previous="$2" command_script="$3" title="$4" workspace="$5"
-  local cli target="$1" direction=vertical output created manager_tab previous_tab command_text
+  local manager="$1" previous="$2" command_script="$3" title="$4" workspace="$5" state="${6:-}"
+  local cli target="$1" direction=vertical output created manager_tab manager_worktree previous_tab command_text
   cli="$(squad_panes_orca_cli)"
   local rc=0
   output="$("$cli" terminal show --terminal "$manager" --json)" || rc=$?
   manager_tab="$(printf '%s' "$output" | squad_jq -er 'select(.ok == true) | .result.terminal.tabId | select(type == "string" and length > 0)' 2>/dev/null)" || manager_tab=""
   if [[ "$rc" != 0 || -z "$manager_tab" ]]; then squad_panes_orca_fail "manager show ($manager)" "$rc" "$output"; return 1; fi
-  if [[ -n "$previous" ]]; then
+  manager_worktree="$(printf '%s' "$output" | squad_jq -r '.result.terminal.worktreePath // empty' 2>/dev/null || true)"
+  squad_panes_orca_reap_stale "$manager" "$manager_tab" "${manager_worktree:-$workspace}" "$title" "$state"
+  if [[ -n "$previous" && "$previous" != "$manager" && $'\n'"$SQUAD_PANES_ORCA_CLOSED_HANDLES"$'\n' != *$'\n'"$previous"$'\n'* ]]; then
     output="$("$cli" terminal show --terminal "$previous" --json)" || output=""
     previous_tab="$(printf '%s' "$output" | squad_jq -er 'select(.ok == true and .result.terminal.connected == true and .result.terminal.writable == true and .result.terminal.orphaned != true) | .result.terminal.tabId' 2>/dev/null)" || previous_tab=""
     if [[ "$previous_tab" == "$manager_tab" ]]; then
       target="$previous"; direction=horizontal
+    elif printf '%s' "$output" | squad_jq -e --arg tab "$manager_tab" 'select(.ok == true) | .result.terminal | .tabId == $tab and (.connected == false or .writable == false or .orphaned == true)' >/dev/null 2>&1; then
+      if squad_panes_orca_close "$previous" "$manager"; then
+        [[ -z "$state" ]] || squad_panes_orca_forget_handle "$state" "$manager" "$previous"
+      fi
     fi
   fi
   # POSIX quoting also works when the terminal shell is not Bash.
@@ -221,6 +355,7 @@ squad_panes_orca() {
   created="$(printf '%s' "$output" | squad_jq -er 'select(.ok == true) | .result.split.handle | select(type == "string" and length > 0)' 2>/dev/null)" || created=""
   if [[ -z "$created" || "$created" == *[[:space:]]* ]]; then squad_panes_orca_fail "$stage response" 0 "$output"; return 1; fi
   "$cli" terminal set-pane-title --terminal "$created" --title "$title" --json >/dev/null 2>&1 || true
+  [[ -z "$state" ]] || squad_panes_orca_record_handle "$state" "$manager" "$created" "$title"
   printf '%s\n' "$created"
 }
 

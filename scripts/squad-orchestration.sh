@@ -17,12 +17,15 @@ script_dir="$(cd -P "$(dirname "$source_file")" && pwd)"
 script_path="$script_dir/$(basename "$source_file")"
 
 saved_tty=""
+reloading_on_hup=0
+orca_self_closed=0
 reload_on_hup() {
   [[ -z "$saved_tty" ]] || stty "$saved_tty" 2>/dev/null || true
   if [[ -t 1 ]]; then
     printf '\033[?2026l\033[?25h\033[0m\033[H\033[2J'
   fi
   export SQUAD_ORCHESTRATION_REEXEC=1
+  reloading_on_hup=1
   exec bash "$script_path" ${orig_args[@]+"${orig_args[@]}"}
 }
 
@@ -6120,7 +6123,13 @@ panel_key() {
         s) stop_pending="$selected_id" ;;
         m)
           command_script="$(mktemp "$workers_dir/.panel-monitor.XXXXXXXX")" || return 0
-          printf '#!/bin/bash\nexec %q %q\n' "$script_dir/squad-worker-monitor.sh" "${W_STATUS_FILE[$selected_index]}" >"$command_script"
+          {
+            printf '#!/bin/bash\nexport SQUAD_ORCA_CLOSE_ON_EXIT=1\n'
+            [[ -z "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]] || printf 'export SQUAD_DEVKIT_ORCA_TERMINAL=%q\n' "$SQUAD_DEVKIT_ORCA_TERMINAL"
+            [[ -z "${ORCA_CLI_COMMAND:-}" ]] || printf 'export ORCA_CLI_COMMAND=%q\n' "$ORCA_CLI_COMMAND"
+            [[ -z "${SQUAD_ORCA_CLOSE_SYNC:-}" ]] || printf 'export SQUAD_ORCA_CLOSE_SYNC=%q\n' "$SQUAD_ORCA_CLOSE_SYNC"
+            printf 'exec %q %q\n' "$script_dir/squad-worker-monitor.sh" "${W_STATUS_FILE[$selected_index]}"
+          } >"$command_script"
           chmod +x "$command_script"
           if squad_open_monitor "$command_script" "$selected_id monitor" "$WS_ROOT" "$workers_dir" "$command_script" required >/dev/null 2>&1; then
             action_message="Monitor opened: $selected_id"
@@ -6342,6 +6351,12 @@ cleanup_live_session() {
     holding_orchestration_lock=0
   fi
   [[ -z "$saved_tty" ]] || stty "$saved_tty" 2>/dev/null || true
+  if (( reloading_on_hup == 0 && once == 0 && orca_self_closed == 0 )); then
+    orca_self_closed=1
+    if declare -F squad_panes_orca_close_self >/dev/null 2>&1; then
+      squad_panes_orca_close_self
+    fi
+  fi
 }
 
 # Interactive loop with two clocks:
