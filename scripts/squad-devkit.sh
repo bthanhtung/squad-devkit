@@ -701,8 +701,15 @@ run_doctor() {
   printf '  View: %s (%s)\n' "$view_opt" "$view_source"
   if (( split_test )); then
     local split_dir split_error
-    split_dir="$(mktemp -d)"
-    printf '#!/usr/bin/env bash\nprintf "squad split test OK\\n"\nsleep 2\nrm -rf -- "%s"\n' "$split_dir" >"$split_dir/test.sh"
+    split_dir="$(mktemp -d "${TMPDIR:-/tmp}/squad-split-test.XXXXXXXX")"
+    {
+      printf '#!/usr/bin/env bash\nexport SQUAD_ORCA_CLOSE_ON_EXIT=1\n'
+      [[ -z "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]] || printf 'export SQUAD_DEVKIT_ORCA_TERMINAL=%q\n' "$SQUAD_DEVKIT_ORCA_TERMINAL"
+      [[ -z "${ORCA_CLI_COMMAND:-}" ]] || printf 'export ORCA_CLI_COMMAND=%q\n' "$ORCA_CLI_COMMAND"
+      [[ -z "${SQUAD_ORCA_CLOSE_SYNC:-}" ]] || printf 'export SQUAD_ORCA_CLOSE_SYNC=%q\n' "$SQUAD_ORCA_CLOSE_SYNC"
+      printf 'pane_lib=%q\nsplit_dir=%q\n' "$script_dir/lib/squad-panes.sh" "$split_dir"
+      printf '%s\n' "trap '[[ ! -f \"\$pane_lib\" ]] || { source \"\$pane_lib\"; squad_panes_orca_close_self; }; rm -rf -- \"\$split_dir\"' EXIT" 'printf "squad split test OK\n"' 'sleep 2'
+    } >"$split_dir/test.sh"
     chmod +x "$split_dir/test.sh"
     if split_error="$(squad_open_monitor "$split_dir/test.sh" 'squad split test' "$PWD" "$split_dir" '' required 2>&1)"; then
       printf '  [OK]      split test opened\n'
@@ -1073,6 +1080,17 @@ run_reload() {
     # shellcheck source=/dev/null
     source "$script_dir/lib/squad-panes.sh"
     squad_panes_herdr_reap_stale "$HERDR_PANE_ID"
+    if [[ "${SQUAD_PANES_REAPED:-0}" -gt 0 ]]; then
+      printf '%d stale squad panes closed\n' "$SQUAD_PANES_REAPED"
+    fi
+  fi
+
+  local orca_mgr=""
+  orca_mgr="$(squad_panes_orca_manager "$project_directory" 2>/dev/null || true)"
+  if [[ -n "$orca_mgr" ]]; then
+    local orca_reap_mode=""
+    (( view_count == 0 )) && orca_reap_mode="--reap-all-orchestration"
+    squad_panes_orca_reap_stale "$orca_mgr" "" "$project_directory" "$orca_reap_mode" "$project_directory/.squad/workers"
     if [[ "${SQUAD_PANES_REAPED:-0}" -gt 0 ]]; then
       printf '%d stale squad panes closed\n' "$SQUAD_PANES_REAPED"
     fi

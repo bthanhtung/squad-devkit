@@ -1564,6 +1564,8 @@ printf 'squad-worker: %s (%s) %s\n' "$worker_id" "$engine" "$(squad_worker_model
 
 # Live monitor for this run beside the manager (see lib/squad-panes.sh).
 open_monitor_pane() {
+  local orca_mgr="${SQUAD_DEVKIT_ORCA_TERMINAL:-}"
+  [[ -n "$orca_mgr" ]] || orca_mgr="$(squad_panes_orca_manager "$workspace_root" 2>/dev/null || true)"
   if [[ "$view" == orchestration || "$view" == orchestration-branches ]]; then
     local root_mgr=""
     local root_mgr_from_parent=0
@@ -1655,6 +1657,10 @@ open_monitor_pane() {
       rm -f "$ready_file"
       {
         printf '#!/bin/bash\n'
+        printf 'export SQUAD_ORCA_CLOSE_ON_EXIT=1\n'
+        [[ -z "$orca_mgr" ]] || printf 'export SQUAD_DEVKIT_ORCA_TERMINAL=%q\n' "$orca_mgr"
+        [[ -z "${ORCA_CLI_COMMAND:-}" ]] || printf 'export ORCA_CLI_COMMAND=%q\n' "$ORCA_CLI_COMMAND"
+        [[ -z "${SQUAD_ORCA_CLOSE_SYNC:-}" ]] || printf 'export SQUAD_ORCA_CLOSE_SYNC=%q\n' "$SQUAD_ORCA_CLOSE_SYNC"
         printf 'export SQUAD_WORKER_MONITOR_READY=%q\n' "$ready_file"
         printf 'export SQUAD_DEVKIT_MANAGER_WRAPPER_PID=%q\n' "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}"
         printf 'export SQUAD_DEVKIT_SESSION_START=%q\n' "${SQUAD_DEVKIT_SESSION_START:-}"
@@ -1668,8 +1674,9 @@ open_monitor_pane() {
         squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
         return 1
       fi
-      local max_wait=4
+      local max_wait=20
       (( required_split == 1 )) && max_wait=40
+      [[ "${SQUAD_WORKER_MONITOR_WAIT_TICKS:-}" =~ ^[1-9][0-9]*$ ]] && max_wait="$SQUAD_WORKER_MONITOR_WAIT_TICKS"
       for _ in $(seq 1 "$max_wait"); do
         if [[ -f "$ready_file" ]]; then
           IFS= read -r monitor_pid <"$ready_file" || true
@@ -1685,6 +1692,7 @@ open_monitor_pane() {
       rm -f "$ready_file"
       squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
       (( required_split == 1 )) || return 0
+      squad_close_monitor_pane "${SQUAD_PANES_LAST_BACKEND:-}" "${SQUAD_PANES_LAST_CREATED:-}" "$orca_mgr" "${SQUAD_PANES_LAST_FILE:-}" "$workspace_root/$output_directory"
       echo "squad-worker: monitor did not render or exited; fix the terminal or use tmux" >&2
       return 1
     }
@@ -1703,6 +1711,10 @@ open_monitor_pane() {
   # Pane shells start from the terminal, not from this process, so pass settings explicitly.
   {
     printf '#!/bin/bash\n'
+    printf 'export SQUAD_ORCA_CLOSE_ON_EXIT=1\n'
+    [[ -z "$orca_mgr" ]] || printf 'export SQUAD_DEVKIT_ORCA_TERMINAL=%q\n' "$orca_mgr"
+    [[ -z "${ORCA_CLI_COMMAND:-}" ]] || printf 'export ORCA_CLI_COMMAND=%q\n' "$ORCA_CLI_COMMAND"
+    [[ -z "${SQUAD_ORCA_CLOSE_SYNC:-}" ]] || printf 'export SQUAD_ORCA_CLOSE_SYNC=%q\n' "$SQUAD_ORCA_CLOSE_SYNC"
     printf 'export SQUAD_WORKER_PANE_HOLD=%q\n' "${SQUAD_WORKER_PANE_HOLD:-60}"
     if (( required_split == 1 )); then
       printf 'export SQUAD_WORKER_MONITOR_READY=%q\n' "$ready_file"
@@ -1716,7 +1728,9 @@ open_monitor_pane() {
     "$workspace_root/$output_directory" "$workspace_root/$dashboard_script" "$([[ "$required_split" == 1 ]] && printf required)" || return 1
   (( required_split == 1 )) || return 0
   local monitor_pid=""
-  for _ in $(seq 1 40); do
+  local pane_wait=40
+  [[ "${SQUAD_WORKER_MONITOR_WAIT_TICKS:-}" =~ ^[1-9][0-9]*$ ]] && pane_wait="$SQUAD_WORKER_MONITOR_WAIT_TICKS"
+  for _ in $(seq 1 "$pane_wait"); do
     if [[ -f "$ready_file" ]]; then
       IFS= read -r monitor_pid <"$ready_file" || true
       if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
@@ -1726,6 +1740,7 @@ open_monitor_pane() {
     sleep 0.25
   done
   rm -f "$ready_file"
+  squad_close_monitor_pane "${SQUAD_PANES_LAST_BACKEND:-}" "${SQUAD_PANES_LAST_CREATED:-}" "$orca_mgr" "${SQUAD_PANES_LAST_FILE:-}" "$workspace_root/$output_directory"
   echo "squad-worker: monitor did not render or exited; fix the terminal or use tmux" >&2
   return 1
 }
