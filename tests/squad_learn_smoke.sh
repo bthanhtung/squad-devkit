@@ -54,7 +54,7 @@ rm .squad/rules/scripts.md
 id="$(printf '%s\n' '```' '$(touch SHOULD-NOT-EXIST)' '---' 'paths: $(touch ALSO-NOT)' | "$learn" propose --title '$(false)' --paths 'scripts/*')"
 pty_run "$learn" approve "$id" >"$tmp/approval"
 [[ -f "$learn_store/INDEX" ]]
-[[ "$(stat -f %Lp "$learn_store/$id.md" 2>/dev/null || stat -c %a "$learn_store/$id.md")" == 444 ]]
+[[ "$(stat -c %a "$learn_store/$id.md" 2>/dev/null || stat -f %Lp "$learn_store/$id.md")" == 444 ]]
 # A read-only fixture simulates the worker's denied write mount.
 chmod 555 "$learn_store"
 if (printf 'forbidden' >"$learn_store/worker-write") 2>/dev/null; then

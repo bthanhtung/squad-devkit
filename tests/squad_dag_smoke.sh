@@ -196,7 +196,7 @@ if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]]; then
   squad artifact publish --plan plan.md --task integration --attempt "$(status_get "$file" dag_attempt)" --root "$PWD" payload.txt
   squad artifact fetch --plan plan.md --from integration --dest "$PWD/consumer-artifacts"
   [[ "$(cat consumer-artifacts/payload.txt)" == 'retained payload' ]]
-  [[ "$(stat -f '%Sp' consumer-artifacts/payload.txt 2>/dev/null || stat -c '%A' consumer-artifacts/payload.txt)" != *w* ]]
+  [[ "$(stat -c '%A' consumer-artifacts/payload.txt 2>/dev/null || stat -f '%Sp' consumer-artifacts/payload.txt)" != *w* ]]
   if squad artifact publish --plan plan.md --task integration --attempt traversal --root "$PWD" ../payload.txt >out 2>&1; then
     echo 'Traversal publish unexpectedly succeeded' >&2; exit 1
   fi
