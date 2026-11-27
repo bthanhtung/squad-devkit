@@ -19,6 +19,8 @@ fn gate_rollback_restores_dirty_layers() {
     git(repo, &["init", "-q"]);
     git(repo, &["config", "user.email", "test@example.invalid"]);
     git(repo, &["config", "user.name", "test"]);
+    git(repo, &["config", "core.autocrlf", "false"]);
+    git(repo, &["config", "core.eol", "lf"]);
     fs::write(repo.join("file"), "base\n").unwrap();
     git(repo, &["add", "file"]);
     git(repo, &["commit", "-qm", "base"]);
@@ -65,6 +67,8 @@ impl Fixture {
         git(r, &["init", "-q"]);
         git(r, &["config", "user.email", "test@example.invalid"]);
         git(r, &["config", "user.name", "test"]);
+        git(r, &["config", "core.autocrlf", "false"]);
+        git(r, &["config", "core.eol", "lf"]);
         fs::write(r.join("file"), "base\n").unwrap();
         git(r, &["add", "."]);
         git(r, &["commit", "-qm", "base"]);

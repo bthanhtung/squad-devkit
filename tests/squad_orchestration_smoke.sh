@@ -2423,7 +2423,7 @@ plan=$tmp/missing plan
 EOF_STATUS
 done
 TEST_ACTION_DIR="$tmp/actions" TEST_ACTION_LOG="$tmp/action.log" \
-  bash "$panel_harness" --once "$tmp/interaction"
+  bash "$panel_harness" --layout list --once "$tmp/interaction"
 [[ ! -e "$tmp/hostile" ]]
 for width in 80 60 18; do
   detail_out="$(COLUMNS="$width" SQUAD_ORCHESTRATION_SWITCH_LAYOUT=j,i \
