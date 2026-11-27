@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-set -E
-trap 'rc=$?; echo "FAIL squad_orchestration_smoke at line $LINENO (rc=$rc): $BASH_COMMAND" >&2' ERR
 export TZ=UTC
 
 if [[ -z "${TEST_SIGHUP_RESET:-}" ]] && command -v perl >/dev/null 2>&1; then

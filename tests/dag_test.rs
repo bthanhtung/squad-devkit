@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use squad::{dag::parse_plan, store::Store};
 
 #[test]

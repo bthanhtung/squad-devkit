@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::path::Path;
 
 #[test]
@@ -20,6 +21,7 @@ fn trace_normalizes_supported_engine_records_and_skips_bad_lines() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn pass_at_k_and_fixture_baseline() {
     assert!((squad::eval::pass_at_k(3, 1, 1) - 1.0 / 3.0).abs() < 1e-9);
@@ -36,6 +38,7 @@ fn pass_at_k_and_fixture_baseline() {
     assert!(squad::eval::check_baseline(&regressed, &baseline).is_err());
 }
 
+#[cfg(unix)]
 #[test]
 fn baseline_comparison_rejects_removed_task() {
     let dir = tempfile::tempdir().unwrap();
@@ -53,6 +56,7 @@ fn baseline_comparison_rejects_removed_task() {
     assert!(error.to_string().contains("missing"));
 }
 
+#[cfg(unix)]
 #[test]
 fn duplicate_task_ids_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
@@ -75,6 +79,7 @@ fn duplicate_task_ids_are_rejected() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn fixture_trials_are_isolated_and_oracle_grades_independently() {
     let dir = tempfile::tempdir().unwrap();
@@ -92,6 +97,7 @@ fn fixture_trials_are_isolated_and_oracle_grades_independently() {
     assert_eq!(report.tasks[0].passed, 2);
 }
 
+#[cfg(unix)]
 #[test]
 fn timed_out_command_fails_even_when_oracle_would_pass() {
     let dir = tempfile::tempdir().unwrap();

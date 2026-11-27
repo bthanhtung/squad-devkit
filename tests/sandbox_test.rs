@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::process::Command;
 
 #[test]

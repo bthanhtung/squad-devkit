@@ -5603,11 +5603,12 @@ build_g2_frame() {
   local header_count=3
   (( lines >= 20 )) || header_count=2
   local log_count="${SQUAD_ORCHESTRATION_FLOW_LINES:-4}"
+  if (( lines >= 40 )) && [[ -z "${SQUAD_ORCHESTRATION_FLOW_LINES:-}" ]]; then log_count=5; fi
   [[ "$log_count" =~ ^[0-9]+$ ]] || log_count=4
   (( lines >= 30 )) || log_count=2
   (( lines >= 20 )) || log_count=1
   local footer_rows=$(( 1 + (once == 0 ? 1 : 0) ))
-  local conv_rows=$(( 1 + log_count + 1 ))
+  local conv_rows=$(( 1 + log_count + 1 + 1 ))
   local body_h=$(( lines - header_count - conv_rows - footer_rows ))
   (( body_h >= 6 )) || body_h=6
 
@@ -5669,7 +5670,7 @@ build_g2_frame() {
     local act_next=""
     worker_next_action "$sel_i"
     case "$REPLY" in
-      answer) act_next="squad send … ${W_NAME[$sel_i]}";;
+      answer) act_next="answer: squad send … ${W_NAME[$sel_i]}";;
       fix) act_next="fix round: squad-worker ${W_NAME[$sel_i]} …";;
       resume) act_next="squad-worker --resume ${W_NAME[$sel_i]}";;
       merge) act_next="review diff [d], then squad-worker --merge ${W_NAME[$sel_i]}";;
@@ -5697,6 +5698,7 @@ build_g2_frame() {
 
     # Left column: PLAN DAG (top) + WORKERS live list (bottom)
     local left_col=() dag_max=2
+    (( body_h < 24 )) || dag_max=4
     (( body_h >= 20 )) || dag_max=1
     local dag_show=${#dag[@]}
     (( dag_show <= dag_max )) || dag_show=$dag_max
@@ -6089,7 +6091,7 @@ swarm_facts() {
   else data=('IN   No workers yet' 'RUN  Waiting for dispatch' 'OUT  No report yet' 'NEXT wait'); fi
   local nh=${#H_TS[@]} budget start glyph
   budget=$(( lines - 3 ))
-  (( columns < 100 )) || budget=$(( ${#data[@]} - 1 ))
+  if (( columns >= 100 && lines < 40 )); then budget=$(( ${#data[@]} - 1 )); fi
   (( budget >= 0 )) || budget=0
   start=$(( nh - budget )); (( start >= 0 )) || start=0
   for (( j=start; j<nh; j++ )); do
