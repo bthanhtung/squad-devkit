@@ -3,21 +3,31 @@ import { expect, test } from 'claude-code/testing'
 import {
   activity,
   addVerdict,
+  bar,
   clean,
   elapsed,
   emptyPerms,
+  isPlanPath,
+  parsePlanTasks,
   parseStatus,
   needsYou,
+  percent,
   pickRuns,
   pickShape,
+  planCounts,
+  progressText,
   redact,
   statusText,
   strip,
+  timeFraction,
+  timeLimit,
+  tokenFraction,
   tokens,
 } from './deck'
 
 const STATUS = [
   'worker=deck-1',
+  'manager=manager-2',
   'engine=opencode',
   'model=opencode-go/deepseek-v4-pro',
   'actual_model=unknown',
@@ -42,6 +52,7 @@ const status = (id: string, state: string, started: number, extra = '') =>
 test('a complete status file is parsed', () => {
   const run = parseStatus(STATUS)
   expect(run?.id).toBe('deck-1')
+  expect(run?.manager).toBe('manager-2')
   expect(run?.engine).toBe('opencode')
   expect(run?.model).toBe('opencode-go/deepseek-v4-pro')
   expect(run?.state).toBe('running')
@@ -258,4 +269,110 @@ test('needs you chooses the latest run and sorts actionable items', () => {
     ['merge', 'merge', 'ready to merge', 'Say: review & merge merge (or --merge merge)'],
   ])
   expect(needsYou([])).toEqual([])
+})
+
+test('bar clamps and rounds', () => {
+  const cells = (f: number, w: number) => {
+    const { filled, empty } = bar(f, w)
+    return `${filled}|${empty}`
+  }
+  expect(cells(0, 4)).toBe('|────')
+  expect(cells(0.5, 4)).toBe('━━|──')
+  expect(cells(1, 4)).toBe('━━━━|')
+  expect(cells(1.7, 4)).toBe('━━━━|')
+  expect(cells(-1, 4)).toBe('|────')
+  expect(cells(Number.NaN, 4)).toBe('|────')
+  expect(cells(Infinity, 4)).toBe('|────')
+  expect(cells(0.9, 1)).toBe('━|')
+  expect(cells(0.2, 1)).toBe('|─')
+})
+
+test('timeout and budget are parsed, and null when missing or garbage', () => {
+  const run = parseStatus(status('a', 'running', 1000, 'timeout_seconds=2700\nbudget_tokens=600000\n'))!
+  expect(run.timeoutSeconds).toBe(2700)
+  expect(run.budgetTokens).toBe(600000)
+  const none = parseStatus(status('a', 'running', 1000))!
+  expect(none.timeoutSeconds).toBe(null)
+  expect(none.budgetTokens).toBe(null)
+  const bad = parseStatus(status('a', 'running', 1000, 'timeout_seconds=soon\nbudget_tokens=-5\n'))!
+  expect(bad.timeoutSeconds).toBe(null)
+  expect(bad.budgetTokens).toBe(null)
+})
+
+test('timeFraction and tokenFraction', () => {
+  const run = parseStatus(status('a', 'running', 1000, 'timeout_seconds=1000\nbudget_tokens=2000\ntokens_in=500\ntokens_out=500\n'))!
+  expect(timeFraction(run, 1250)).toBe(0.25)
+  expect(tokenFraction(run)).toBe(0.5)
+  const done = parseStatus(status('a', 'completed', 1000, 'finished=1500\ntimeout_seconds=1000\n'))!
+  expect(timeFraction(done, 99999)).toBe(0.5)
+  const bare = parseStatus(status('a', 'running', 1000))!
+  expect(timeFraction(bare, 1250)).toBe(250 / 2700)
+  expect(tokenFraction(bare)).toBe(null)
+  const unstarted = parseStatus('worker=a\nstate=running\ntimeout_seconds=60\nbudget_tokens=0\n')!
+  expect(timeFraction(unstarted, 1250)).toBe(null)
+  expect(tokenFraction(unstarted)).toBe(null)
+})
+
+test('the time limit falls back to 45 minutes, or 10 for a scout, and the % text follows', () => {
+  const old = parseStatus(status('a', 'running', 1000))!
+  expect(timeLimit(old)).toBe(2700)
+  expect(timeLimit(parseStatus(status('a', 'running', 1000, 'timeout_seconds=300\n'))!)).toBe(300)
+  const scout = parseStatus('worker=s\nrole=scout\nstate=running\nstarted=1000\n')!
+  expect(timeLimit(scout)).toBe(600)
+  expect(percent(timeFraction(scout, 1300)!)).toBe('50%')
+  expect(percent(timeFraction(old, 1000 + 1350)!)).toBe('50%')
+  expect(percent(timeFraction(old, 1000 + 99999)!)).toBe('100%')
+  expect(percent(0.42)).toBe('42%')
+  expect(percent(0.2, true)).toBe('100%')
+  expect(percent(Number.NaN)).toBe('0%')
+})
+
+const PLAN = [
+  '# Plan',
+  '## Goal',
+  '- not-a-task (in goal)',
+  '## Tasks',
+  '- dev-1 (opencode): first',
+  '  - nested-1 (x)',
+  '- dev-2: second',
+  '- None',
+  '- None: nothing',
+  '### test-1',
+  '### rev.2 — review',
+  '- dev-1 (again)',
+  '## Notes',
+  '- late-1 (after)',
+].join('\n')
+
+test('plan tasks come from bullets and ### headings of the Tasks section', () => {
+  expect(parsePlanTasks(PLAN)).toEqual(['dev-1', 'dev-2', 'test-1', 'rev.2'])
+  expect(parsePlanTasks('## Tasks\nNone\n- None\n')).toEqual([])
+  expect(parsePlanTasks('# Only a title')).toEqual([])
+})
+
+test('a plan path must be a file under the workspace plans folder', () => {
+  expect(isPlanPath('/w/.squad/plans/a.md', '/w')).toBe(true)
+  expect(isPlanPath('/w/.squad/plans/a.md', '/w/')).toBe(true)
+  expect(isPlanPath('/w/.squad/plans/', '/w')).toBe(false)
+  expect(isPlanPath('/etc/passwd', '/w')).toBe(false)
+  expect(isPlanPath('/w/.squad/plans/../../secret', '/w')).toBe(false)
+  expect(isPlanPath('/other/.squad/plans/a.md', '/w')).toBe(false)
+})
+
+test('done counting skips failed verification and falls back to the plan runs', () => {
+  const runs = [
+    parseStatus(status('dev-1', 'completed', 1, 'verify=pass\n'))!,
+    parseStatus(status('dev-2', 'completed', 1, 'verify=fail\n'))!,
+    parseStatus(status('test-1', 'running', 1))!,
+    parseStatus(status('x-1', 'completed', 1))!,
+  ]
+  expect(planCounts(['dev-1', 'dev-2', 'test-1', 'rev.2'], runs, runs)).toEqual({ done: 1, total: 4 })
+  expect(planCounts([], runs, runs.slice(0, 3))).toEqual({ done: 2, total: 3 })
+})
+
+test('progress text for the plan rows and the band', () => {
+  expect(progressText(3, 5)).toBe('3/5 tasks · 60%')
+  expect(progressText(3, 5, '')).toBe('3/5 · 60%')
+  expect(progressText(5, 5)).toBe('5/5 tasks · 100%')
+  expect(progressText(0, 0)).toBe('0/0 tasks · 0%')
 })

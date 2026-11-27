@@ -1979,6 +1979,8 @@ emit_event() {
     >>"$output_directory/$run_name.events.jsonl"
 }
 
+# The watchdog limit, written to every status so the deck can draw elapsed against it.
+timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 write_status() {
   local state="$1" value recovery_index
   local exit_status="${2:-}"
@@ -2023,6 +2025,7 @@ write_status() {
     fi
     printf 'parent=%s\ndepth=%s\nbudget_tokens=%s\nmax_children=%s\n' \
       "$parent_id" "$depth" "$budget_tokens" "$max_children"
+    printf 'timeout_seconds=%s\n' "$timeout_seconds"
     printf 'manager=%s\n' "$manager_id"
   } | persist_status "$workspace_root/$status_file" || return 1
   [[ "$state" == running ]] || emit_event "$state" "$state" "$exit_status"
@@ -2384,7 +2387,6 @@ write_live() {
 
 accumulate_prior_budget_usage
 
-timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 stall_seconds="${SQUAD_WORKER_STALL_SECONDS:-$(( stall_minutes * 60 ))}"
 if (( status == 0 )); then
   # Monitor mode assigns the function subshell and its children a dedicated group.

@@ -1034,10 +1034,10 @@ worker_next_action() {
   if [[ "${W_ASKING[$i]:-0}" == 1 ]]; then REPLY=answer
   elif [[ "${W_VERIFY[$i]:-}" == fail || "${W_VERIFY[$i]:-}" == timeout || "${W_STATE[$i]:-}" == failed ]]; then REPLY=fix
   elif [[ "${W_STATE[$i]:-}" == lost ]]; then REPLY=resume
-  elif [[ "${W_MERGE_STATE[$i]:-}" == merged || -n "${W_MERGED[$i]:-}" ]]; then REPLY=done
+  elif [[ "${W_MERGE_STATE[$i]:-}" == merged || -n "${W_MERGED[$i]:-}" ]]; then REPLY="done"
   elif [[ "${W_STATE[$i]:-}" == completed && -n "${W_WORKTREE[$i]:-}" && "${W_MERGE_STATE[$i]:-}" != discarded && -z "${W_DISCARDED[$i]:-}" ]]; then REPLY=merge
-  elif [[ "${W_STATE[$i]:-}" == running ]]; then REPLY=wait
-  elif [[ "${W_STATE[$i]:-}" == completed ]]; then REPLY=done
+  elif [[ "${W_STATE[$i]:-}" == running ]]; then REPLY="wait"
+  elif [[ "${W_STATE[$i]:-}" == completed ]]; then REPLY="done"
   fi
 }
 
@@ -5507,7 +5507,7 @@ build_g2_frame() {
   local columns="$1" lines="$2" rule_line="$3"
   local i j k f r row frame text state model tier plan="No plan"
   local n="${#W_NAME[@]}" nh="${#H_TS[@]}"
-  local td=0 tt=0 passed=0 checked=0 scope="clean" merge="" tokh=""
+  local td=0 tt=0 passed=0 checked=0 scope="clean"
   local manager_state="on call" worker_model="" manager_model="" max_count=0 count
   local headers=() done_ids=() ordered=() ordered_rank=()
   local g2_step="done" g2_step_index=4 needs_review=0 active_workers=0
@@ -5556,7 +5556,6 @@ build_g2_frame() {
     else done_n=$(( done_n + 1 )); done_ids[${#done_ids[@]}]="${W_NAME[$i]}"; fi
   done
 
-  if [[ "${TOTAL_TOKENS:-0}" =~ ^[0-9]+$ ]] && (( TOTAL_TOKENS > 0 )); then fmt_human_count "$TOTAL_TOKENS"; tokh="$REPLY"; fi
   for (( i=0; i<n; i++ )); do
     if [[ "${W_STATE[$i]}" == running || "${W_ASKING[$i]:-0}" == 1 ]]; then active_workers=1; fi
     g2_worker_rank "$i"
@@ -5564,7 +5563,6 @@ build_g2_frame() {
     [[ "${W_VERIFY[$i]:-}" != "pass" ]] || passed=$(( passed + 1 ))
     case "${W_VERIFY[$i]:-}" in pass|fail|FAIL) checked=$(( checked + 1 ));; esac
     case "${W_SCOPE_VIOLATION[$i]:-}" in 1|true|yes) scope="violation";; esac
-    [[ -z "${W_MERGE_STATE[$i]:-}" ]] || merge="${W_MERGE_STATE[$i]}"
     model="${W_MODEL[$i]:-}"; tier="${W_MODEL_TIER[$i]:-}"
     if [[ -n "$model" ]]; then
       count=0
@@ -5588,15 +5586,14 @@ build_g2_frame() {
   headers[0]="$REPLY"
   headers[1]="$swarm_header"
 
-  local step_text="" step_name step_label step_colour step_mark step_index=0
+  local step_text="" step_label step_colour step_mark step_index=0
   local step_labels=("Plan" "Dispatch" "Workers" "Review & merge" "Done")
-  for step_name in plan dispatch workers review done; do
+  for (( step_index=0; step_index<${#step_labels[@]}; step_index++ )); do
     step_label="${step_labels[$step_index]}"
     if (( step_index < g2_step_index )); then step_mark="✓"; step_colour="$c_completed"
     elif (( step_index == g2_step_index )); then step_mark="▶"; step_colour="${bold}${c_running}"
     else step_mark="○"; step_colour="$dim"; fi
     step_text+="${step_text:+ › }${step_colour}${step_mark} ${step_label}${reset}"
-    step_index=$(( step_index + 1 ))
   done
   step_text+=" · ${c_manager}${MANAGER_ID}${reset} (${manager_state})"
   (( g2_attention_only == 0 )) || step_text+=" · ${c_asking}[filter: attention]${reset}"
@@ -5898,7 +5895,7 @@ build_g2_frame() {
   local stream="live · §"
   (( once == 0 )) || stream="once"
   text=" CONVERSATION [ stream: $stream ] "; display_width "$text"; g2_rep "─" $(( columns - DW > 0 ? columns - DW : 0 ))
-  [[ "$g2_step" != done ]] || text="${text//§/✓}"
+  [[ "$g2_step" != "done" ]] || text="${text//§/✓}"
   local loghead="${text//§/@@SPIN@@}${dim}${REPLY}${reset}"
 
   fmt_human_count "${TOTAL_TOKENS:-0}"; local status_tokens="$REPLY"
@@ -5966,7 +5963,7 @@ swarm_preview() {
 swarm_facts() {
   local columns="$1" lines="$2" mw="$1" n=${#W_NAME[@]} i j d newest=-1 plan='No plan' path='' mode=manual
   local running=0 done=0 known=0 unknown=0 estimated=0 sum=0 cost='' text='' state='' dep blocked found
-  local waiting='' other='' maxdepth=0 rank wi urgent=-1
+  local waiting_names='' other='' maxdepth=0 rank wi urgent=-1
   for (( i=0; i<n; i++ )); do
     if (( newest < 0 )) || (( W_STARTED[i] > W_STARTED[newest] )); then newest=$i; fi
     [[ "${W_STATE[$i]}" != running ]] || running=$(( running + 1 ))
@@ -5975,7 +5972,7 @@ swarm_facts() {
       sum="$(awk -v a="$sum" -v b="${W_COST[$i]}" 'BEGIN {printf "%.4f",a+b}')"; known=$(( known + 1 ))
       [[ "${W_COST_STATUS[$i]}" != estimated ]] || estimated=1
     else unknown=$(( unknown + 1 )); fi
-    [[ "${W_ASKING[$i]:-0}" != 1 ]] || waiting+="${waiting:+, }${W_NAME[$i]}"
+    [[ "${W_ASKING[$i]:-0}" != 1 ]] || waiting_names+="${waiting_names:+, }${W_NAME[$i]}"
     wi=4; worker_next_action "$i"
     case "$REPLY" in answer) wi=0;; fix|resume) wi=1;; merge) wi=2;; wait) wi=3;; esac
     if (( urgent < 0 || wi < rank )); then urgent=$i; rank=$wi; fi
@@ -5988,7 +5985,7 @@ swarm_facts() {
     parse_plan_tasks "$path"; plan_task_depth
     local sha=''
     if command -v shasum >/dev/null 2>&1; then sha="$(printf '%s' "$path" | shasum -a 256)"; sha="${sha%% *}"; fi
-    [[ -z "$sha" || ! -e "$WS_ROOT/.squad/run-plan/$sha.lock" ]] || mode=run-plan
+    [[ -z "$sha" || ! -e "$WS_ROOT/.squad/run-plan/$sha.lock" ]] || mode="run-plan"
   fi
   if (( known > 0 )); then cost="\$$sum"; (( estimated == 0 )) || cost+=' est'; (( unknown == 0 )) || cost+=" (+$unknown unknown)"
   else cost='cost unknown'; fi
@@ -6025,7 +6022,7 @@ swarm_facts() {
           blocked=1
           for (( i=0; i<n; i++ )); do
             if [[ "${W_PLAN_TASK[$i]:-${W_NAME[$i]}}" == "$dep" && "${W_PLAN_NAME[$i]:-}" == "$plan" ]]; then
-              worker_next_action "$i"; [[ "$REPLY" != done ]] || blocked=0
+              worker_next_action "$i"; [[ "$REPLY" != "done" ]] || blocked=0
             fi
           done
           if (( blocked )); then state="○ blocked by $dep"; break; fi
@@ -6088,7 +6085,7 @@ swarm_facts() {
     esac
     data+=("NEXT $text")
   else data=('IN   No workers yet' 'RUN  Waiting for dispatch' 'OUT  No report yet' 'NEXT wait'); fi
-  local nh=${#H_TS[@]} budget start glyph colour
+  local nh=${#H_TS[@]} budget start glyph
   budget=$(( lines - 3 ))
   (( columns < 100 )) || budget=$(( ${#data[@]} - 1 ))
   (( budget >= 0 )) || budget=0
@@ -6100,7 +6097,7 @@ swarm_facts() {
     conversation+=("$text")
   done
   (( nh > 0 )) || conversation+=('No messages yet')
-  conversation+=("waiting on you: ${waiting:-none}")
+  conversation+=("waiting on you: ${waiting_names:-none}")
   return 0
 }
 

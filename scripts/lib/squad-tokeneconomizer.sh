@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034 # This sourced library exports values to its callers.
 # Shared helper functions for optional bounded TokenEconomizer Codex integration.
 
 if declare -F squad_te_pinned_commit >/dev/null 2>&1; then

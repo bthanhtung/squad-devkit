@@ -215,7 +215,11 @@ pub fn command(args: &[String]) -> Result<i32> {
             .arg(probe.join("outside"))
             .current_dir(&options.worktree);
         if options.strict {
-            probe_command.arg(if options.readonly { "readonly" } else { "write" });
+            probe_command.arg(if options.readonly {
+                "readonly"
+            } else {
+                "write"
+            });
             probe_command.arg(options.worktree.join(".squad-preflight-write"));
         }
         let usable = probe_command

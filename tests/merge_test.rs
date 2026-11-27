@@ -121,6 +121,7 @@ fn successful_merge_keeps_real_index() {
     assert_eq!(fs::read(f.dir.path().join(".git/index")).unwrap(), f.index);
     assert_eq!(fs::read(f.dir.path().join("file")).unwrap(), b"worker\n");
 }
+#[cfg(unix)]
 fn wait_for(path: &Path) {
     for _ in 0..200 {
         if path.exists() {
@@ -130,6 +131,7 @@ fn wait_for(path: &Path) {
     }
     panic!("timeout: {}", path.display());
 }
+#[cfg(unix)]
 #[test]
 fn different_workspaces_share_lock_and_crash_recovery() {
     let f = Fixture::new(false);
@@ -191,6 +193,7 @@ fn harness_gate_and_invalid_config() {
     f.restored(b"base\n");
 }
 
+#[cfg(unix)]
 #[test]
 fn rollback_preserves_deletions_symlinks_and_modes() {
     use std::os::unix::fs::{symlink, PermissionsExt};

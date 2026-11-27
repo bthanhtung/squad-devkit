@@ -42,12 +42,16 @@ fn checked(repo: &Path, args: &[&str], index: Option<&Path>) -> Result<Vec<u8>> 
     Ok(out.stdout)
 }
 fn paths(repo: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
+    #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
     checked(repo, args, None)?
         .split(|b| *b == 0)
         .filter(|s| !s.is_empty())
         .map(|s| {
+            #[cfg(unix)]
             let p = PathBuf::from(std::ffi::OsStr::from_bytes(s));
+            #[cfg(not(unix))]
+            let p = PathBuf::from(std::str::from_utf8(s)?);
             if p.components().any(|c| !matches!(c, Component::Normal(_))) {
                 bail!("unsafe git path");
             }
@@ -88,7 +92,10 @@ fn copy(source: &Path, dest: &Path) -> Result<()> {
     }
     let meta = fs::symlink_metadata(source)?;
     if meta.is_symlink() {
+        #[cfg(unix)]
         std::os::unix::fs::symlink(fs::read_link(source)?, dest)?;
+        #[cfg(not(unix))]
+        bail!("cannot snapshot symlink: {}", source.display());
     } else if meta.is_file() {
         fs::copy(source, dest)?;
     } else {

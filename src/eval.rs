@@ -115,7 +115,11 @@ pub fn run_fixture_suite(path: &Path, trials: Option<usize>) -> Result<Report> {
     })
 }
 
-fn run_command(command: &str, directory: &Path, timeout: Option<u64>) -> Result<(std::process::ExitStatus, bool)> {
+fn run_command(
+    command: &str,
+    directory: &Path,
+    timeout: Option<u64>,
+) -> Result<(std::process::ExitStatus, bool)> {
     let mut child_cmd = Command::new("sh");
     child_cmd.arg("-c").arg(command).current_dir(directory);
     #[cfg(unix)]
