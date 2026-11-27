@@ -23,6 +23,7 @@ cat >"$tmp/bin/grok" <<'FAKE'
 #!/usr/bin/env bash
 echo called >>"$TEST_ENGINE"
 [[ -z "${TEST_ENGINE_FAIL:-}" ]] || exit 3
+sleep 1
 echo report
 FAKE
 chmod +x "$tmp/bin/"*
