@@ -490,6 +490,14 @@ printf 'one\ntwo by human\nthree\n' >"$repo/app.txt"
 status=0
 "$worker" --merge wt-2 >/dev/null 2>"$temp_directory/merge-error" || status=$?
 [[ "$status" == 1 ]] || fail
+if grep -q 'worktree_apply_used_rust=1' "$temp_directory/merge-error"; then
+  grep -q 'Merge rolled back cleanly on conflict.' "$temp_directory/merge-error"
+  [[ "$(cat "$repo/app.txt")" == $'one\ntwo by human\nthree' ]] || fail
+  [[ -d "$(dirname "$wt_path")/wt-2" ]] || fail
+  status=0
+  SQUAD_RUST_DISABLE=1 "$worker" --merge wt-2 >/dev/null 2>"$temp_directory/merge-error" || status=$?
+  [[ "$status" == 1 ]] || fail
+fi
 grep -q 'with conflicts; resolve the markers in:' "$temp_directory/merge-error"
 grep -q '^  app.txt$' "$temp_directory/merge-error"
 grep -q '^<<<<<<< ' "$repo/app.txt"

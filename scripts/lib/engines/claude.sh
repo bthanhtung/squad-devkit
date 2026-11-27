@@ -31,7 +31,7 @@ engine_claude_build_command() {
     --no-session-persistence --tools "${SQUAD_WORKER_CLAUDE_TOOLS:-$default_tools}"
     "${permission_arguments[@]}"
     ${claude_allowed_tools[@]+"${claude_allowed_tools[@]}"} --settings "$claude_settings"
-    --output-format stream-json --verbose "$prompt")
+    --add-dir "$workspace_root" --output-format stream-json --verbose "$prompt")
   squad_engine_require_jq
 }
 

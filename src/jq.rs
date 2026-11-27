@@ -15,7 +15,9 @@ fn normalize_filter_escapes(code: &str) -> String {
     // Replace \p{Cc} (unicode control characters) with [:cntrl:] which regex-bites supports.
     // Replace non-standard JSON escape sequences (e.g. \s, \S, \d, \D, \w, \W) in string literals
     // with double backslashes so jaq string lexer accepts them.
-    let code = code.replace(r"\\p{Cc}", "[:cntrl:]").replace(r"\p{Cc}", "[:cntrl:]");
+    let code = code
+        .replace(r"\\p{Cc}", "[:cntrl:]")
+        .replace(r"\p{Cc}", "[:cntrl:]");
     let mut out = String::with_capacity(code.len() + 16);
     let mut chars = code.chars().peekable();
     let mut in_string = false;
@@ -102,7 +104,8 @@ pub fn run<R: Read, W: Write, E: Write>(
                 "--null-input" => null_input = true,
                 "--arg" => {
                     if i + 2 >= args.len() {
-                        let _ = writeln!(stderr, "squad jq: --arg requires two arguments: NAME VALUE");
+                        let _ =
+                            writeln!(stderr, "squad jq: --arg requires two arguments: NAME VALUE");
                         return 2;
                     }
                     named_args.push((args[i + 1].clone(), Val::from(args[i + 2].clone())));
@@ -111,7 +114,10 @@ pub fn run<R: Read, W: Write, E: Write>(
                 }
                 "--argjson" => {
                     if i + 2 >= args.len() {
-                        let _ = writeln!(stderr, "squad jq: --argjson requires two arguments: NAME JSON");
+                        let _ = writeln!(
+                            stderr,
+                            "squad jq: --argjson requires two arguments: NAME JSON"
+                        );
                         return 2;
                     }
                     let val = match jaq_json::read::parse_single(args[i + 2].as_bytes()) {
@@ -217,7 +223,9 @@ pub fn run<R: Read, W: Write, E: Write>(
     var_names.push("$ARGS");
     var_values.push(Val::obj(args_map));
 
-    let defs = jaq_core::defs().chain(jaq_std::defs()).chain(jaq_json::defs());
+    let defs = jaq_core::defs()
+        .chain(jaq_std::defs())
+        .chain(jaq_json::defs());
     let funs = jaq_core::funs::<JustLut<Val>>()
         .chain(jaq_std::funs())
         .chain(jaq_json::funs());
@@ -339,7 +347,8 @@ pub fn run<R: Read, W: Write, E: Write>(
                             }
                         }
                         Err(e) => {
-                            let _ = writeln!(stderr, "squad jq: error: Could not open file {p}: {e}");
+                            let _ =
+                                writeln!(stderr, "squad jq: error: Could not open file {p}: {e}");
                             return 2;
                         }
                     },
@@ -379,7 +388,8 @@ pub fn run<R: Read, W: Write, E: Write>(
                             }
                         }
                         Err(e) => {
-                            let _ = writeln!(stderr, "squad jq: error: Could not open file {p}: {e}");
+                            let _ =
+                                writeln!(stderr, "squad jq: error: Could not open file {p}: {e}");
                             return 2;
                         }
                     },
@@ -396,7 +406,8 @@ pub fn run<R: Read, W: Write, E: Write>(
                     ReaderSource::Path(p) => match std::fs::File::open(&p) {
                         Ok(f) => Box::new(BufReader::new(f).lines()),
                         Err(e) => {
-                            let _ = writeln!(stderr, "squad jq: error: Could not open file {p}: {e}");
+                            let _ =
+                                writeln!(stderr, "squad jq: error: Could not open file {p}: {e}");
                             return 2;
                         }
                     },
@@ -453,7 +464,8 @@ pub fn run<R: Read, W: Write, E: Write>(
                             }
                         }
                         Err(e) => {
-                            let _ = writeln!(stderr, "squad jq: error: Could not open file {p}: {e}");
+                            let _ =
+                                writeln!(stderr, "squad jq: error: Could not open file {p}: {e}");
                             return 2;
                         }
                     },
@@ -483,12 +495,7 @@ mod tests {
         let string_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let code = run(
-            &string_args,
-            input.as_bytes(),
-            &mut stdout,
-            &mut stderr,
-        );
+        let code = run(&string_args, input.as_bytes(), &mut stdout, &mut stderr);
         (
             code,
             String::from_utf8_lossy(&stdout).into_owned(),
@@ -662,11 +669,17 @@ mod tests {
 
     #[test]
     fn test_regex_with_escapes() {
-        let (code, out, _) = run_test(&["-n", "-c", r#""valid-model" | test("[\s\p{Cc}]") | not"#], "");
+        let (code, out, _) = run_test(
+            &["-n", "-c", r#""valid-model" | test("[\s\p{Cc}]") | not"#],
+            "",
+        );
         assert_eq!(code, 0);
         assert_eq!(out, "true\n");
 
-        let (code, out, _) = run_test(&["-n", "-c", r#""bad model" | test("[\s\p{Cc}]") | not"#], "");
+        let (code, out, _) = run_test(
+            &["-n", "-c", r#""bad model" | test("[\s\p{Cc}]") | not"#],
+            "",
+        );
         assert_eq!(code, 0);
         assert_eq!(out, "false\n");
     }
