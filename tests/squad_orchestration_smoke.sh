@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -E
+trap 'rc=$?; echo "FAIL squad_orchestration_smoke at line $LINENO (rc=$rc): $BASH_COMMAND" >&2' ERR
 export TZ=UTC
 
 if [[ -z "${TEST_SIGHUP_RESET:-}" ]] && command -v perl >/dev/null 2>&1; then
@@ -134,7 +136,9 @@ EOF
   build_g2_frame 240 80 ""
   [[ "${FRAME_TPL[0]}" == *'c ○ blocked by b'* ]]
   plan_path="${W_PLAN_PATH[0]}"
-  plan_hash="$(printf '%s' "$plan_path" | shasum -a 256)"; plan_hash="${plan_hash%% *}"
+  if command -v shasum >/dev/null 2>&1; then plan_hash="$(printf '%s' "$plan_path" | shasum -a 256)"
+  else plan_hash="$(printf '%s' "$plan_path" | sha256sum)"; fi
+  plan_hash="${plan_hash%% *}"
   mkdir -p "$WS_ROOT/.squad/run-plan/$plan_hash.lock"
   build_g2_frame 240 80 ""; [[ "${FRAME_TPL[0]}" == *'▸ run-plan'* ]]
   for size in '80 22' '40 18' '120 38'; do

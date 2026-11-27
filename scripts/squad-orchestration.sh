@@ -5984,7 +5984,9 @@ swarm_facts() {
   if [[ -n "$path" ]]; then
     parse_plan_tasks "$path"; plan_task_depth
     local sha=''
-    if command -v shasum >/dev/null 2>&1; then sha="$(printf '%s' "$path" | shasum -a 256)"; sha="${sha%% *}"; fi
+    if command -v shasum >/dev/null 2>&1; then sha="$(printf '%s' "$path" | shasum -a 256)"
+    elif command -v sha256sum >/dev/null 2>&1; then sha="$(printf '%s' "$path" | sha256sum)"; fi
+    sha="${sha%% *}"
     [[ -z "$sha" || ! -e "$WS_ROOT/.squad/run-plan/$sha.lock" ]] || mode="run-plan"
   fi
   if (( known > 0 )); then cost="\$$sum"; (( estimated == 0 )) || cost+=' est'; (( unknown == 0 )) || cost+=" (+$unknown unknown)"

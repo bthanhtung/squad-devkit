@@ -138,6 +138,9 @@ fn backend(options: &Options) -> Command {
         if let Some(tmp) = &options.tmp {
             cmd.arg("--bind").arg(tmp).arg(tmp);
         }
+        if options.strict {
+            cmd.args(["--remount-ro", "/"]);
+        }
         cmd
     }
 }

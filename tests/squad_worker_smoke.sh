@@ -346,7 +346,7 @@ FAKE_MCP_TRANSPORTS=1 "$worker" plugins-3 --engine codex --all-mcp --brief 'Keep
 # claude engine: model, auto permissions, workspace access, tokens from stream-json.
 "$worker" lead-1 --engine claude --brief 'High-stakes change. Files you own: core.py' >/dev/null
 claude_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
-[[ "$claude_call" == *'-p --model haiku --strict-mcp-config --disable-slash-commands --no-session-persistence --tools Read,Edit,Write,Glob,Grep,Bash --permission-mode acceptEdits --settings {"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}} --add-dir '*'--output-format stream-json --verbose'* ]] || fail
+[[ "$claude_call" == *'-p --model haiku --strict-mcp-config --disable-slash-commands --no-session-persistence --tools Read,Edit,Write,Glob,Grep,Bash --permission-mode acceptEdits --settings {"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}} --output-format stream-json --verbose'* ]] || fail
 [[ "$claude_call" == *'squad-ask.sh --from lead-1 --workspace '*'--to manager'* ]] || fail
 lead_status="$(ls .squad/workers/lead-1-*.status)"
 grep -qx 'model=haiku' "$lead_status"
