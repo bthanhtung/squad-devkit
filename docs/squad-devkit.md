@@ -176,6 +176,15 @@ even when they work in another repository with `--project`.
 - Non-interactive runs never ask. Without Claude Code or a saved choice, they
   use the first installed CLI from the table.
 
+**Harness surface lint.** `squad lint [--dir PATH] [--strict] [--json]` checks
+the current workspace (or `PATH`) for oversized instructions, invalid role
+surfaces, and unsafe symlinks. Defaults warn/error at 8/32 KB for root
+instructions, 4/16 KB for worker roles, and 24/32 KB for the manager role;
+rules and pending notes are limited to 2 KB. It also checks for empty roles and
+unexpanded placeholders. `--strict` treats warnings as failures. `squad doctor`
+and `squad-devkit --doctor` run the same check; the latter labels it
+`Harness Surface:`.
+
 A Claude Code manager starts workers with `run_in_background` and is notified
 when each one exits. Other managers start workers as detached shell jobs and
 wait with a single `squad receive <id> --wait`, because every worker sends the
