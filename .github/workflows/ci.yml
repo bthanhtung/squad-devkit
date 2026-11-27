@@ -85,7 +85,8 @@ jobs:
           shellcheck -S warning scripts/squad-devkit.sh scripts/squad-worker.sh \
             scripts/squad-worker-monitor.sh scripts/squad-orchestration.sh scripts/squad-ask.sh scripts/squad-route.sh \
             scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh scripts/lib/squad-worktree.sh scripts/lib/squad-panes.sh scripts/lib/squad-worker-model.sh scripts/lib/squad-plan.sh \
-            scripts/lib/squad-engine.sh scripts/lib/engines/*.sh
+            scripts/lib/squad-engine.sh scripts/lib/engines/*.sh \
+            tests/squad_surface_lint_smoke.sh
 
       - name: Build squad
         run: cargo build
@@ -94,6 +95,7 @@ jobs:
         run: |
           export PATH="$PWD/target/debug:$PATH"
           bash tests/squad_devkit_launcher_smoke.sh
+          bash tests/squad_surface_lint_smoke.sh
           bash tests/squad_devkit_workers_smoke.sh
           bash tests/squad_completions_smoke.sh
           bash tests/squad_devkit_manager_choice_smoke.sh

@@ -715,6 +715,27 @@ run_doctor() {
     printf '  Hint: use --doctor --split-test to test a monitor split.\n'
   fi
 
+  printf '\nHarness Surface:\n'
+  local lint_help='' lint_output lint_status=0 lint_line
+  if command -v squad >/dev/null 2>&1; then
+    lint_help="$(squad help 2>&1 || true)"
+  fi
+  if grep -qE '(^|[[:space:]])lint([[:space:]]|$)' <<< "$lint_help"; then
+    lint_output="$(squad lint --dir "${project_directory:-$PWD}" 2>&1)" || lint_status=$?
+    while IFS= read -r lint_line; do
+      case "$lint_line" in
+        WARN*) printf '  [WARN]    %s\n' "$lint_line" ;;
+        ERROR*) printf '  [FAIL]    %s\n' "$lint_line" ;;
+        OK*) printf '  [OK]      %s\n' "$lint_line" ;;
+      esac
+    done <<< "$lint_output"
+    if (( lint_status != 0 )); then
+      status=1
+      if [[ "$lint_output" != *ERROR* ]]; then printf '  [FAIL]    %s\n' "$lint_output"; fi
+    fi
+  else
+    printf '  [INFO]    squad lint not available in installed squad binary\n'
+  fi
   printf '\nResult: '
   if (( status == 0 )); then
     printf 'Environment ready for squad-devkit.\n'

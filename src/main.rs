@@ -114,6 +114,7 @@ fn main() -> Result<()> {
             }
             cmd_team(&name)
         }
+        "lint" => cmd_lint(args.collect()),
         "doctor" => cmd_doctor(),
         "setup" => {
             let target = args.next();
@@ -1275,6 +1276,60 @@ fn cmd_cleanup() -> Result<()> {
     Ok(())
 }
 
+fn cmd_lint(args: Vec<String>) -> Result<()> {
+    let mut dir = std::env::current_dir()?;
+    let (mut strict, mut json) = (false, false);
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dir" => {
+                let value = args.next().context("--dir requires a path")?;
+                if value.starts_with("--") {
+                    bail!("--dir requires a path");
+                }
+                dir = PathBuf::from(value);
+            }
+            "--strict" => strict = true,
+            "--json" => json = true,
+            _ => bail!("unknown lint argument: {arg}"),
+        }
+    }
+    let report = squad::surface_lint::lint_workspace(&dir, &Default::default())?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if report.findings.is_empty() {
+        println!(
+            "OK: harness surface lint passed ({} files, {} bytes)",
+            report.checked_files, report.total_bytes
+        );
+    } else {
+        for finding in &report.findings {
+            println!(
+                "{} [{}] {}: {}",
+                if finding.severity == squad::surface_lint::LintSeverity::Warn {
+                    "WARN"
+                } else {
+                    "ERROR"
+                },
+                finding.code,
+                finding.path,
+                finding.message
+            );
+        }
+        println!(
+            "Harness surface lint: {} errors, {} warnings ({} files, {} bytes)",
+            report.error_count(),
+            report.warn_count(),
+            report.checked_files,
+            report.total_bytes
+        );
+    }
+    if !report.passed(strict) {
+        bail!("harness surface lint failed");
+    }
+    Ok(())
+}
+
 fn cmd_doctor() -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
@@ -1317,6 +1372,28 @@ fn cmd_doctor() -> Result<()> {
             println!(
                 "WARN: {} has effective_protocol_version={}; task commands should fall back to send/receive",
                 agent_id, effective_version
+            );
+        }
+    }
+
+    let report = squad::surface_lint::lint_workspace(&workspace, &Default::default())?;
+    if report.findings.is_empty() {
+        println!(
+            "OK: harness surface lint passed ({} files, {} bytes)",
+            report.checked_files, report.total_bytes
+        );
+    } else {
+        for finding in &report.findings {
+            println!(
+                "{}: surface lint [{}] {}: {}",
+                if finding.severity == squad::surface_lint::LintSeverity::Warn {
+                    "WARN"
+                } else {
+                    "ERROR"
+                },
+                finding.code,
+                finding.path,
+                finding.message
             );
         }
     }
@@ -1410,6 +1487,7 @@ COMMANDS
   squad roles                                List available roles
   squad teams                                List available teams
   squad team <name>                          Show team template
+  squad lint [--dir <PATH>] [--strict] [--json]  Check harness surface and byte budgets
   squad doctor                                 Run compatibility diagnostics (read-only)
   squad setup [platform]                      Install /squad slash command for AI tools
   squad setup --list                         List supported platforms

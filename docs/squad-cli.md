@@ -85,6 +85,7 @@ Multiple agents with the same role get unique IDs automatically (`worker`, `work
 | `squad roles` | List available roles |
 | `squad teams` | List available teams |
 | `squad team <name>` | Show team template |
+| `squad lint [--dir <PATH>] [--strict] [--json]` | Check harness surface and byte budgets |
 | `squad setup [platform]` | Install `/squad` slash command for AI tools |
 | `squad setup --list` | List supported platforms and status |
 | `squad clean` | Clear all state |
