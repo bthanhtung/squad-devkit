@@ -12,7 +12,10 @@ learn_init() {
     root="$(cd "$common/.." && pwd -P)" || return 1
   fi
   learn_root="$root"
-  config="${SQUAD_DEVKIT_CONFIG:-$HOME/.config/squad-devkit}"
+  config="${SQUAD_DEVKIT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/squad-devkit}"
+  if [[ -f "$config" ]] || { [[ ! -d "$config" ]] && [[ "$(basename "$config")" == config ]] && [[ "$(basename "$(dirname "$config")")" == squad-devkit ]]; }; then
+    config="$(dirname "$config")"
+  fi
   mkdir -p "$config/knowledge" || return 1
   config="$(cd "$config/knowledge" && pwd -P)"
   case "$config/" in "$root/"*) echo 'Knowledge store must be outside the project and worktrees' >&2; return 1 ;; esac

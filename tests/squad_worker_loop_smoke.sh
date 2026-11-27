@@ -21,13 +21,14 @@ squad join manager --role manager-devkit --client claude --protocol-version 2 >/
 worker="$repo/scripts/squad-worker.sh"
 run() { "$worker" "$@" --engine claude --model test-model --no-worktree --no-plan test --brief test >"$tmp/out" 2>"$tmp/err"; }
 status() { ls -t .squad/workers/"$1"-*.status | head -n 1; }
-run loop --loop 3 --gate "first=n=\$(cat '$tmp/count' 2>/dev/null || echo 0); n=\$((n+1)); echo \$n > '$tmp/count'; test \$n -ge 2" --gate "second=echo yes > '$tmp/second'"
+run loop --loop 3 --gate "first=n=\$(cat '$tmp/ws/.loop-count' 2>/dev/null || echo 0); n=\$((n+1)); echo \$n > '$tmp/ws/.loop-count'; test \$n -ge 2" --gate "second=echo yes > '$tmp/ws/.loop-second'"
 grep -qx 'loop_iter=2' "$(status loop)"
 grep -qx 'gates=first:pass,second:pass' "$(status loop)"
-[[ -f "$tmp/second" ]]
-run exhausted --loop 2 --gate 'bad=false' --gate "later=touch '$tmp/never'"
+[[ -f "$tmp/ws/.loop-second" ]]
+run exhausted --loop 2 --gate 'bad=false' --gate "later=touch '$tmp/ws/.loop-never'"
 grep -qx 'gates=bad:fail,later:skipped' "$(status exhausted)"
-[[ ! -e "$tmp/never" ]]
+[[ ! -e "$tmp/ws/.loop-never" ]]
+rm -f "$tmp/ws/.loop-count" "$tmp/ws/.loop-second"
 export SQUAD_WORKER_CLAUDE_MODEL_BALANCED=balanced-test
 "$worker" escalate --engine claude --model test-model --model-tier fast --no-worktree --no-plan test --brief test --loop 2 --retry-escalate --gate 'bad=false' >"$tmp/out" 2>"$tmp/err"
 [[ $(find .squad/workers -name 'escalate-*.status' | wc -l | tr -d ' ') == 3 ]]

@@ -214,14 +214,15 @@ SQUAD_WORKER_VERIFY_TIMEOUT=0 "$worker" --help >/dev/null
 
 echo 'PASS: routing edge cases'
 
-run stop-verify --no-worktree --verify 'echo $$ > "$HOME/verify-pid"; exec sleep 30' --brief x &
+run stop-verify --no-worktree --verify 'echo $$ > .verify-pid; exec sleep 30' --brief x &
 launcher_pid=$!
 for n in {1..20}; do
-  if [[ -f "$HOME/verify-pid" ]]; then break; fi
+  if [[ -f "$tmp/project/.verify-pid" ]]; then break; fi
   sleep 1
 done
-[[ -f "$HOME/verify-pid" ]] || exit 1
-verify_pid="$(cat "$HOME/verify-pid")"
+[[ -f "$tmp/project/.verify-pid" ]] || exit 1
+verify_pid="$(cat "$tmp/project/.verify-pid")"
+rm -f "$tmp/project/.verify-pid"
 "$worker" --stop stop-verify >/dev/null
 status=0
 wait "$launcher_pid" || status=$?
@@ -372,7 +373,7 @@ done
 echo 'PASS: bounded escalation and automatic merge guardrails'
 
 export SQUAD_WORKER_OPENCODE_MODEL_BALANCED=repair-balanced
-run auto-fixed --worktree --model explicit --model-tier fast --retry-escalate --verify "if [[ -e '$tmp/verify-once' ]]; then exit 0; else touch '$tmp/verify-once'; exit 1; fi" --brief x
+run auto-fixed --worktree --model explicit --model-tier fast --retry-escalate --verify 'if [[ -e .verify-once ]]; then exit 0; else touch .verify-once; exit 1; fi' --brief x
 grep -qx 'attempt=2' "$(last_status auto-fixed)"
 grep -qx 'verify=pass' "$(last_status auto-fixed)"
 run no-verify-retry --no-worktree --model-tier fast --model explicit --retry-escalate --brief x
@@ -385,7 +386,7 @@ run engine-no-retry --no-worktree --model-tier fast --model explicit --retry-esc
 grep -qx 'attempt=1' "$(last_status engine-no-retry)"
 cp "$tmp/opencode-good" "$tmp/bin/opencode"
 # Advance only verification's wall clock to exercise timeout without a minute wait.
-export REAL_DATE="$(command -v date)" VERIFY_CLOCK="$tmp/verify-clock"
+export REAL_DATE="$(command -v date)" VERIFY_CLOCK="$tmp/project/.verify-clock"
 cat >"$tmp/bin/date" <<'CLOCK'
 #!/usr/bin/env bash
 if [[ "$*" == +%s && -e "$VERIFY_CLOCK" ]]; then

@@ -268,8 +268,10 @@ expect_allow "$(bash_payload "cd $project && git push")"
 SQUAD_DEVKIT_GUARD=0 run_guard "$(edit_payload Write src/x.rs)"
 [[ -z "$out" ]] || fail
 # Legacy Bash remains fail-open; this new security default belongs to Rust.
-PHASE4_GUARD_PARITY=0 SQUAD_DEVKIT_GUARD_FAIL_OPEN=0 expect_deny 'not json'
-[[ "$err" == *squad-devkit-manager-guard* ]] || fail
+if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]]; then
+  PHASE4_GUARD_PARITY=0 SQUAD_DEVKIT_GUARD_FAIL_OPEN=0 expect_deny 'not json'
+  [[ "$err" == *squad-devkit-manager-guard* ]] || fail
+fi
 SQUAD_DEVKIT_GUARD_FAIL_OPEN=1 expect_allow 'not json'
 [[ "$err" == *squad-devkit-manager-guard* ]] || fail
 expect_allow '{"tool_name":"Read","tool_input":{"file_path":"src/x.rs"}}'

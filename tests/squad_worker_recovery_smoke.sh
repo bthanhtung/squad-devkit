@@ -71,7 +71,7 @@ if "$worker" --engine-alive "$original"; then echo 'dead engine group considered
 worktree="$(get "$original" worktree)"
 [[ -d "$worktree" ]]
 [[ -s "${original%.status}.brief.md" ]]
-grep -qx 'sandbox=none' "$original"
+grep -qx 'sandbox=workspace-write' "$original"
 # Synthesize a dead wrapper; keep a real engine process alive in another group.
 perl -MPOSIX -e 'POSIX::setsid(); exec "sleep", "60"' &
 alive_pid=$!

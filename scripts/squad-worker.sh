@@ -1700,6 +1700,7 @@ run_engine_pid=""
 engine_pgid=""
 engine_started=""
 verify_pid=""
+gate_tmp=""
 stop_reason=""
 terminate_engine() {
   [[ -n "$engine_pgid" ]] || return 0
@@ -1722,6 +1723,7 @@ finish_run() {
       write_status failed "$exit_status"
     fi
   fi
+  [[ -z "$gate_tmp" ]] || rm -rf "$gate_tmp"
   [[ -z "$prompt_file" ]] || rm -f "$prompt_file"
   squad leave "$worker_id" >/dev/null 2>&1 || true
   if [[ -n "$status_file" ]] && (( suppress_notify == 0 )); then
@@ -1729,14 +1731,21 @@ finish_run() {
   fi
 }
 trap 'finish_run "$?"' EXIT
+kill_process_tree() {
+  local pid="$1" child
+  [[ -n "$pid" ]] || return 0
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_process_tree "$child"
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
 # --stop sends TERM: stop the engine, record it, and tell the manager.
 on_stop() {
   stop_reason="stopped by request"
   if [[ -n "$engine_pid" ]]; then
     terminate_engine
   elif [[ -n "$verify_pid" ]]; then
-    pkill -KILL -P "$verify_pid" 2>/dev/null || true
-    kill -KILL "$verify_pid" 2>/dev/null || true
+    kill_process_tree "$verify_pid"
   else
     exit 143
   fi
@@ -2594,13 +2603,15 @@ if (( $gate_count > 0 || $expect_count > 0 )); then
     fi
     verify_log="$output_directory/$run_name.gate-$gate_name.log"
     [[ "$gate_name" != verify ]] || verify_log="$output_directory/$run_name.verify.log"
+  gate_tmp=""
+  if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] && (cd "$engine_directory" && squad --help 2>&1 | grep -q 'sandbox'); then
+    gate_tmp="$(mktemp -d)"
+  fi
   (cd "$engine_directory"
-    if [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] && squad --help 2>&1 | grep -q 'sandbox'; then
-      gate_tmp="$(mktemp -d)"
-      trap 'rm -rf "$gate_tmp"' EXIT
+    if [[ -n "$gate_tmp" ]]; then
       gate_args=(sandbox exec --worktree "$engine_directory" --run-tmp "$gate_tmp" --profile "${SQUAD_SANDBOX_PROFILE:-workspace}")
       [[ "$role" != reviewer && "$role" != scout ]] || gate_args+=(--readonly)
-      squad "${gate_args[@]}" -- bash -c "$gate_command"
+      exec squad "${gate_args[@]}" -- bash -c "$gate_command"
     elif [[ "${SQUAD_SANDBOX_PROFILE:-workspace}" == strict ]]; then
       echo 'squad-worker: strict sandbox unavailable; refusing to run gate on host' >&2
       exit 1
@@ -2614,14 +2625,15 @@ if (( $gate_count > 0 || $expect_count > 0 )); then
   while kill -0 "$verify_pid" 2>/dev/null; do
     if (( $(date +%s) - verify_started >= 10#$verify_timeout * 60 )); then
       verify=timeout
-      pkill -KILL -P "$verify_pid" 2>/dev/null || true
-      kill -KILL "$verify_pid" 2>/dev/null || true
+      kill_process_tree "$verify_pid"
       break
     fi
     sleep 1
   done
   verify_exit=0
   wait "$verify_pid" 2>/dev/null || verify_exit=$?
+  [[ -z "$gate_tmp" ]] || rm -rf "$gate_tmp"
+  gate_tmp=""
   verify_pid=""
   if [[ "$stop_reason" == "stopped by request" ]]; then
     verify=fail
