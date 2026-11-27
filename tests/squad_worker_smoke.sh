@@ -346,7 +346,7 @@ FAKE_MCP_TRANSPORTS=1 "$worker" plugins-3 --engine codex --all-mcp --brief 'Keep
 # claude engine: model, auto permissions, workspace access, tokens from stream-json.
 "$worker" lead-1 --engine claude --brief 'High-stakes change. Files you own: core.py' >/dev/null
 claude_call="$(grep '^claude:' "$WORKER_TEST_LOG" | tail -n 1)"
-[[ "$claude_call" == *'-p --model haiku --strict-mcp-config --disable-slash-commands --no-session-persistence --tools Read,Edit,Write,Glob,Grep,Bash --permission-mode acceptEdits --settings {"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}} --add-dir '*'--output-format stream-json --verbose'* ]] || fail
+[[ "$claude_call" == *'-p --model haiku --strict-mcp-config --disable-slash-commands --no-session-persistence --tools Read,Edit,Write,Glob,Grep,Bash --permission-mode acceptEdits --settings {"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}} --output-format stream-json --verbose'* ]] || fail
 [[ "$claude_call" == *'squad-ask.sh --from lead-1 --workspace '*'--to manager'* ]] || fail
 lead_status="$(ls .squad/workers/lead-1-*.status)"
 grep -qx 'model=haiku' "$lead_status"
@@ -490,12 +490,42 @@ printf 'one\ntwo by human\nthree\n' >"$repo/app.txt"
 status=0
 "$worker" --merge wt-2 >/dev/null 2>"$temp_directory/merge-error" || status=$?
 [[ "$status" == 1 ]] || fail
+if grep -q 'worktree_apply_used_rust=1' "$temp_directory/merge-error"; then
+  grep -q 'Merge rolled back cleanly on conflict.' "$temp_directory/merge-error"
+  [[ "$(cat "$repo/app.txt")" == $'one\ntwo by human\nthree' ]] || fail
+  [[ -d "$(dirname "$wt_path")/wt-2" ]] || fail
+  status=0
+  SQUAD_RUST_DISABLE=1 "$worker" --merge wt-2 >/dev/null 2>"$temp_directory/merge-error" || status=$?
+  [[ "$status" == 1 ]] || fail
+fi
 grep -q 'with conflicts; resolve the markers in:' "$temp_directory/merge-error"
 grep -q '^  app.txt$' "$temp_directory/merge-error"
 grep -q '^<<<<<<< ' "$repo/app.txt"
 [[ -d "$(dirname "$wt_path")/wt-2" ]] || fail
 [[ "$("$worker" --discard wt-2)" == *'Discarded wt-2'* ]] || fail
 [[ "$("$worker" --merge wt-2 2>&1 || true)" == *'No worktree for wt-2'* ]] || fail
+
+# Orphan worktrees can be reused only when they have no changes.
+orphan_repo="$temp_directory/orphan-repo"
+mkdir -p "$orphan_repo"
+git -C "$orphan_repo" init -q
+printf 'base\n' >"$orphan_repo/base.txt"
+git -C "$orphan_repo" add base.txt
+git -C "$orphan_repo" -c user.name=t -c user.email=t@t commit -qm init
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Empty' >/dev/null
+orphan_path="$(ls -d "$PWD"/.squad/worktrees/orphan-repo-*/orphan-1)"
+rm .squad/workers/orphan-1-*.status
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Reuse' >/dev/null 2>"$temp_directory/orphan-error"
+grep -q 'squad-worker: reusing empty orphan worktree for orphan-1' "$temp_directory/orphan-error"
+grep -q '^attempt=1$' .squad/workers/orphan-1-*.status
+rm .squad/workers/orphan-1-*.status
+printf 'change\n' >"$orphan_path/change.txt"
+status=0
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Changed' >/dev/null 2>"$temp_directory/orphan-error" || status=$?
+[[ "$status" == 2 ]] || fail
+grep -Fq "squad-worker: orphan-1 has an orphan worktree with changes at $orphan_path but no run record; inspect it, then run squad-worker --discard orphan-1 (or --merge orphan-1)" "$temp_directory/orphan-error"
+"$worker" --discard orphan-1 --project "$orphan_repo" >/dev/null
+[[ ! -d "$orphan_path" && ! -e "$orphan_path.base" && -z "$(git -C "$orphan_repo" branch --list squad/orphan-1)" ]] || fail
 
 # Reviewers read the project directly; --no-worktree does the same for any role.
 "$worker" rev-1 --engine codex --role reviewer --project "$repo" --brief 'Review app.txt' >/dev/null
@@ -535,12 +565,12 @@ EOF
   [[ "$(squad_panes_orca_manager "$PWD")" == manager ]] || fail
   export ORCA_PANE_KEY=missing:leaf
   [[ -z "$(squad_panes_orca_manager "$PWD")" ]] || fail
-  export SQUAD_DEVKIT_ORCA_TERMINAL=manager
   mkdir -p "$temp_directory/workspace 'quoted'"
   printf '#!/bin/sh\nprintf quoted-ok\n' >"$temp_directory/worker 'quoted' script"
   chmod +x "$temp_directory/worker 'quoted' script"
-  squad_open_monitor "$temp_directory/worker 'quoted' script" 'worker · codex' "$temp_directory/workspace 'quoted'" "$temp_directory/orca-state" ''
+  ORCA_PANE_KEY=tab:leaf squad_open_monitor "$temp_directory/worker 'quoted' script" 'worker · codex' "$temp_directory/workspace 'quoted'" "$temp_directory/orca-state" '' required
   [[ "$(bash -c "$(cat "$ORCA_TEST_LOG.command")")" == quoted-ok ]] || fail
+  export SQUAD_DEVKIT_ORCA_TERMINAL=manager
   squad_open_monitor /tmp/next 'next · codex' "$PWD" "$temp_directory/orca-state" ''
   grep -q '^terminal split --terminal manager --direction vertical --command ' "$ORCA_TEST_LOG"
   grep -q '^terminal split --terminal worker-pane --direction horizontal --command ' "$ORCA_TEST_LOG"
@@ -573,7 +603,7 @@ EOF
   TMUX=fake TMUX_PANE=%1 squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
   [[ ! -s "$ORCA_TEST_LOG" ]] || fail
   unset -f tmux
-  unset SQUAD_DEVKIT_ORCA_TERMINAL
+  unset SQUAD_DEVKIT_ORCA_TERMINAL ORCA_PANE_KEY
   squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
   [[ ! -s "$ORCA_TEST_LOG" ]] || fail
   export SQUAD_DEVKIT_ORCA_TERMINAL=manager
@@ -740,5 +770,13 @@ if SQUAD_WORKER_SANDBOX=1 "$worker" yolo-conflict --engine claude --yolo --brief
 for engine in grok opencode ccr; do
   if "$worker" yolo-unsupported --engine "$engine" --yolo --brief test >/dev/null 2>&1; then fail; fi
 done
+
+# Verify default title extraction strips Engine/Task/risk boilerplate.
+"$worker" title-extract --engine codex --no-worktree --brief 'Engine codex (CLI default model). Task: root-cause 3 flaky e2e tests, risk moderate, complexity moderate.' >/dev/null
+grep -qx 'title=root-cause 3 flaky e2e tests' "$(ls -t .squad/workers/title-extract-*.status | head -n 1)" || fail "default title extraction"
+
+# Verify `auto` derives a descriptive worker ID from the title/brief.
+"$worker" auto --engine codex --no-worktree --title 'Fix flaky e2e login' --brief 'Goal: Fix flaky e2e login' >/dev/null
+ls .squad/workers/fix-flaky-e2e-login-*.status >/dev/null 2>&1 || fail "auto worker id"
 
 echo 'PASS: squad-worker engines, worktrees, panes in every terminal, flicker-free monitor, MCP filtering, task lifecycle, watchdog, stop, questions, and failure reporting'

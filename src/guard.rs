@@ -575,17 +575,33 @@ fn evaluate(project: &str, input: &Value) -> Result<Option<String>> {
                 .or_else(|| input["tool_input"]["notebook_path"].as_str())
                 .unwrap_or_default();
             if file.is_empty() {
-                return Ok(None);
+                bail!("edit tool input requires a file path");
             }
             let path = resolve(file, &guard.cwd);
             Ok((!guard.allowed(&path)).then(|| format!("Manager does not edit project files ({path}). Delegate the change to a worker (squad-worker ... --plan <plan>) or add an allowed path via SQUAD_DEVKIT_GUARD_ALLOW.")))
         }
-        "Bash" => guard.bash(input["tool_input"]["command"].as_str().unwrap_or_default()),
+        "Bash" => guard.bash(
+            input["tool_input"]["command"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Bash tool input requires a command"))?,
+        ),
         _ => Ok(None),
     }
 }
 pub fn command(args: &[String]) -> Result<()> {
-    let [op, project] = args else {
+    let (args, fail_open) = match args {
+        [op, project, flag, mode] if flag == "--guard-mode" => {
+            if !matches!(mode.as_str(), "fail-open" | "fail-closed") {
+                bail!("guard mode must be fail-open or fail-closed");
+            }
+            (vec![op.clone(), project.clone()], mode == "fail-open")
+        }
+        _ => (
+            args.to_vec(),
+            env::var("SQUAD_DEVKIT_GUARD_FAIL_OPEN").as_deref() == Ok("1"),
+        ),
+    };
+    let [op, project] = args.as_slice() else {
         bail!("Usage: squad guard pre-tool-use <project_dir>")
     };
     if op != "pre-tool-use" {
@@ -602,6 +618,10 @@ pub fn command(args: &[String]) -> Result<()> {
         std::io::stdin().read_to_string(&mut input)?;
         let value: Value = serde_json::from_str(&input)
             .map_err(|_| anyhow::anyhow!("could not parse the hook input"))?;
+        if !value.is_object() || !value["tool_name"].is_string() || !value["tool_input"].is_object()
+        {
+            bail!("invalid hook input shape");
+        }
         evaluate(project, &value)
     })();
     match result {
@@ -610,7 +630,16 @@ pub fn command(args: &[String]) -> Result<()> {
             json!({"hookSpecificOutput": {"hookEventName":"PreToolUse", "permissionDecision":"deny", "permissionDecisionReason": reason}})
         ),
         Ok(None) => (),
-        Err(error) => eprintln!("squad-devkit-manager-guard: {error}; allowing the tool call"),
+        Err(error) if fail_open => eprintln!(
+            "squad-devkit-manager-guard: {error}; allowing the tool call (explicit fail-open)"
+        ),
+        Err(error) => {
+            eprintln!("squad-devkit-manager-guard: {error}; denying the tool call");
+            println!(
+                "{}",
+                json!({"hookSpecificOutput": {"hookEventName":"PreToolUse", "permissionDecision":"deny", "permissionDecisionReason":"Guard evaluation failed; tool call denied. Repair the hook input or configuration."}})
+            );
+        }
     }
     Ok(())
 }

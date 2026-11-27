@@ -42,6 +42,70 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn claim_dag(&self, plan: &str, owner: &str, now: i64, ttl: i64) -> Result<bool> {
+        anyhow::ensure!(ttl > 0, "lease duration must be positive");
+        let tx = self.conn.unchecked_transaction()?;
+        let claimed = tx.execute(
+            "INSERT INTO dag_runs VALUES (?1, ?2, ?3)
+            ON CONFLICT(plan) DO UPDATE SET lease_owner=excluded.lease_owner,
+            lease_expires_at=excluded.lease_expires_at WHERE dag_runs.lease_expires_at <= ?4",
+            params![plan, owner, now + ttl, now],
+        )? == 1;
+        if claimed {
+            tx.execute("UPDATE dag_nodes SET state='lost' WHERE plan=?1 AND state='running' AND lease_expires_at<=?2", params![plan, now])?;
+        }
+        tx.commit()?;
+        Ok(claimed)
+    }
+
+    pub fn heartbeat_dag(&self, plan: &str, owner: &str, now: i64, ttl: i64) -> Result<bool> {
+        anyhow::ensure!(ttl > 0, "lease duration must be positive");
+        let tx = self.conn.unchecked_transaction()?;
+        let updated = tx.execute(
+            "UPDATE dag_runs SET lease_expires_at=?3
+            WHERE plan=?1 AND lease_owner=?2 AND lease_expires_at>?4",
+            params![plan, owner, now + ttl, now],
+        )? == 1;
+        if updated {
+            tx.execute(
+                "UPDATE dag_nodes SET lease_expires_at=?3 WHERE plan=?1 AND lease_owner=?2",
+                params![plan, owner, now + ttl],
+            )?;
+        }
+        tx.commit()?;
+        Ok(updated)
+    }
+
+    pub fn release_dag(&self, plan: &str, owner: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE dag_runs SET lease_expires_at=0 WHERE plan=?1 AND lease_owner=?2",
+            params![plan, owner],
+        )?;
+        Ok(())
+    }
+
+    pub fn write_dag_node(
+        &self,
+        plan: &str,
+        task: &str,
+        hash: &str,
+        attempt: &str,
+        state: &str,
+        owner: &str,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "INSERT INTO dag_nodes
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, lease_expires_at FROM dag_runs
+            WHERE plan=?1 AND lease_owner=?6 AND lease_expires_at>unixepoch()
+            ON CONFLICT(plan,task_id) DO UPDATE SET task_hash=excluded.task_hash,
+            attempt=excluded.attempt, state=excluded.state, lease_owner=excluded.lease_owner,
+            lease_expires_at=excluded.lease_expires_at",
+            params![plan, task, hash, attempt, state, owner],
+        )?;
+        anyhow::ensure!(changed == 1, "DAG lease lost");
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open database: {}", path.display()))?;
@@ -117,6 +181,29 @@ impl Store {
              );",
         )
         .context("failed to initialize database schema")?;
+        // Serialize the v2 migration so concurrent first opens cannot race ALTER TABLE.
+        let migration =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
+        migration.execute_batch(
+            "CREATE TABLE IF NOT EXISTS squad_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
+        let has_entries: bool = migration.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('worker_runs') WHERE name='entries_json')",
+            [], |row| row.get(0),
+        )?;
+        if !has_entries {
+            migration.execute_batch("ALTER TABLE worker_runs ADD COLUMN entries_json TEXT;")?;
+        }
+        let has_authoritative: bool = migration.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('worker_runs') WHERE name='authoritative')",
+            [], |row| row.get(0),
+        )?;
+        if !has_authoritative {
+            migration.execute_batch(
+                "ALTER TABLE worker_runs ADD COLUMN authoritative INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        migration.commit()?;
         // Migrations: add columns if missing (existing DBs)
         let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN session_token TEXT;");
         let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN last_seen INTEGER;");
@@ -137,6 +224,17 @@ impl Store {
             "UPDATE messages SET kind = ?1 WHERE kind IS NULL OR kind = ''",
             [DEFAULT_MESSAGE_KIND],
         );
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS dag_runs (
+            plan TEXT PRIMARY KEY, lease_owner TEXT NOT NULL, lease_expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS dag_nodes (
+            plan TEXT NOT NULL, task_id TEXT NOT NULL, task_hash TEXT NOT NULL,
+            attempt TEXT NOT NULL, state TEXT NOT NULL,
+            lease_owner TEXT NOT NULL, lease_expires_at INTEGER NOT NULL,
+            PRIMARY KEY(plan, task_id)
+        );",
+        )?;
         Ok(Self { conn })
     }
 

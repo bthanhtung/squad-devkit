@@ -41,7 +41,7 @@ squad_panes_orca_cli() {
   fi
 }
 
-# Only the launcher resolves shell identity; workers inherit the frozen handle.
+# Prefer the launcher’s frozen handle, then resolve the calling Orca pane.
 squad_panes_orca_manager() {
   local workspace="$1" cli
   if [[ -n "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]]; then
@@ -102,6 +102,7 @@ squad_panes_herdr_manager() {
 }
 
 squad_open_monitor() {
+  [[ "${SQUAD_WORKER_HEADLESS:-0}" != 1 ]] || return 0
   local command_script="$1" title="$2" workspace="$3" state="$4" dashboard_script="$5"
   local required="${6:-}"
   if [[ "${SQUAD_WORKER_PANES:-1}" == 0 ]]; then
@@ -112,9 +113,9 @@ squad_open_monitor() {
   local backend="" manager=""
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     backend=tmux; manager="$TMUX_PANE"
-  elif [[ -n "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]] &&
+  elif manager="$(squad_panes_orca_manager "$workspace")" && [[ -n "$manager" ]] &&
     command -v "$(squad_panes_orca_cli)" >/dev/null 2>&1 && squad_has_jq; then
-    backend=orca; manager="$SQUAD_DEVKIT_ORCA_TERMINAL"
+    backend=orca
   elif [[ "$(squad_panes_herdr_kind)" == herdr_app ]]; then
     manager="$(squad_panes_herdr_app_manager)"
     if [[ -z "$manager" || "$manager" == *[[:space:]]* ]]; then
@@ -150,6 +151,7 @@ squad_open_monitor() {
     local last_file="$state/.$backend-${manager//[^A-Za-z0-9_-]/_}.last" previous="" created=""
     [[ -f "$last_file" ]] && previous="$(cat "$last_file")"
     local errfile="$state/.$backend.err" detail=""
+    [[ "$backend" != herdr ]] || squad_panes_herdr_reap_stale "$manager"
     if ! created="$("squad_panes_$backend" "$manager" "$previous" "$command_script" "$title" "$workspace" 2>"$errfile")"; then created=""; fi
     [[ "$backend" != orca || ! -s "$errfile" ]] || detail="$(head -c 400 "$errfile" | tr -c '[:print:]\n' ' ' | tr '\n' ' ')"
     rm -f "$errfile"
@@ -335,7 +337,6 @@ squad_panes_herdr_reap_stale() {
 
 squad_panes_herdr() {
   local manager="$1" previous="$2" command_script="$3" title="$4" workspace="$5" output="" created
-  squad_panes_herdr_reap_stale "$manager"
   if [[ -n "$previous" ]]; then
     output="$(herdr pane split "$previous" --direction down --cwd "$workspace" --no-focus 2>/dev/null || true)"
   fi

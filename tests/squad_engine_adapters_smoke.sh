@@ -65,7 +65,7 @@ role=dev
 squad_engine_load claude
 squad_engine build_command || fail
 command_line="${engine_command[*]}"
-[[ "$command_line" == "claude -p --model opus --strict-mcp-config --disable-slash-commands --no-session-persistence --tools Read,Edit,Write,Glob,Grep,Bash --permission-mode acceptEdits --settings "*'"autoAllowBashIfSandboxed":true'*"--add-dir $workspace_root --output-format stream-json --verbose do the task" ]] || fail
+[[ "$command_line" == "claude -p --model opus --strict-mcp-config --disable-slash-commands --no-session-persistence --tools Read,Edit,Write,Glob,Grep,Bash --permission-mode acceptEdits --settings "*'"autoAllowBashIfSandboxed":true'*"--output-format stream-json --verbose do the task" ]] || fail
 yolo=1 sandbox_mode=0 squad_engine build_command || fail
 [[ "${engine_command[*]}" == *'--dangerously-skip-permissions --settings {"sandbox":{"enabled":false}}'* ]] || fail
 [[ "${engine_command[*]}" != *--permission-mode* ]] || fail
@@ -99,7 +99,7 @@ command_line="${engine_command[*]}"
 [[ "$command_line" == *'-c mcp_servers.remote={enabled=false,url="http://127.0.0.1"}'* ]] || fail
 [[ "$command_line" == *'-c mcp_servers.other.enabled=false'* ]] || fail
 [[ "$command_line" != *mcp_servers.off* && "$command_line" != *secret-cmd* && "$command_line" != *https://x* ]] || fail
-[[ "$command_line" == "codex exec --json --cd $engine_directory --ephemeral --skip-git-repo-check --sandbox workspace-write --add-dir $workspace_root "*"--model opus --output-last-message $absolute_report do the task" ]] || fail
+[[ "$command_line" == "codex exec --json --cd $engine_directory --ephemeral --skip-git-repo-check --sandbox workspace-write "*"--model opus --output-last-message $absolute_report do the task" ]] || fail
 keep_mcp=(remote)
 if squad_engine build_command 2>"$tmp/error"; then fail; else [[ $? == 3 ]] || fail; fi
 grep -q 'remote (needs REMOTE_TOKEN)' "$tmp/error" || fail

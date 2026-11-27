@@ -70,7 +70,7 @@ run floor --plan .squad/plans/high.md --brief x 2>"$tmp/err" || status=$?
 grep -q -- '--tier-reason' "$tmp/err"
 mkdir -p .squad/workers
 printf 'role=sub-manager\ndepth=1\n' >.squad/workers/sm-1-20260101-000000.status
-run sm-child --parent sm-1 --model example --no-worktree --plan .squad/plans/high.md --brief x
+run sm-child --parent sm-1 --model example --no-worktree --skip-plan-review test --plan .squad/plans/high.md --brief x
 grep -qx 'tier_override=sub-manager child of sm-1' "$(last_status sm-child)"
 for parent in missing dev-parent; do
   [[ "$parent" != dev-parent ]] || printf 'role=dev\ndepth=1\n' >.squad/workers/dev-parent-20260101-000000.status
@@ -79,7 +79,7 @@ for parent in missing dev-parent; do
   [[ "$status" == 2 ]]
   grep -q 'high-risk plans require' "$tmp/err"
 done
-run override --plan .squad/plans/high.md --tier-reason test --brief x
+run override --skip-plan-review test --plan .squad/plans/high.md --tier-reason test --brief x
 grep -qx 'tier_override=test' "$(last_status override)"
 # Explicit strong mappings are provided through Claude's built-in aliases.
 cat >"$tmp/bin/claude" <<'ENGINE'
@@ -87,7 +87,7 @@ cat >"$tmp/bin/claude" <<'ENGINE'
 printf '%s\n' '{"type":"result","result":"Strong report"}'
 ENGINE
 chmod +x "$tmp/bin/claude"
-"$worker" strong --engine claude --model-tier strong --no-worktree --plan .squad/plans/high.md --brief x >"$tmp/out"
+"$worker" strong --engine claude --model-tier strong --no-worktree --skip-plan-review test --plan .squad/plans/high.md --brief x >"$tmp/out"
 run low --plan .squad/plans/low.md --brief x
 run none --no-plan test --brief x
 SLOW=1 SQUAD_WORKER_LIVE_INTERVAL=1 run live --no-worktree --plan .squad/plans/low.md --brief x &
@@ -107,7 +107,8 @@ wait "$live_worker"
 echo 'PASS: tier floor and overrides'
 EDIT=changed run retry --plan .squad/plans/low.md --brief x
 grep -qx 'attempt=1' "$(last_status retry)"
-run retry --plan .squad/plans/low.md --brief x
+run retry --plan .squad/plans/low.md --brief x 2>"$tmp/err"
+! grep -q 'failed twice' "$tmp/err"
 grep -qx 'attempt=2' "$(last_status retry)"
 grep -q 'First report' "$PROMPT_LOG"
 grep -q 'file.txt' "$PROMPT_LOG"
@@ -168,7 +169,7 @@ if compgen -G '.squad/workers/role-probe-*.status' >/dev/null; then exit 1; fi
 status=0
 run empty-reason --plan .squad/plans/high.md --tier-reason '' --brief x 2>"$tmp/err" || status=$?
 [[ "$status" == 2 ]] || exit 1
-run reason --no-worktree --plan .squad/plans/high.md --tier-reason $'a=b\nverify=pass' --brief x
+run reason --no-worktree --skip-plan-review test --plan .squad/plans/high.md --tier-reason $'a=b\nverify=pass' --brief x
 [[ $(grep -c '^tier_override=' "$(last_status reason)") == 1 ]] || exit 1
 if grep -q '^verify=pass$' "$(last_status reason)"; then exit 1; fi
 
@@ -181,6 +182,8 @@ if grep -q 'other worker report' "$PROMPT_LOG"; then exit 1; fi
 run dev-1 --plan .squad/plans/low.md --brief x 2>"$tmp/err"
 grep -qx 'attempt=3' "$(last_status dev-1)"
 grep -q 'higher tier or splitting' "$tmp/err"
+grep -q 'failed twice' "$tmp/err"
+grep -q -- '--role reviewer' "$tmp/err"
 dev_status="$(last_status dev-1)"
 "$worker" --discard dev-1 >/dev/null
 [[ "$(grep -c '^discarded=[0-9]*$' "$dev_status")" == 1 ]]
@@ -211,14 +214,15 @@ SQUAD_WORKER_VERIFY_TIMEOUT=0 "$worker" --help >/dev/null
 
 echo 'PASS: routing edge cases'
 
-run stop-verify --no-worktree --verify 'echo $$ > "$HOME/verify-pid"; exec sleep 30' --brief x &
+run stop-verify --no-worktree --verify 'echo $$ > .verify-pid; exec sleep 30' --brief x &
 launcher_pid=$!
 for n in {1..20}; do
-  if [[ -f "$HOME/verify-pid" ]]; then break; fi
+  if [[ -f "$tmp/project/.verify-pid" ]]; then break; fi
   sleep 1
 done
-[[ -f "$HOME/verify-pid" ]] || exit 1
-verify_pid="$(cat "$HOME/verify-pid")"
+[[ -f "$tmp/project/.verify-pid" ]] || exit 1
+verify_pid="$(cat "$tmp/project/.verify-pid")"
+rm -f "$tmp/project/.verify-pid"
 "$worker" --stop stop-verify >/dev/null
 status=0
 wait "$launcher_pid" || status=$?
@@ -239,6 +243,7 @@ for n in 1 2 3; do
   "$worker" strong-retry --engine claude --model-tier strong --project "$tmp/project" --plan .squad/plans/low.md --brief x >"$tmp/out" 2>"$tmp/err"
 done
 grep -qx 'attempt=3' "$(last_status strong-retry)" || exit 1
+grep -q 'failed twice' "$tmp/err"
 if grep -q 'higher tier or splitting' "$tmp/err"; then exit 1; fi
 EDIT=merged run merge-reset --plan .squad/plans/low.md --brief x
 "$worker" --merge merge-reset >/dev/null
@@ -368,7 +373,7 @@ done
 echo 'PASS: bounded escalation and automatic merge guardrails'
 
 export SQUAD_WORKER_OPENCODE_MODEL_BALANCED=repair-balanced
-run auto-fixed --worktree --model explicit --model-tier fast --retry-escalate --verify "if [[ -e '$tmp/verify-once' ]]; then exit 0; else touch '$tmp/verify-once'; exit 1; fi" --brief x
+run auto-fixed --worktree --model explicit --model-tier fast --retry-escalate --verify 'if [[ -e .verify-once ]]; then exit 0; else touch .verify-once; exit 1; fi' --brief x
 grep -qx 'attempt=2' "$(last_status auto-fixed)"
 grep -qx 'verify=pass' "$(last_status auto-fixed)"
 run no-verify-retry --no-worktree --model-tier fast --model explicit --retry-escalate --brief x
@@ -381,7 +386,7 @@ run engine-no-retry --no-worktree --model-tier fast --model explicit --retry-esc
 grep -qx 'attempt=1' "$(last_status engine-no-retry)"
 cp "$tmp/opencode-good" "$tmp/bin/opencode"
 # Advance only verification's wall clock to exercise timeout without a minute wait.
-export REAL_DATE="$(command -v date)" VERIFY_CLOCK="$tmp/verify-clock"
+export REAL_DATE="$(command -v date)" VERIFY_CLOCK="$tmp/project/.verify-clock"
 cat >"$tmp/bin/date" <<'CLOCK'
 #!/usr/bin/env bash
 if [[ "$*" == +%s && -e "$VERIFY_CLOCK" ]]; then

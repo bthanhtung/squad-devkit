@@ -194,6 +194,10 @@ squad join manager --role manager-devkit --client claude --protocol-version 2 >/
 mkdir -p .squad/plans
 write_plan .squad/plans/ok.md Low
 write_plan .squad/plans/risky.md High
+write_plan .squad/plans/gate.md high
+write_plan .squad/plans/complex.md low
+sed 's/^- Complexity: .*/- Complexity: high/' .squad/plans/complex.md >.squad/plans/complex.new
+mv .squad/plans/complex.new .squad/plans/complex.md
 
 # expect_exit STATUS PATTERN CMD...
 expect_exit() {
@@ -206,6 +210,24 @@ expect_exit() {
 
 # --- 2. plan gate -------------------------------------------------------------------
 export SQUAD_MANAGER_ID=manager
+expect_exit 2 'run a plan review first' "$worker" gate --engine grok --no-worktree --plan .squad/plans/gate.md --tier-reason test --brief x
+grep -q -- '--skip-plan-review' "$tmp/out" || fail 'missing override advice'
+expect_exit 2 'run a plan review first' "$worker" gate --engine grok --no-worktree --plan .squad/plans/complex.md --brief x
+expect_exit 2 'Missing value for --skip-plan-review' "$worker" gate --engine grok --skip-plan-review '' --brief x
+for role in reviewer scout researcher; do
+  sandbox_arg=
+  [[ "$role" != reviewer && "$role" != scout ]] || sandbox_arg=--no-sandbox
+  "$worker" "gate-$role" --engine grok --no-worktree ${sandbox_arg:+"$sandbox_arg"} --role "$role" --plan .squad/plans/gate.md --tier-reason test --brief x >/dev/null
+done
+"$worker" gate-low --engine grok --no-worktree --plan .squad/plans/ok.md --brief x >/dev/null
+"$worker" gate-override --engine grok --no-worktree --plan .squad/plans/gate.md --tier-reason test --skip-plan-review x --brief x >/dev/null
+grep -qx 'plan_review_override=x' "$(ls -t .squad/workers/gate-override-*.status | head -n 1)" || fail 'missing override status'
+grep -q -- '^- plan-review-override: x' .squad/plans/gate.md || fail 'missing override approval'
+gate_path="$PWD/.squad/plans/gate.md"
+printf 'worker=gate-approval\nrole=reviewer\nplan=%s\nstate=completed\nfinished=9999999998\nverdict=approved\n' "$gate_path" >.squad/workers/gate-approval.status
+"$worker" gate-approved --engine grok --no-worktree --plan .squad/plans/gate.md --tier-reason test --brief x >/dev/null
+printf 'worker=gate-changes\nrole=reviewer\nplan=%s\nstate=completed\nfinished=9999999999\nverdict=changes_requested\n' "$gate_path" >.squad/workers/gate-changes.status
+expect_exit 2 'run a plan review first' "$worker" gate-blocked --engine grok --no-worktree --plan .squad/plans/gate.md --tier-reason test --brief x
 expect_exit 2 'a plan is required in manager context' \
   "$worker" g-1 --engine grok --no-worktree --brief 'x'
 unset SQUAD_MANAGER_ID
@@ -270,6 +292,11 @@ last_status() { ls -t .squad/workers/"$1"-*.status | head -n 1; }
 SQUAD_MANAGER_ID=manager "$worker" p-1 --engine grok --no-worktree --plan .squad/plans/ok.md --brief 'Plan run' >"$tmp/out"
 status_file="$(last_status p-1)"
 grep -qx "plan=$tmp/ws/.squad/plans/ok.md" "$status_file" || fail "plan= missing"
+snapshot="$(sed -n 's/^plan_snapshot=//p' "$status_file")"
+hash="$(sed -n 's/^plan_sha256=//p' "$status_file")"
+cmp "$snapshot" .squad/plans/ok.md || fail "snapshot differs"
+[[ "$hash" == "$(shasum -a 256 "$snapshot" | awk '{print $1}')" ]] || fail "snapshot hash"
+
 ! grep -q '^plan_override=.' "$status_file" || fail "unexpected override"
 grep -q "^Plan: $tmp/ws/.squad/plans/ok.md\$" "$tmp/out" || fail "report header"
 grep -q "^Plan: $tmp/ws/.squad/plans/ok.md\$" "${status_file%.status}.md" || fail "report file header"
@@ -332,10 +359,25 @@ git_q -C "$repo" commit -qm init
 
 run_edit() { # run_edit ID PLAN EDIT [ROLE]
   local tier_args=()
-  [[ "$2" != .squad/plans/risky.md ]] || tier_args=(--tier-reason test)
+  [[ "$2" != .squad/plans/risky.md ]] || tier_args=(--tier-reason test --skip-plan-review "merge gate test")
   FAKE_EDIT="$3" "$worker" "$1" --engine grok --worktree --project "$repo" --plan "$2" ${tier_args[@]+"${tier_args[@]}"} \
     ${4:+--role "$4"} --brief 'Edit' >/dev/null
 }
+# Each fix round freezes its own plan and reports changes to the manager.
+cp .squad/plans/ok.md .squad/plans/fix.md
+FAKE_EDIT="src/app.txt=first" "$worker" snapshot-fix --engine grok --worktree --project "$repo" --plan .squad/plans/fix.md --brief $'Model selection: fast\nGoal: Keep this title' >/dev/null
+grep -qx 'title=Keep this title' "$(last_status snapshot-fix)" || fail "default goal title"
+first_status="$(last_status snapshot-fix)"
+first_snapshot="$(sed -n 's/^plan_snapshot=//p' "$first_status")"
+printf '\nChanged for the next attempt.\n' >>.squad/plans/fix.md
+FAKE_EDIT="src/app.txt=second" "$worker" snapshot-fix --engine grok --worktree --project "$repo" --plan .squad/plans/fix.md --brief Edit >"$tmp/out" 2>"$tmp/err"
+second_status="$(last_status snapshot-fix)"
+grep -qx 'title=Keep this title' "$second_status" || fail "fix round title inheritance"
+grep -Fq "Note: plan changed since attempt 1 (snapshot: $first_snapshot)" "$tmp/err" || fail "missing plan change warning"
+grep -Fq "Note: plan changed since attempt 1 (snapshot: $first_snapshot)" "${second_status%.status}.md" || fail "missing plan change report"
+! cmp -s "$first_snapshot" "$(sed -n 's/^plan_snapshot=//p' "$second_status")" || fail "fix snapshot unchanged"
+"$worker" --discard snapshot-fix >/dev/null
+
 # Sensitive path, low-risk plan: refused, then overridden.
 run_edit m-1 .squad/plans/ok.md "netlify.toml=[headers]"
 expect_exit 3 'merging m-1 needs a review: patch touches netlify.toml' "$worker" --merge m-1
@@ -355,9 +397,9 @@ run_edit m-2 .squad/plans/risky.md "src/app.txt=changed"
 expect_exit 3 'needs a review: plan risk is high' "$worker" --merge m-2
 sleep 1
 write_plan .squad/plans/other.md Low
-"$worker" r-1 --engine grok --role reviewer --project "$repo" --plan .squad/plans/other.md --brief 'Review' >/dev/null
+"$worker" r-1 --engine grok --no-sandbox --role reviewer --project "$repo" --plan .squad/plans/other.md --brief 'Review' >/dev/null
 expect_exit 3 'needs a review' "$worker" --merge m-2   # reviewed a different plan
-"$worker" r-2 --engine grok --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
+"$worker" r-2 --engine grok --no-sandbox --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 expect_exit 0 'Merged m-2' "$worker" --merge m-2
 [[ "$(cat "$repo/src/app.txt")" == changed ]] || fail "reviewed merge did not apply"
 git -C "$repo" checkout -q -- src/app.txt
@@ -449,28 +491,28 @@ printf '%s\n' "${FAKE_REPORT:-Done. Files: none. Verification: ok.}"
 EOF
 chmod +x "$tmp/bin/grok"
 FAKE_REPORT=$'src/app.txt:1 injection\nVERDICT: CHANGES_REQUESTED' \
-  "$worker" vr-1 --engine grok --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
+  "$worker" vr-1 --engine grok --no-sandbox --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 grep -qx 'verdict=changes_requested' "$(last_status vr-1)" || fail "changes_requested verdict not recorded"
 expect_exit 3 'blocked: reviewer vr-1 .* requested changes' "$worker" --merge v-1
 sleep 1
 FAKE_REPORT=$'no issues found\nVERDICT: APPROVED' \
-  "$worker" vr-2 --engine grok --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
+  "$worker" vr-2 --engine grok --no-sandbox --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 grep -qx 'verdict=approved' "$(last_status vr-2)" || fail "approved verdict not recorded"
 # A newer rejection supersedes the approval, even if the approval status was touched later.
 sleep 1
 FAKE_REPORT=$'still needs fixes\nVERDICT: CHANGES_REQUESTED' \
-  "$worker" vr-latest --engine grok --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
+  "$worker" vr-latest --engine grok --no-sandbox --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 touch "$(last_status vr-2)"
 expect_exit 3 'blocked: reviewer vr-latest .* requested changes' "$worker" --merge v-1
 sleep 1
 FAKE_REPORT=$'fixed\nVERDICT: APPROVED' \
-  "$worker" vr-final --engine grok --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
+  "$worker" vr-final --engine grok --no-sandbox --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 expect_exit 0 'Merged v-1' "$worker" --merge v-1
 git -C "$repo" checkout -q -- src/app.txt
 # A reviewer without a verdict line keeps the old behaviour (counts as a review) and is marked missing.
 run_edit v-2 .squad/plans/risky.md "src/app.txt=legacy"
 sleep 1
-"$worker" vr-3 --engine grok --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
+"$worker" vr-3 --engine grok --no-sandbox --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 grep -qx 'verdict=missing' "$(last_status vr-3)" || fail "missing verdict not recorded"
 expect_exit 0 'Merged v-2' "$worker" --merge v-2
 git -C "$repo" checkout -q -- src/app.txt
@@ -480,7 +522,7 @@ git -C "$repo" checkout -q -- src/app.txt
 run_edit v-3 .squad/plans/risky.md "src/app.txt=forced"
 sleep 1
 FAKE_REPORT=$'bad\nVERDICT: CHANGES_REQUESTED' \
-  "$worker" vr-4 --engine grok --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
+  "$worker" vr-4 --engine grok --no-sandbox --role reviewer --project "$repo" --plan .squad/plans/risky.md --tier-reason test --brief 'Review' >/dev/null
 expect_exit 3 'requested changes' "$worker" --merge v-3
 expect_exit 0 'review override for v-3: ship it' "$worker" --merge v-3 --override-review 'ship it'
 git -C "$repo" checkout -q -- src/app.txt

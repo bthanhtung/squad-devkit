@@ -289,8 +289,117 @@ pub fn check_patch(text: &str) -> Vec<String> {
     reasons
 }
 
+fn task(text: &str, id: &str, full: bool) -> Option<String> {
+    let mut matches = 0;
+    let mut inside = false;
+    let mut body = String::new();
+    for line in section(text, "Tasks")
+        .unwrap_or_default()
+        .split_terminator('\n')
+    {
+        if let Some(entry) = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("### "))
+        {
+            let end = entry.find([' ', '\t', ':', '(']).unwrap_or(entry.len());
+            inside = &entry[..end] == id;
+            if inside {
+                matches += 1;
+                let mut value = entry[end..].trim_start_matches([' ', '\t']);
+                if value.starts_with('(') {
+                    if let Some((_, rest)) = value.split_once(')') {
+                        value = rest.trim_start_matches([' ', '\t']);
+                    }
+                }
+                value = value
+                    .strip_prefix(':')
+                    .map(|v| v.trim_start_matches([' ', '\t']))
+                    .unwrap_or(value);
+                body.push_str(if full { line } else { value });
+                body.push('\n');
+            }
+        } else if inside {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    (matches == 1 && (full || body.contains(|c| !matches!(c, ' ' | '\t' | '\n')))).then_some(body)
+}
+
+fn append_approval(path: &Path, line: &str) -> Result<bool> {
+    if line.contains(['\n', '\r'])
+        || !["- review-override: ", "- plan-review-override: "]
+            .iter()
+            .any(|prefix| line.strip_prefix(prefix).is_some_and(|v| !v.is_empty()))
+    {
+        std::process::exit(2);
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut lines: Vec<_> = text.split_terminator('\n').map(str::to_owned).collect();
+    let heading = lines.iter().position(|line| {
+        line.strip_prefix("## ").is_some_and(|h| {
+            h.trim_start_matches(' ')
+                .trim_end_matches([' ', '\t', ':'])
+                .eq_ignore_ascii_case("Approvals")
+        })
+    });
+    if let Some(start) = heading {
+        let mut end = (start + 1..lines.len())
+            .find(|&i| lines[i].starts_with("## "))
+            .unwrap_or(lines.len());
+        while end > start + 1 && lines[end - 1].trim_matches([' ', '\t']).is_empty() {
+            end -= 1;
+        }
+        lines.insert(end, line.to_owned());
+    } else {
+        // Preserve the shell helper's extra separator even without a final newline.
+        let mut output = text.clone();
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&format!("## Approvals\n{line}\n"));
+        lines = output.split_terminator('\n').map(str::to_owned).collect();
+    }
+    let temp = path.with_file_name(format!(
+        "{}.{}",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    let result = (|| -> Result<()> {
+        match fs::metadata(path) {
+            Ok(metadata) => output.set_permissions(metadata.permissions())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        output.write_all(format!("{}\n", lines.join("\n")).as_bytes())?;
+        output.sync_all()?;
+        fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result?;
+    Ok(true)
+}
+
 pub fn command(args: &[String]) -> Result<bool> {
     match args {
+        [op, file, id] if op == "task" || op == "task-entry" => {
+            if let Some(body) = task(&fs::read_to_string(file)?, id, op == "task-entry") {
+                print!("{body}");
+                Ok(true)
+            } else { Ok(false) }
+        },
+        [op, file, line] if op == "append-approval" => append_approval(Path::new(file), line),
         [op, file] if op == "validate" => validate(Path::new(file)),
         [op, file] if op == "check-patch" => { for reason in check_patch(&fs::read_to_string(file)?) { println!("{reason}"); } Ok(true) },
         [op, file] if op == "context" => {
@@ -309,7 +418,10 @@ pub fn command(args: &[String]) -> Result<bool> {
                 if !bytes.is_empty() {
                     let max: usize = std::env::var("SQUAD_WORKER_MAX_CONTEXT_BYTES").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "16384".into()).parse()?;
                     println!("### Shared Context ({})", Path::new(&companion).file_name().unwrap_or_default().to_string_lossy());
-                    std::io::stdout().write_all(&bytes[..bytes.len().min(max)])?;
+                    let text = String::from_utf8_lossy(&bytes);
+                    let mut end = text.len().min(max);
+                    while !text.is_char_boundary(end) { end -= 1; }
+                    std::io::stdout().write_all(text[..end].as_bytes())?;
                     println!("\n");
                 }
             }
@@ -320,6 +432,6 @@ pub fn command(args: &[String]) -> Result<bool> {
             for file in &files { println!("{}", file.display()); }
             Ok(!files.is_empty())
         },
-        _ => bail!("Usage: squad plan validate|context|check-patch <file> | approves <dir> <action> <repo> [<repo_path>]"),
+        _ => bail!("Usage: squad plan validate|context|check-patch <file> | task|task-entry <file> <task_id> | append-approval <file> <bullet_line> | approves <dir> <action> <repo> [<repo_path>]"),
     }
 }

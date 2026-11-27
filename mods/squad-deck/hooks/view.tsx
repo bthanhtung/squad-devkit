@@ -1,6 +1,6 @@
 // The deck's drawing: calm, one accent, dim secondary text. Every function
 // takes the surface's element table (`$.ui.resolve(e)`) and plain data.
-import { bar, elapsed, percent, progressText, summary, timeFraction, timeLimit, tokenFraction, tokens } from './deck'
+import { bar, elapsed, needsYou, percent, progressText, summary, timeFraction, timeLimit, tokenFraction, tokens } from './deck'
 import type { Kind, Perms, PlanProgress, Run, Shape } from './deck'
 
 type Ui = { Box: any; Text: any }
@@ -73,7 +73,11 @@ function checkTone(value: string): string | undefined {
 }
 
 function detail(run: Run): string {
-  return run.state === 'running' ? run.activity : run.title
+  if (run.state === 'running') {
+    if (run.title !== '' && run.activity !== '') return `${run.title} · ${run.activity}`
+    return run.activity || run.title
+  }
+  return run.title
 }
 
 function Card(ui: Ui, run: Run, now: number) {
@@ -103,10 +107,24 @@ function Card(ui: Ui, run: Run, now: number) {
         {run.verdict !== '' && <Text color={checkTone(run.verdict)}>{run.verdict}</Text>}
       </Text>
       {Bars(ui, run, now)}
-      <Text wrap="truncate-end" dimColor>
-        {'  '}
-        {detail(run)}
-      </Text>
+      {run.title !== '' && (
+        <Text wrap="truncate-end" dimColor>
+          {'  '}
+          {run.title}
+        </Text>
+      )}
+      {run.state === 'running' && run.activity !== '' && (
+        <Text wrap="truncate-end" color={ACCENT}>
+          {'  → '}
+          {run.activity}
+        </Text>
+      )}
+      {run.state !== 'running' && !!run.reason && (
+        <Text wrap="truncate-end" color="error">
+          {'  ! '}
+          {run.reason}
+        </Text>
+      )}
     </Box>
   )
 }
@@ -186,6 +204,7 @@ export function Deck(
 ) {
   const { Box, Text } = ui
   const { runs, now, perms, commands, plans, shape } = data
+  const attention = needsYou(runs)
   const rows =
     shape === 'mini'
       ? runs.map(run => MiniRow(ui, run, now))
@@ -208,6 +227,24 @@ export function Deck(
       ) : (
         <Box flexDirection="column">
           {Totals(ui, runs)}
+          {attention.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold>{`Needs you (${attention.length})`}</Text>
+              {attention.map(item => (
+                <Box key={item.run.id} flexDirection="column">
+                  <Text wrap="truncate-end">
+                    <Text color={item.kind === 'merge' ? 'success' : 'error'}>{'  ● '}</Text>
+                    <Text bold>{item.run.id}</Text>
+                    <Text>{` · ${item.reason}`}</Text>
+                    {item.run.title !== '' && <Text dimColor>{` — ${item.run.title}`}</Text>}
+                  </Text>
+                  <Text wrap="truncate-end" dimColor>
+                    {`    → ${item.action}`}
+                  </Text>
+                </Box>
+              ))}
+            </Box>
+          )}
           {plans.length > 0 && <Box flexDirection="column">{PlanRows(ui, plans)}</Box>}
           <Box flexDirection="column" marginTop={1}>
             {body}

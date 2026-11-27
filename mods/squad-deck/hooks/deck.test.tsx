@@ -10,6 +10,7 @@ import {
   isPlanPath,
   parsePlanTasks,
   parseStatus,
+  needsYou,
   percent,
   pickRuns,
   pickShape,
@@ -243,6 +244,31 @@ test('permission verdicts are counted per kind', () => {
   expect(perms.file).toEqual({ allow: 1, ask: 1, deny: 0 })
   expect(perms.shell).toEqual({ allow: 0, ask: 0, deny: 1 })
   expect(perms.other).toEqual({ allow: 1, ask: 0, deny: 0 })
+})
+
+test('needs you chooses the latest run and sorts actionable items', () => {
+  const run = (id: string, state: string, started: number, extra = '') => parseStatus(status(id, state, started, extra))!
+  const items = needsYou([
+    run('merge', 'completed', 40, 'worktree=/tmp/merge\nverify=pass\n'),
+    run('verify', 'completed', 50, 'verify=timeout\n'),
+    run('failed', 'failed', 10, 'reason=exit 1 on npm test\n'),
+    run('lost', 'lost', 20),
+    run('superseded', 'failed', 1),
+    run('superseded', 'completed', 2),
+    run('running', 'running', 60, 'verify=fail\nworktree=/tmp/running\n'),
+    run('merged', 'completed', 70, 'worktree=/tmp/merged\nmerged=123\n'),
+    run('discarded', 'completed', 80, 'worktree=/tmp/discarded\ndiscarded=123\n'),
+    run('reviewer', 'completed', 90),
+    run('verify-fail', 'completed', 30, 'verify=fail\n'),
+  ])
+  expect(items.map(item => [item.run.id, item.kind, item.reason, item.action])).toEqual([
+    ['lost', 'failed', 'worker lost', 'Say: inspect & rerun lost, or discard'],
+    ['failed', 'failed', 'worker failed: exit 1 on npm test', 'Say: inspect & rerun failed, or discard'],
+    ['verify', 'verify', 'verify timed out', 'Say: inspect/rerun verify verify, or discard'],
+    ['verify-fail', 'verify', 'verify failed', 'Say: fix verify-fail, or discard'],
+    ['merge', 'merge', 'ready to merge', 'Say: review & merge merge (or --merge merge)'],
+  ])
+  expect(needsYou([])).toEqual([])
 })
 
 test('bar clamps and rounds', () => {

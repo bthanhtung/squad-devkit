@@ -10,6 +10,22 @@ squad_supports() {
   squad help 2>/dev/null | grep "^  squad $1 " >/dev/null
 }
 
+# Cache by binary path so switching PATH cannot reuse another binary's capabilities.
+squad_supports_plan_v2() {
+  [[ "${SQUAD_RUST_DISABLE:-0}" != 1 ]] || return 1
+  local binary usage
+  binary="$(command -v squad)" || return 1
+  if [[ "${_SQUAD_PLAN_V2_BINARY:-}" != "$binary" ]]; then
+    _SQUAD_PLAN_V2_BINARY="$binary"
+    _SQUAD_PLAN_V2_SUPPORTED=0
+    if squad_supports plan; then
+      usage="$(squad plan 2>&1 || true)"
+      [[ "$usage" != *append-approval* ]] || _SQUAD_PLAN_V2_SUPPORTED=1
+    fi
+  fi
+  [[ "${_SQUAD_PLAN_V2_SUPPORTED:-0}" == 1 ]]
+}
+
 # Prints the body of the `## <name>` section (without its heading): plan_section <file> <name>.
 plan_section() {
   awk -v name="$2" '
@@ -211,7 +227,17 @@ plan_shared_context() {
   companion="${file%.md}.context.md"
   if [[ "$companion" != "$file" && -f "$companion" && -s "$companion" ]]; then
     printf '### Shared Context (%s)\n' "$(basename "$companion")"
-    head -c "$max_bytes" "$companion"
+    python3 - "$companion" "$max_bytes" <<'PYTHON'
+import sys
+with open(sys.argv[1], 'rb') as source:
+    text = source.read().decode('utf-8', errors='replace')
+limit = int(sys.argv[2])
+if limit < 0:
+    raise ValueError('context byte limit must be nonnegative')
+sys.stdout.buffer.write(text.encode('utf-8')[:limit].decode('utf-8', errors='ignore').encode('utf-8'))
+PYTHON
+    local status=$?
+    [[ "$status" == 0 ]] || return "$status"
     printf '\n\n'
   fi
   return 0
@@ -219,14 +245,15 @@ plan_shared_context() {
 
 # Adds a bullet to the end of the Approvals section, creating the section at the
 # end of the file when missing: plan_append_approval <file> <bullet line>.
-# Only a single `- review-override: …` line is accepted (status 2 otherwise), so
+# Only a single override bullet is accepted (status 2 otherwise), so
 # a reason cannot smuggle in another approval. The entry reaches awk through the
 # environment: `awk -v` would turn a typed `\n` into a real newline.
 plan_append_approval() {
+  if squad_supports_plan_v2; then squad plan append-approval "$@"; return $?; fi
   local file="$1" line="$2" tmp
   case "$line" in
     *$'\n'* | *$'\r'*) return 2 ;;
-    '- review-override: '?*) ;;
+    '- review-override: '?* | '- plan-review-override: '?*) ;;
     *) return 2 ;;
   esac
   if ! plan_has_section "$file" Approvals; then
@@ -280,6 +307,7 @@ squad_record_status() {
 # Exact IDs in top-level bullets or ### headings; nested lines belong to the entry.
 # Prints the task body only when exactly one nonempty entry matches.
 plan_task() {
+  if squad_supports_plan_v2; then squad plan task "$@"; return $?; fi
   plan_section "$1" Tasks | TASK_ID="$2" awk '
     /^- / || /^### / {
       line = $0
@@ -305,5 +333,20 @@ plan_task() {
       if (matches != 1 || !nonempty) exit 1
       printf "%s", body
     }
+  '
+}
+
+# The complete entry, including routing metadata, is the DAG run identity.
+plan_task_entry() {
+  if squad_supports_plan_v2; then squad plan task-entry "$@"; return $?; fi
+  plan_section "$1" Tasks | TASK_ID="$2" awk '
+    /^- / || /^### / {
+      line=$0; sub(/^(- |### )/, "", line)
+      sub(/[ \t:(].*$/, "", line)
+      inside=(line == ENVIRON["TASK_ID"])
+      if (inside) matches++
+    }
+    inside { body = body $0 "\n" }
+    END { if (matches != 1) exit 1; printf "%s", body }
   '
 }

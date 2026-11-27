@@ -61,8 +61,6 @@ engine_codex_build_command() {
       esac
     done <<<"$configured_servers"
   fi
-  local add_directory=()
-  [[ "$engine_directory" == "$workspace_root" ]] || add_directory=(--add-dir "$workspace_root")
   local sandbox_arguments=(--sandbox workspace-write)
   if [[ "$sandbox_mode" == 0 ]]; then
     sandbox_arguments=(--sandbox danger-full-access)
@@ -79,7 +77,7 @@ engine_codex_build_command() {
   local codex_model_arguments=(${model_arguments[@]+"${model_arguments[@]}"})
   [[ -z "$model_effort" ]] || codex_model_arguments+=(-c "model_reasoning_effort=\"$model_effort\"")
   engine_command=(codex exec --json --cd "$engine_directory" ${profile_arguments[@]+"${profile_arguments[@]}"} --ephemeral
-    --skip-git-repo-check ${sandbox_arguments[@]+"${sandbox_arguments[@]}"} ${add_directory[@]+"${add_directory[@]}"}
+    --skip-git-repo-check ${sandbox_arguments[@]+"${sandbox_arguments[@]}"}
     ${mcp_arguments[@]+"${mcp_arguments[@]}"} ${codex_model_arguments[@]+"${codex_model_arguments[@]}"}
     --output-last-message "$absolute_report" "$prompt")
   return "$result"

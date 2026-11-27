@@ -1,9 +1,10 @@
 // Pure helpers of the squad deck: parsing, redaction, formatting. No `$` here,
 // so every function is testable on its own.
 
-import type { Kind, Perms, PlanProgress, Run, Verdict } from '../types'
+import type { Kind, Perms, PlanProgress, Run as BaseRun, Verdict } from '../types'
 
-export type { Kind, Perms, PlanProgress, Run, Verdict }
+export type { Kind, Perms, PlanProgress, Verdict }
+export type Run = BaseRun & { worktree?: string; merged?: boolean; discarded?: boolean; reason?: string }
 
 export const MAX_RUNS = 30
 export const TAIL_BYTES = 16384
@@ -96,10 +97,14 @@ export function parseStatus(text: string, fallbackId = ''): Run | null {
     timeoutSeconds: count(f.timeout_seconds),
     budgetTokens: count(f.budget_tokens),
     plan: (f.plan ?? '').slice(0, 400),
-    title: clean(f.title ?? '', 80),
+    title: clean(f.title ?? '', 120),
+    reason: clean(f.reason ?? '', 100),
     isScopeViolation: (f.scope_violation ?? '') !== '',
     log: f.log ?? '',
     activity: '',
+    worktree: f.worktree ?? '',
+    merged: (f.merged ?? '') !== '',
+    discarded: (f.discarded ?? '') !== '',
   }
 }
 
@@ -116,6 +121,39 @@ export function pickRuns(runs: Run[], since: number): Run[] {
   return [...newest.values()].sort(
     (a, b) => rank(a) - rank(b) || b.started - a.started || a.id.localeCompare(b.id),
   )
+}
+
+/** Actionable latest runs, ordered by urgency and recency. */
+export function needsYou(runs: Run[]) {
+  const items: { run: Run; kind: 'failed' | 'verify' | 'merge'; reason: string; action: string }[] = []
+  for (const run of pickRuns(runs, 0)) {
+    if (run.state === 'running') continue
+    if (['failed', 'stopped', 'lost', 'timeout', 'error'].includes(run.state)) {
+      const detail = run.reason ? `: ${run.reason}` : ''
+      items.push({
+        run,
+        kind: 'failed',
+        reason: `worker ${run.state}${detail}`,
+        action: `Say: inspect & rerun ${run.id}, or discard`,
+      })
+    } else if (run.verify === 'fail' || run.verify === 'timeout') {
+      const reason = run.verify === 'timeout' ? 'verify timed out' : 'verify failed'
+      const hint =
+        run.verify === 'timeout'
+          ? `Say: inspect/rerun verify ${run.id}, or discard`
+          : `Say: fix ${run.id}, or discard`
+      items.push({ run, kind: 'verify', reason, action: hint })
+    } else if (run.state === 'completed' && !!run.worktree && !run.merged && !run.discarded) {
+      items.push({
+        run,
+        kind: 'merge',
+        reason: 'ready to merge',
+        action: `Say: review & merge ${run.id} (or --merge ${run.id})`,
+      })
+    }
+  }
+  const rank = { failed: 0, verify: 1, merge: 2 }
+  return items.sort((a, b) => rank[a.kind] - rank[b.kind] || b.run.started - a.run.started || a.run.id.localeCompare(b.run.id))
 }
 
 // --- Activity -------------------------------------------------------------
