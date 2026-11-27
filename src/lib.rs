@@ -1,3 +1,4 @@
+pub mod eval;
 pub mod guard;
 pub mod init;
 pub mod plan;
@@ -8,4 +9,5 @@ pub mod setup;
 pub mod store;
 pub mod tasks;
 pub mod teams;
+pub mod trace;
 pub mod worker_config;
