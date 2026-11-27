@@ -147,7 +147,11 @@ printf '%s\n' "$previous" >"$LEARN_PROMPT"
 printf 'Done\n' >"$report"
 sleep 2
 ENGINE
-chmod +x "$tmp/bin/claude" "$tmp/bin/codex"
+cat >"$tmp/bin/opencode" <<'ENGINE'
+#!/usr/bin/env bash
+exit 0
+ENGINE
+chmod +x "$tmp/bin/claude" "$tmp/bin/codex" "$tmp/bin/opencode"
 squad init >/dev/null
 cp "$repo/templates/devkit/dev.md" .squad/roles/dev.md
 squad join manager --role manager-devkit --client claude --protocol-version 2 >/dev/null
