@@ -144,12 +144,13 @@ EOF
     raw_rows=0
     while IFS= read -r row; do
       [[ -n "$row" ]] || continue
+      row="${row//@@SPIN@@/•}"
       raw_rows=$(( raw_rows + 1 )); display_width "$row"; [[ "$DW" -le "$1" ]]
     done <<< "${FRAME_TPL[0]}"
     [[ "$raw_rows" -le "$2" ]] || { echo "FAIL: mission $size has $raw_rows rows" >&2; exit 1; }
     clamp_frame "${FRAME_TPL[0]}" "$1" 2147483647 0 "$2"
     [[ "$CLAMP_ROWS" -le "$2" ]]
-    while IFS= read -r row; do display_width "$row"; [[ "$DW" -le "$1" ]]; done <<< "$REPLY"
+    while IFS= read -r row; do row="${row//@@SPIN@@/•}"; display_width "$row"; [[ "$DW" -le "$1" ]]; done <<< "$REPLY"
   done
   build_g2_frame 80 20 ""; [[ "${FRAME_TPL[0]}" == *'Next'* ]]
 )

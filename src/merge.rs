@@ -10,6 +10,15 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
+fn clean_canonical(path: &Path) -> Result<PathBuf> {
+    let p = path.canonicalize()?;
+    #[cfg(windows)]
+    if let Some(s) = p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        return Ok(PathBuf::from(s));
+    }
+    Ok(p)
+}
+
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
     state: String,
@@ -130,7 +139,7 @@ fn snapshot_root(repo: &Path) -> Result<PathBuf> {
     } else {
         repo.join(path)
     };
-    Ok(common.canonicalize()?.join("squad-merge-snapshots"))
+    Ok(clean_canonical(&common)?.join("squad-merge-snapshots"))
 }
 fn restore(dir: &Path, s: &Snapshot) -> Result<()> {
     for path in s
@@ -272,13 +281,13 @@ pub fn command(args: &[String]) -> Result<i32> {
         }
         i += 1;
     }
-    let repo = repo.context("--repo required")?.canonicalize()?;
+    let repo = clean_canonical(&repo.context("--repo required")?)?;
     let top = checked(&repo, &["rev-parse", "--show-toplevel"], None)?;
-    if Path::new(String::from_utf8(top)?.trim()).canonicalize()? != repo {
+    if clean_canonical(Path::new(String::from_utf8(top)?.trim()))? != repo {
         bail!("--repo must be the repository root");
     }
     let patch = if action == "apply" {
-        Some(patch.context("--patch required")?.canonicalize()?)
+        Some(clean_canonical(&patch.context("--patch required")?)?)
     } else {
         None
     };
