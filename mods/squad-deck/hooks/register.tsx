@@ -14,12 +14,15 @@ import {
   addVerdict,
   clean,
   emptyPerms,
+  isPlanPath,
+  parsePlanTasks,
   parseStatus,
+  planCounts,
   pickRuns,
   pickShape,
   statusText,
 } from './deck'
-import type { Run } from './deck'
+import type { PlanProgress, Run } from './deck'
 import { Band, Deck } from './view'
 
 const PANE = 'squad-deck'
@@ -27,7 +30,15 @@ const EVERY_MS = 2000
 const LINGER_MS = 60_000 // the pane and the band stay this long after the last worker stops
 const IDLE_EVERY = 5 // while nothing is open and no worker is known: every 10 s
 const MAX_TAILS = 8
+const MAX_PLANS = 2
 const LAYOUTS = ['auto', 'compact', 'wide', 'mini']
+// The dock's width: /deck width takes WIDTH_MIN..WIDTH_MAX; unset, a share of the terminal, clamped.
+const WIDTH_MIN = 24
+const WIDTH_MAX = 120
+const SHARE = 0.3
+const SHARE_MIN = 24
+const SHARE_MAX = 60
+const UNKNOWN_WIDTH = 40
 
 // Change a tag when the shape of a value changes: an older one reads as the initial.
 const runs = atom({ plugin: 'squad-deck', key: 'runs' } as const, [], { shape: 'runs-2' })
@@ -35,6 +46,7 @@ const now = atom({ plugin: 'squad-deck', key: 'now' } as const, 0)
 const since = atom({ plugin: 'squad-deck', key: 'since' } as const, 0)
 const isDocked = atom({ plugin: 'squad-deck', key: 'isDocked' } as const, false)
 const isActive = atom({ plugin: 'squad-deck', key: 'isActive' } as const, false)
+const plans = atom({ plugin: 'squad-deck', key: 'plans' } as const, [], { shape: 'plans-1' })
 const perms = atom({ plugin: 'squad-deck', key: 'perms' } as const, emptyPerms(), {
   shape: 'perms-1',
 })
@@ -49,6 +61,8 @@ const layout = atom({ plugin: 'squad-deck', key: 'layout' } as const, 'auto', {
 let timer: { cancel: () => void } | undefined
 let tick = 0
 let isBusy = false
+// The terminal's columns as the last command or render reported them; 0 until one has.
+let terminalColumns = 0
 // null until the first refresh: a load starts with no status line shown, and the first
 // refresh must still call ui.status, so a line left by the previous load gets cleared.
 let shownStatus: string | undefined | null = null
@@ -61,6 +75,7 @@ let wasOpen = false
 let stoppedAt: number | undefined
 const seen = new Set<string>()
 const statuses = new Map<string, { mtimeMs: number; run: Run | null }>()
+const planFiles = new Map<string, { mtimeMs: number; ids: string[] }>()
 // Whether this session is a squad session; decided once, on first need.
 let squadSession: Promise<boolean> | undefined
 
@@ -93,11 +108,53 @@ async function startedAt($: any): Promise<number> {
   return seconds
 }
 
-async function workersDir($: any): Promise<string> {
+async function workspaceDir($: any): Promise<string> {
   const workspace = await $.env.get('SQUAD_DEVKIT_WORKSPACE')
   const base = workspace !== undefined && workspace !== '' ? workspace : await $.session.cwd()
 
-  return `${base.replace(/\/+$/, '')}/.squad/workers`
+  return base.replace(/\/+$/, '')
+}
+
+// Task ids of a plan file, read only from <workspace>/.squad/plans and cached by mtime.
+async function planTasks($: any, workspace: string, path: string): Promise<string[]> {
+  if (!isPlanPath(path, workspace)) return []
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (stat === undefined) return []
+  const hit = planFiles.get(path)
+  if (hit !== undefined && hit.mtimeMs === stat.mtimeMs) return hit.ids
+  const text = await $.fs.read(path).catch(() => undefined)
+  const ids = typeof text === 'string' ? parsePlanTasks(text) : []
+  planFiles.set(path, { mtimeMs: stat.mtimeMs, ids })
+
+  return ids
+}
+
+// Progress of the plans this tab's runs belong to: a plan is active while one of its runs runs
+// or ended within the linger window. Newest first, at most MAX_PLANS.
+async function readPlans($: any, workspace: string, list: Run[], clock: number): Promise<PlanProgress[]> {
+  const byPlan = new Map<string, Run[]>()
+  for (const run of list) {
+    if (run.plan === '' || run.plan === 'none') continue
+    byPlan.set(run.plan, [...(byPlan.get(run.plan) ?? []), run])
+  }
+  const isRecent = (run: Run) =>
+    run.state === 'running' || (run.finished !== null && clock - run.finished * 1000 < LINGER_MS)
+  const active = [...byPlan.entries()]
+    .filter(([, group]) => group.some(isRecent))
+    .sort(([, a], [, b]) => Math.max(...b.map(run => run.started)) - Math.max(...a.map(run => run.started)))
+    .slice(0, MAX_PLANS)
+  for (const path of [...planFiles.keys()]) if (!byPlan.has(path)) planFiles.delete(path)
+
+  return Promise.all(
+    active.map(async ([path, group]) => ({
+      name: (path.split('/').pop() ?? path).replace(/\.md$/, ''),
+      ...planCounts(await planTasks($, workspace, path), list, group),
+    })),
+  )
+}
+
+async function workersDir($: any): Promise<string> {
+  return `${await workspaceDir($)}/.squad/workers`
 }
 
 // This tab's manager id; empty outside a squad-devkit tab, which then sees every run.
@@ -154,6 +211,24 @@ async function addActivity($: any, dir: string, list: Run[]): Promise<void> {
 
 const PANE_ARGS = { id: PANE, title: 'squad', backgroundColor: 'transparent' } as const
 
+// The width the dock asks for: the one /deck width kept, else about 30% of the terminal, else 40.
+async function deckColumns($: any): Promise<number> {
+  const kept = await $.store.get('width').catch(() => undefined)
+  if (typeof kept === 'number' && Number.isInteger(kept) && kept >= WIDTH_MIN && kept <= WIDTH_MAX) return kept
+  if (terminalColumns <= 0) return UNKNOWN_WIDTH
+
+  return Math.min(SHARE_MAX, Math.max(SHARE_MIN, Math.round(SHARE * terminalColumns)))
+}
+
+// Every open of the deck goes through here, so each one carries the width and the transparent backdrop.
+async function openDeck($: any): Promise<any> {
+  return $.ui.open({ ...PANE_ARGS, columns: await deckColumns($) })
+}
+
+function noteColumns(columns: number | undefined): void {
+  if (typeof columns === 'number' && columns > 0) terminalColumns = Math.floor(columns)
+}
+
 async function refresh($: any, isForced = false): Promise<void> {
   if (isBusy) return
   isBusy = true
@@ -194,7 +269,7 @@ async function refresh($: any, isForced = false): Promise<void> {
 
     if (running.length > 0 && !isOpen && !isDismissed) {
       // Unasked, the engine seats it from 144 columns and otherwise leaves it waiting.
-      const opened = await $.ui.open(PANE_ARGS).catch(() => undefined)
+      const opened = await openDeck($).catch(() => undefined)
       wasOpen = opened !== undefined
       if (opened?.isPlaced === true) await update($, isDocked, () => true)
     } else if (running.length === 0 && isOpen && !isPinned && stoppedAt !== undefined && clock - stoppedAt >= LINGER_MS) {
@@ -203,6 +278,10 @@ async function refresh($: any, isForced = false): Promise<void> {
       await update($, isDocked, () => false)
     }
 
+    const progress = await readPlans($, await workspaceDir($), list, clock)
+    if (JSON.stringify(progress) !== JSON.stringify(await read($, plans))) {
+      await update($, plans, () => progress)
+    }
     if (running.length > 0 || JSON.stringify(list) !== JSON.stringify(before)) {
       await update($, runs, () => list)
       await update($, now, () => Math.floor(clock / 1000))
@@ -237,8 +316,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'deck',
-      description: 'Dock the squad worker dashboard: /deck [open|close|layout auto|compact|wide|mini]',
-      argumentHint: '[open|close|layout auto|compact|wide|mini]',
+      description: 'Dock the squad worker dashboard: /deck [open|close|layout auto|compact|wide|mini|width <24-120>]',
+      argumentHint: '[open|close|layout auto|compact|wide|mini|width <24-120>]',
     })
     if (await isSquadSession($)) {
       await startedAt($)
@@ -250,6 +329,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'deck' }, async ($, e) => {
+    noteColumns(e.presentation?.columns)
     const [first = '', arg = ''] = e.args.trim().split(/\s+/)
     const verb = first === '' ? 'open' : first
     if (verb === 'close') {
@@ -264,17 +344,31 @@ export const register: Register = on => {
 
       return { text: `Squad deck layout: ${arg}.` }
     }
+    if (verb === 'width') {
+      // Bare /deck width clears the kept width; a number keeps it. An open pane is reopened to take it.
+      if (arg === '') {
+        await $.store.delete('width')
+      } else if (/^\d+$/.test(arg) && Number(arg) >= WIDTH_MIN && Number(arg) <= WIDTH_MAX) {
+        await $.store.set('width', Number(arg))
+      } else {
+        return { text: `Usage: /deck width <${WIDTH_MIN}-${WIDTH_MAX}>, or /deck width alone for the default.` }
+      }
+      const panes = await $.ui.panes().catch(() => [])
+      if (panes.some((pane: any) => pane.id === PANE)) await openDeck($).catch(() => undefined)
+
+      return { text: arg === '' ? 'Squad deck width: default.' : `Squad deck width: ${arg}.` }
+    }
     if (verb === 'open') {
       isPinned = true
       isDismissed = false
       ensureTimer($)
-      const opened = await $.ui.open(PANE_ARGS).catch(() => undefined)
+      const opened = await openDeck($).catch(() => undefined)
       await refresh($, true)
 
       return { text: opened?.isPlaced === true ? 'Squad deck opened.' : 'Squad deck could not be placed here.' }
     }
 
-    return { text: 'Usage: /deck [open|close|layout auto|compact|wide|mini]' }
+    return { text: 'Usage: /deck [open|close|layout auto|compact|wide|mini|width <24-120>]' }
   })
 
   // The person closed the pane (its mark or Esc): unpin it, and keep it shut until a new run starts.
@@ -308,6 +402,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    noteColumns(e.viewport?.columns)
     const ui = $.ui.resolve(e)
     const columns = e.props.bodyColumns
     const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 24
@@ -319,16 +414,18 @@ export const register: Register = on => {
       now: await read($, now),
       perms: await read($, perms),
       commands: await read($, commands),
+      plans: await read($, plans),
       shape: pickShape(choice, columns, rows, list.length),
     })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    noteColumns(e.viewport?.columns)
     const list = await read($, runs)
     if (e.props.hasSurvey || list.length === 0 || !(await read($, isActive)) || (await read($, isDocked))) {
       return next(e)
     }
 
-    return Band($.ui.resolve(e), list)
+    return Band($.ui.resolve(e), list, (await read($, plans))[0])
   })
 }

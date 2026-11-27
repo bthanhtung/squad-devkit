@@ -63,6 +63,10 @@ function engine(on: any, calls: Calls, files: Record<string, string> = FILES, en
     if (hasWorkersDir && e.path === '/elsewhere/.squad/workers') {
       return { value: { kind: 'dir', size: 0, mtimeMs: 1, isLink: false } }
     }
+    const name = String(e.path).split('/').pop() ?? ''
+    if (String(e.path).startsWith('/w/.squad/plans/') && name in files) {
+      return { value: { kind: 'file', size: 1, mtimeMs: 5, isLink: false } }
+    }
     throw new Error('ENOENT')
   })
   on('fs.list', (_: unknown, e: any) => ({
@@ -75,6 +79,10 @@ function engine(on: any, calls: Calls, files: Record<string, string> = FILES, en
     calls.tails.push([...e.argv])
     return { value: { exitCode: 0, stdout: LOG, stderr: '' } }
   })
+  const kept = new Map<string, unknown>()
+  on('store.get', (_: unknown, e: any) => ({ value: kept.get(e.key) }))
+  on('store.set', (_: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }))
+  on('store.delete', (_: unknown, e: any) => (kept.delete(e.key), { value: undefined }))
   on('tool.check', (_: unknown, e: any) => ({ decision: e.tool === 'Bash' ? 'ask' : 'allow' }))
   on('tool.call', () => ({ result: {} }))
 
@@ -187,6 +195,7 @@ test('the band above the prompt shows the totals and the newest activity', async
     props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 } },
   } as any)
   expect((await band.find({ type: 'Text', text: /1 running.*1 done.*1 failed/ }))?.text).toBe('1 running · 1 done · 1 failed')
+  expect(JSON.stringify(await band.drawn())).toContain(' 2/3 · ')
   expect((await band.find({ type: 'Text', text: /deck-1 · Edit/ }))?.text).toBe('deck-1 · Edit /src/app.ts')
   await band.unmount()
 })
@@ -383,4 +392,134 @@ test('the band and the status line are hidden while nothing runs', async ($, on)
   } as any)
   expect(await band.find({ type: 'Text', text: /done/ })).toBeUndefined()
   await band.unmount()
+})
+
+const BARS = 'worker=a-1\nmanager=manager-1\nengine=claude\nstate=running\nstarted=1100\ntimeout_seconds=200\ntokens_in=100000\ntokens_out=20000\n'
+
+test('a card shows the time bar and no token bar without a budget', async ($, on) => {
+  await boot($, on, { 'a-1-1.status': BARS })
+  const drawn = await drawPane($)
+  expect(drawn).toContain('━')
+  expect(drawn).toContain('1m/3m')
+  expect(drawn).not.toContain('600k')
+})
+
+test('a card with a budget also shows the token bar', async ($, on) => {
+  await boot($, on, { 'a-1-1.status': `${BARS}budget_tokens=600000\n` })
+  expect(await drawPane($)).toContain('120k/600k')
+})
+
+test('a card shows the time % of its limit, and the token % beside a budget', async ($, on) => {
+  // 100 s of 200 s; 120k of 600k tokens.
+  await boot($, on, { 'a-1-1.status': `${BARS}budget_tokens=600000\n` })
+  const drawn = await drawPane($)
+  expect(drawn).toContain(' 50%')
+  expect(drawn).toContain(' 20%')
+})
+
+test('a card without a timeout uses the 45-minute default', async ($, on) => {
+  await boot($, on, { 'a-1-1.status': worker('a-1', 'manager-1', 'running', 1100) })
+  const drawn = await drawPane($)
+  expect(drawn).toContain('──────────')
+  expect(drawn).toContain(' 3%')
+  expect(drawn).toContain('1m/45m')
+})
+
+test('a finished card shows 100%', async ($, on) => {
+  const done = `${worker('a-1', 'manager-1', 'completed', 1100)}finished=1150\ntimeout_seconds=200\n`
+  await boot($, on, { 'a-1-1.status': done })
+  expect(await drawPane($)).toContain(' 100%')
+})
+
+// --- Plan progress ----------------------------------------------------------
+
+const PLAN_FILE = '# P\n## Tasks\n- dev-1 (x): a\n- dev-2: b\n- dev-3: c\n## Notes\n- late-1 (x)\n'
+const planned = (id: string, state: string, plan: string, extra = '') =>
+  `${worker(id, 'manager-1', state, 1100)}plan=${plan}\n${extra}`
+const PLAN_ENV = { ...SQUAD_ENV, SQUAD_MANAGER_ID: 'manager-1' }
+const mountBand = ($: any) =>
+  $.ui.mount({
+    plugin: 'squad-deck',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    surface: 'terminal',
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 } },
+  } as any)
+
+test('an active plan draws a progress row, and the band shows the same figure', async ($, on) => {
+  const files = {
+    'sample.md': PLAN_FILE,
+    'dev-1-1.status': planned('dev-1', 'completed', '/w/.squad/plans/sample.md', 'verify=pass\nfinished=1150\n'),
+    'dev-2-1.status': planned('dev-2', 'completed', '/w/.squad/plans/sample.md', 'verify=fail\nfinished=1150\n'),
+    'dev-3-1.status': planned('dev-3', 'running', '/w/.squad/plans/sample.md'),
+  }
+  await boot($, on, files, false, PLAN_ENV, false, false)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 60 } })
+  const row = await ui.find({ type: 'Text', text: /1\/3 tasks · 33%/ })
+  expect(row?.text).toContain('sample')
+  expect(row?.text).toContain('█')
+  await ui.unmount()
+  const band = await mountBand($)
+  expect(JSON.stringify(await band.drawn())).toContain(' 1/3 · 33% · ')
+  await band.unmount()
+})
+
+test('a plan outside .squad/plans is ignored and its runs give the figure', async ($, on) => {
+  const files = {
+    'dev-1-1.status': planned('dev-1', 'completed', '/etc/sample.md', 'finished=1150\n'),
+    'dev-2-1.status': planned('dev-2', 'running', '/etc/sample.md'),
+  }
+  await boot($, on, files, true, PLAN_ENV)
+  expect(await drawPane($)).toContain('1/2 tasks · 50%')
+})
+
+test('a plan with no active run draws no row', async ($, on) => {
+  const old = planned('dev-1', 'completed', '/w/.squad/plans/sample.md', 'finished=1000\n')
+  await boot($, on, { 'sample.md': PLAN_FILE, 'dev-1-1.status': old }, true, PLAN_ENV)
+  expect(await drawPane($)).not.toContain('tasks ·')
+})
+
+// --- Width ------------------------------------------------------------------
+
+// /deck with the terminal's width as command.run reports it.
+const deckRun = ($: any, args: string, columns = 160) =>
+  $.command.run({ command: 'deck', args, presentation: { isFullscreen: true, columns } } as any)
+
+test('the default dock is 30% of the terminal columns', async ($, on) => {
+  const calls = await boot($, on, {})
+  expect((await deckRun($, 'open', 160)).text).toBe('Squad deck opened.')
+  expect(calls.opens.at(-1).columns).toBe(48)
+  expect(calls.opens.at(-1).backgroundColor).toBe('transparent')
+})
+
+test('the default dock is clamped to 24 and 60 columns', async ($, on) => {
+  const calls = await boot($, on, {})
+  await deckRun($, 'open', 60)
+  expect(calls.opens.at(-1).columns).toBe(24)
+  await deckRun($, 'open', 300)
+  expect(calls.opens.at(-1).columns).toBe(60)
+})
+
+test('the dock is 40 columns while the terminal width is not yet known', async ($, on) => {
+  // The running worker opens the pane at session start, before any command or render.
+  const calls = await boot($, on, FILES, false)
+  expect(calls.opened).toEqual(['squad-deck'])
+  expect(calls.opens[0].columns).toBe(40)
+})
+
+test('/deck width sets the dock, reopens it, and a bare /deck width resets it', async ($, on) => {
+  const calls = await boot($, on, {})
+  await deckRun($, 'open', 160)
+  expect((await deckRun($, 'width 50')).text).toBe('Squad deck width: 50.')
+  expect(calls.opens.at(-1).columns).toBe(50)
+  expect((await deckRun($, 'width')).text).toBe('Squad deck width: default.')
+  expect(calls.opens.at(-1).columns).toBe(48)
+})
+
+test('/deck width rejects values outside 24..120 and leaves a closed dock shut', async ($, on) => {
+  const calls = await boot($, on, {}, false)
+  expect((await deckRun($, 'width 10')).text).toContain('Usage: /deck width')
+  expect((await deckRun($, 'width 121')).text).toContain('Usage: /deck width')
+  expect((await deckRun($, 'width 50')).text).toBe('Squad deck width: 50.')
+  expect(calls.opened).toEqual([])
 })

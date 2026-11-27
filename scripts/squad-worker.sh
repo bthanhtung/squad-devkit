@@ -1860,6 +1860,8 @@ if [[ "$engine" == codex ]]; then
   [[ "$yolo" != 1 ]] || run_sandbox=danger-full-access
 fi
 
+# The watchdog limit, written to every status so the deck can draw elapsed against it.
+timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 write_status() {
   local state="$1" value recovery_index
   local exit_status="${2:-}"
@@ -1900,6 +1902,7 @@ write_status() {
     fi
     printf 'parent=%s\ndepth=%s\nbudget_tokens=%s\nmax_children=%s\n' \
       "$parent_id" "$depth" "$budget_tokens" "$max_children"
+    printf 'timeout_seconds=%s\n' "$timeout_seconds"
     printf 'manager=%s\n' "$manager_id"
   } >"$status_file.tmp"
   mv "$status_file.tmp" "$status_file"
@@ -2192,7 +2195,6 @@ write_live() {
   { printf 'tokens_in=%s\ntokens_cached=%s\ntokens_out=%s\nactivity=%s\nupdated=%s\n' "$input" "$cached" "$output" "$activity" "$(date +%s)" >"$tmp" && mv "$tmp" "${status_file%.status}.live"; } || rm -f "$tmp"
 }
 
-timeout_seconds="${SQUAD_WORKER_TIMEOUT_SECONDS:-$(( timeout_minutes * 60 ))}"
 stall_seconds="${SQUAD_WORKER_STALL_SECONDS:-$(( stall_minutes * 60 ))}"
 if (( status == 0 )); then
   # Monitor mode assigns the function subshell and its children a dedicated group.

@@ -14,6 +14,7 @@ releases.
 - The default swarm view (`w`) keeps its original manager/owner frame while integrating a nonduplicating plan DAG, selected worker data flow and summarised conversation; task counts exclude workers outside the active plan.
 - High-risk or high-complexity plans require an approved strong reviewer run on the plan before editing workers launch; attempt 3 prints a strong reviewer diagnosis command.
 - The squad deck (0.3.0) is per tab: it shows only the workers whose status `manager=` matches the tab's `SQUAD_MANAGER_ID`, opens its pane when a worker runs and closes it 60 s after the last one stops (`/deck open` pins it), and the band and status line show only while a worker runs.
+- The squad deck (0.4.0) shows real progress: a bar per active plan (`3/5 tasks · 60%`, from the plan's `## Tasks` ids and this tab's runs), and a % beside each worker's time and token bar (elapsed over `timeout_seconds`, 45 min or 10 for scout when an old status file has none).
 - Manager instructions put the per-session manager ID in a short final block, so manager tabs share the prompt cache instead of each writing ~20k tokens of fresh cache on the first turn.
 - Reviewer workers are read-only at the engine level (Claude/ccr without Edit/Write, Codex `--sandbox read-only`, OpenCode `--agent plan`); they run in place on the project, so a prompt alone was not enough.
 - High-risk plans refuse launches below the strong tier unless `--tier-reason` is provided; children of sub-managers are exempt and record the reason in `tier_override`.

@@ -811,12 +811,15 @@ claude plugin install squad-deck@squad-devkit --scope user
 
 The marketplace is a folder with a relative `source`, so the plugin is read in place from the repository: `git pull` updates it. Every new Claude Code session then has the deck; a session that is already running needs `/reload-plugins`. When the plugin is installed, the launcher does not add `--plugin-dir` (it would load twice) and `squad-devkit --doctor` prints `Deck: on (installed plugin squad-deck@<marketplace>)`.
 
+**Progress.** Each active plan of the tab gets a row (`sample  ██████░░░░  3/5 tasks · 60%`): task ids come from the plan's `## Tasks` section (read only from `<workspace>/.squad/plans/`), a task is done when this tab has a completed run of that worker whose verify did not fail, and a plan without ids counts its own runs. Each card shows a % beside its time bar (elapsed over the status file's `timeout_seconds`) and its token bar.
+
 A session counts as a squad session when `SQUAD_MANAGER_ID` or `SQUAD_DEVKIT_WORKSPACE` is set, or its directory has a `.squad/workers` folder. Only a squad session opens the pane, runs the refresh timer, sets the status line and draws the band. Any other session only gets `/deck`, and `/deck open` still works there.
 
 What it shows:
 
 - **Pane `squad`**: one card per worker of this session (runs that started at or after `SQUAD_DEVKIT_SESSION_START`, the newest status per worker id, at most the 30 newest files): a header with state, id, engine·model and role; elapsed time, tokens in/out, verify and verdict; and a dim activity line. The activity of a running worker is its last tool or text, taken from the last 16 KB of its log (claude stream-json, OpenCode json, or the last line otherwise). Below the cards sit permission chips (allowed, asked and denied checks of this session, per file, shell and other tool) and the last five Bash commands with secrets redacted (Bearer and Authorization values, `*_TOKEN=`/`*_KEY=`/`*_SECRET=`/`PASSWORD=` values, GitHub, OpenAI-style, AWS, Slack and Telegram tokens, JWTs, PEM blocks). ANSI and control characters are stripped from everything it draws.
-- **Layouts**: two columns from 110 columns, one column when compact, one line per worker in mini; `auto` picks by width and height.
+- **Progress bars**: thin `━`/`─` bars. A card has a time bar (elapsed against the run's `timeout_seconds`, accent below 80 %, warning from 80 %, error from 95 %) and, when the run has `budget_tokens`, a token bar (tokens in + out against the budget); a finished run keeps its own colour. The band starts with a fleet bar, `squad: ━━━━━━── 3/4`, the share of this session's workers that finished.
+- **Layouts**: two columns from 110 columns, one column when compact, one line per worker in mini; `auto` picks by width and height. The dock is about 30% of the terminal's width (24 to 60 columns); `/deck width <n>` (24 to 120) sets it and a bare `/deck width` goes back to the default, and dragging the pane's edge works too.
 - **Band above the prompt**: `squad: 2 running · 3 done · 1 failed` plus the newest activity, on the main screen while the pane is not shown, and hidden when no worker of this tab is running (or ended in the last minute).
 - **Status line**: `squad 2▶ 3✓ 1✗`, cleared when no worker is running.
 

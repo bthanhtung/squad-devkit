@@ -9,8 +9,10 @@ _squad_te_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./squad-jq.sh
 source "$_squad_te_lib_dir/squad-jq.sh"
 
+# shellcheck disable=SC2034 # Public values consumed by scripts sourcing this library.
 SQUAD_TE_UPSTREAM_URL="https://github.com/microsoft/TokenEconomizer.git"
 SQUAD_TE_PINNED_COMMIT="583fff78bf504b59d542f953c31e87d01d02ab42"
+# shellcheck disable=SC2034
 SQUAD_TE_UPSTREAM_LICENSE="Apache-2.0"
 SQUAD_TE_MARKETPLACE_NAME="tokeneconomizer"
 SQUAD_TE_PLUGIN_ID="tokeneconomizer@tokeneconomizer"
@@ -124,6 +126,7 @@ squad_te_probe_python() {
   done
 
   if [[ -n "$old_bin" ]]; then
+    # shellcheck disable=SC2034
     SQUAD_TE_PYTHON_BIN="$old_bin"
     SQUAD_TE_PYTHON_VER="$old_ver"
     SQUAD_TE_PYTHON_STATUS="too_old"
@@ -336,6 +339,7 @@ squad_te_inspect_status() {
 
   local bad_link=""
   if bad_link="$(squad_te_symlink_target)"; then
+    # shellcheck disable=SC2034
     SQUAD_TE_SYMLINK_ERROR="$bad_link"
     SQUAD_TE_STATE="unsupported"
     SQUAD_TE_STATE_DETAIL="refusing symlink at devkit-managed path: $bad_link"
@@ -379,8 +383,10 @@ squad_te_inspect_status() {
             else
               SQUAD_TE_OWNED=1
               [[ "$(squad_jq -r '.plugin_added_by_devkit // false' "$ownership_file" 2>/dev/null || echo false)" == "true" ]] && SQUAD_TE_OWN_PLUGIN=1
+    # shellcheck disable=SC2034
               [[ "$(squad_jq -r '.marketplace_added_by_devkit // false' "$ownership_file" 2>/dev/null || echo false)" == "true" ]] && SQUAD_TE_OWN_MKT=1
               [[ "$(squad_jq -r '.disabled // false' "$ownership_file" 2>/dev/null || echo false)" == "true" ]] && SQUAD_TE_DISABLED_FLAG=1
+    # shellcheck disable=SC2034
               SQUAD_TE_OWNED_PIN="$(squad_jq -r '.pinned_commit // empty' "$ownership_file" 2>/dev/null || true)"
             fi
           fi
@@ -402,6 +408,7 @@ squad_te_inspect_status() {
   if [[ "$effective_mode" == "introspect" ]] &&
      [[ "$SQUAD_TE_CODEX_COMPAT" == "tested" || "$SQUAD_TE_CODEX_COMPAT" == "experimental" ]] &&
      squad_has_jq; then
+    # shellcheck disable=SC2034
     SQUAD_TE_CLI_INTROSPECTED=1
     local plugin_row="" mkt_row=""
     plugin_row="$(printf '%s\n' "$SQUAD_TE_CODEX_PLUGINS_JSON" | squad_jq -c --arg pid "$SQUAD_TE_PLUGIN_ID" \
