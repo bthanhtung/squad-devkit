@@ -23,7 +23,7 @@ mkdir -p "$HOME" "$tmp/bin" "$tmp/ws"
 export PATH="$tmp/bin:$PATH"
 cat >"$tmp/bin/claude" <<'ENGINE'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$RECOVERY_LAUNCHES"
+printf 'launch\n' >>"$RECOVERY_LAUNCHES"
 printf 'changed\n' >> tracked.txt
 sleep "${RECOVERY_SLEEP:-2}"
 echo '{"type":"result","result":"Done"}'

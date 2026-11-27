@@ -76,7 +76,7 @@ learn_sandbox_check workspace-write 0
 chmod 644 "$learn_store/$id.md"
 printf 'tampered\n' >>"$learn_store/$id.md"
 learn_inject 'scripts/example.sh'
-[[ "$learn_ids" == rule:scripts && "$learn_warnings" == *'hash mismatch'* ]]
+[[ -z "$learn_ids" && "$learn_warnings" == *'hash mismatch'* ]] || exit 1
 pty_run "$learn" disable >"$tmp/disable"
 [[ ! -e "$learn_store/INDEX" ]]
 learn_sandbox_check none 0
