@@ -117,7 +117,14 @@ FAKE_PREV_FLAGS='"connected":true,"writable":true,' squad_open_monitor /bin/true
 grep -q 'split --terminal prev1 --direction horizontal' "$FAKE_LOG" || fail "absent orphaned reuses previous"
 # Doctor must use the same resolved manager for its actual split test.
 : >"$FAKE_LOG"
-doctor="$(env -u SQUAD_DEVKIT_ORCA_TERMINAL -u HC_TERMINAL_ID -u HERDR_ENV ORCA_PANE_KEY=tab:leaf "$repo/scripts/squad-devkit.sh" --doctor --split-test 2>&1)" || fail "doctor split test: $doctor"
+mkdir -p "$temp/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$temp/bin/codex"
+if ! command -v squad >/dev/null 2>&1; then
+  printf '#!/usr/bin/env bash\necho squad 1.0.2\n' >"$temp/bin/squad"
+  chmod +x "$temp/bin/squad"
+fi
+chmod +x "$temp/bin/codex"
+doctor="$(env -u SQUAD_DEVKIT_ORCA_TERMINAL -u HC_TERMINAL_ID -u HERDR_ENV PATH="$temp/bin:$PATH" ORCA_PANE_KEY=tab:leaf "$repo/scripts/squad-devkit.sh" --doctor --split-test 2>&1)" || fail "doctor split test: $doctor"
 [[ "$doctor" == *'[OK]      split test opened'* ]] || fail "doctor split test: $doctor"
 grep -q 'split --terminal mgr --direction vertical' "$FAKE_LOG" || fail "doctor resolved manager"
 echo "squad orca panes regression ok"
