@@ -15,6 +15,7 @@ while [[ -L "$source_file" ]]; do
 done
 script_dir="$(cd -P "$(dirname "$source_file")" && pwd)"
 script_path="$script_dir/$(basename "$source_file")"
+source "$script_dir/lib/squad-platform.sh"
 
 saved_tty=""
 reload_on_hup() {
@@ -1465,7 +1466,7 @@ load_data() {
     local st="${W_STATE[$wi]}"
     local pid="${final_pids[$wi]}"
     if [[ "$st" == "running" ]]; then
-      if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      if [[ -z "$pid" ]] || ! squad_pid_alive "$pid"; then
         st="lost"
       fi
     fi
@@ -1510,7 +1511,7 @@ load_data() {
       fi
       if [[ -n "$log_path" && -e "$log_path" ]]; then
         local log_mtime=""
-        log_mtime="$(stat -c %Y "$log_path" 2>/dev/null || stat -f %m "$log_path" 2>/dev/null || true)"
+        log_mtime="$(squad_file_mtime "$log_path" || true)"
         if [[ "$log_mtime" =~ ^[0-9]+$ ]]; then
           local out_age=$(( DATA_NOW - log_mtime ))
           (( out_age >= 0 )) || out_age=0
@@ -5196,7 +5197,7 @@ g2_bp() { trunc_str "$3" $(( bw - 4 )); pad_str "$REPLY" $(( bw - 4 )); g2_emit 
 
 # Plain, width-exact card row r (0 top .. 6 bottom, -1 compact) for worker i; sets CELLC/CELLB.
 g2_cell() {
-  local r="$1" i="$2" iw=$(( cw - 4 )) s="${W_STATE[$2]:-}" t="" bwid off L e right ro=""
+  local r="$1" i="$2" iw=$(( cw - 4 )) s="${W_STATE[$2]:-}" t="" bwid off L e right
   CELLC="$c_running"; CELLB=""
   case "$s" in completed) CELLC="$c_completed";; failed|lost) CELLC="$c_failed";; stopped) CELLC="$c_stopped";; esac
   if [[ "${W_ASKING[$i]:-0}" == 1 ]]; then s="asking"; CELLC="$c_asking"; fi
@@ -5268,7 +5269,7 @@ g2_rail() {
 
 g2_flow() {
   local cf="$1" i j k r s lw bwid val frac bar label tx st="" cells
-  local labels=() states=() maxrows=4 tcount sh
+  local labels=() states=() maxrows=4 tcount
   flow=(); g2_pre=""
   local stems=(│ │ │ │)
   if (( use_anim == 1 && n > 0 )); then stems[$cf]="●"; fi
@@ -5402,8 +5403,8 @@ g2_skv() {
 
 build_g2_frame() {
   local columns="$1" lines="$2" rule_line="$3" fw="$1" sw=0 gap=2
-  local i j k f r row frame text colour state model tier role plan="No plan" engine="workers"
-  local n="${#W_NAME[@]}" nt="${#PT_ID[@]}" nh="${#H_TS[@]}"
+  local i j k f r row frame text colour model tier role plan="No plan" engine="workers"
+  local n="${#W_NAME[@]}" nh="${#H_TS[@]}"
   local td=0 tt=0 passed=0 checked=0 scope="clean" merge="" tokh="" H=0 dispatch=""
   local manager_state="on call" worker_model="" manager_model="" manager_tier="lead" max_count=0 count
   local flow=() g2_side=() side=() headers=() legend="" legendw="" seen="|" lcount=0 key
@@ -6400,7 +6401,7 @@ subframe=0
 need_reload=1
 
 while true; do
-  if [[ -n "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}" ]] && ! kill -0 "$SQUAD_DEVKIT_MANAGER_WRAPPER_PID" 2>/dev/null; then
+  if [[ -n "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}" ]] && ! squad_monitor_pid_alive "${SQUAD_DEVKIT_MANAGER_WRAPPER_WINPID:-$SQUAD_DEVKIT_MANAGER_WRAPPER_PID}"; then
     exit 0
   fi
 

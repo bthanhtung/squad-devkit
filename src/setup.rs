@@ -452,10 +452,8 @@ pub fn detect_platforms() -> Vec<&'static Platform> {
 
 /// Get the full path for a platform's command file.
 pub fn command_path(platform: &Platform) -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .context("HOME or USERPROFILE not set")?;
-    Ok(PathBuf::from(home).join(platform.command_path))
+    let home = crate::platform::home_dir().context("HOME or USERPROFILE not set")?;
+    Ok(home.join(platform.command_path))
 }
 
 /// Install the squad command file for a platform.

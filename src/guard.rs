@@ -10,13 +10,62 @@ use std::{
     process::Command,
 };
 
+fn drive_absolute(path: &str) -> bool {
+    matches!(path.as_bytes(), [letter, b':', b'/' | b'\\', ..] if letter.is_ascii_alphabetic())
+}
+fn windows_path(path: &str) -> bool {
+    drive_absolute(path) || path.starts_with(r"\\") || path.starts_with("//?/")
+}
+fn normalize(path: &str, windows: bool) -> String {
+    if !windows {
+        return path.to_owned();
+    }
+    let mut path = path.replace('\\', "/");
+    if let Some(verbatim) = path.strip_prefix("//?/") {
+        if verbatim
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case("UNC/"))
+        {
+            path = format!("//{}", &verbatim[4..]);
+        } else if drive_absolute(verbatim) {
+            path = verbatim.to_owned();
+        }
+    }
+    if drive_absolute(&path) {
+        path[..1].make_ascii_lowercase();
+    }
+    path
+}
+fn split_root(path: &str, windows: bool) -> (&str, &str) {
+    if drive_absolute(path) {
+        return path.split_at(3);
+    }
+    if windows {
+        if let Some(share) = path.strip_prefix("//").and_then(|p| p.split_once('/')) {
+            let end = share
+                .1
+                .find('/')
+                .map_or(path.len(), |i| 3 + share.0.len() + i + 1);
+            return path.split_at(end);
+        }
+    }
+    path.strip_prefix('/')
+        .map_or(("", path), |rest| ("/", rest))
+}
 fn resolve(path: &str, base: &str) -> String {
-    let path = if path.starts_with('/') {
-        path.to_owned()
-    } else {
-        format!("{base}/{path}")
+    let windows = cfg!(windows) || windows_path(path) || windows_path(base);
+    let path = normalize(path, windows);
+    let base = normalize(base, windows);
+    let (base_root, _) = split_root(&base, windows);
+    let (path_root, rest) = split_root(&path, windows);
+    let path = match path_root {
+        "" => format!("{base}/{path}"),
+        "/" if windows && base_root != "/" => format!("{}/{rest}", base_root.trim_end_matches('/')),
+        _ => path,
     };
-    let mut pending: VecDeque<String> = path.split('/').map(str::to_owned).collect();
+    let (root, rest) = split_root(&path, windows);
+    let mut root = root.to_owned();
+    let mut pending: VecDeque<String> = rest.split('/').map(str::to_owned).collect();
     let mut parts: Vec<String> = vec![];
     let mut hops = 0;
     while let Some(part) = pending.pop_front() {
@@ -26,44 +75,66 @@ fn resolve(path: &str, base: &str) -> String {
                 parts.pop();
             }
             _ => {
-                let candidate = format!("/{}/{}", parts.join("/"), part);
+                parts.push(part);
+                let candidate = format!("{root}{}", parts.join("/"));
                 if hops < 40 {
                     if let Ok(target) = fs::read_link(&candidate) {
                         hops += 1;
-                        let target = target.to_string_lossy();
-                        if target.starts_with('/') {
+                        parts.pop();
+                        let target = normalize(&target.to_string_lossy(), windows);
+                        let (target_root, rest) = split_root(&target, windows);
+                        if !target_root.is_empty() {
                             parts.clear();
+                            if target_root != "/" || !windows {
+                                root = target_root.to_owned();
+                            }
                         }
-                        for p in target.split('/').rev() {
+                        for p in rest.split('/').rev() {
                             pending.push_front(p.to_owned());
                         }
                         continue;
                     }
                 }
-                parts.push(part);
             }
         }
     }
-    format!("/{}", parts.join("/"))
+    format!("{root}{}", parts.join("/"))
 }
 fn step(base: &str, arg: &str) -> String {
     let arg = if arg == "~" || arg.starts_with("~/") {
-        format!("{}{}", env::var("HOME").unwrap_or_default(), &arg[1..])
+        format!(
+            "{}{}",
+            crate::platform::home_dir().unwrap_or_default().display(),
+            &arg[1..]
+        )
     } else {
         arg.to_owned()
     };
+    let windows = cfg!(windows) || windows_path(&arg) || windows_path(base);
+    let arg = normalize(&arg, windows);
     if arg.is_empty()
         || arg == "-"
         || arg.starts_with('~')
         || arg.contains(['$', '`', '*', '?', '['])
-        || (!arg.starts_with('/') && base.is_empty())
+        || (split_root(&arg, windows).0.is_empty() && base.is_empty())
     {
         return String::new();
     }
     resolve(&arg, base)
 }
 fn under(path: &str, root: &str) -> bool {
-    path == root || path.strip_prefix(root).is_some_and(|r| r.starts_with('/'))
+    if drive_absolute(root) || root.starts_with("//") {
+        return path
+            .get(..root.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(root))
+            && (path.len() == root.len()
+                || root.ends_with('/')
+                || path.as_bytes().get(root.len()) == Some(&b'/'));
+    }
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|rest| root.ends_with('/') || rest.starts_with('/'))
 }
 fn git(args: &[&str]) -> String {
     Command::new("git")
@@ -110,25 +181,30 @@ impl Guard {
         if under(path, &self.project) {
             return false;
         }
-        let config = env::var("CLAUDE_CONFIG_DIR")
-            .unwrap_or_else(|_| format!("{}/.claude", env::var("HOME").unwrap_or_default()));
+        let config = env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| {
+            format!(
+                "{}/.claude",
+                crate::platform::home_dir().unwrap_or_default().display()
+            )
+        });
         let mut roots = vec![
             format!("{config}/projects"),
             "/tmp".into(),
             "/private/tmp".into(),
             "/private/var/folders".into(),
         ];
+        if cfg!(windows) {
+            roots.push(env::temp_dir().to_string_lossy().into_owned());
+        }
         if let Ok(tmp) = env::var("TMPDIR") {
             if !tmp.is_empty() {
                 roots.push(tmp);
             }
         }
         roots.extend(
-            env::var("SQUAD_DEVKIT_GUARD_ALLOW")
-                .unwrap_or_default()
-                .split(':')
-                .filter(|v| !v.is_empty())
-                .map(str::to_owned),
+            env::split_paths(&env::var_os("SQUAD_DEVKIT_GUARD_ALLOW").unwrap_or_default())
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|path| path.to_string_lossy().into_owned()),
         );
         roots
             .iter()
@@ -554,6 +630,7 @@ fn loose(raw: &str, tool: &str, action: &str) -> (usize, bool) {
 
 fn evaluate(project: &str, input: &Value) -> Result<Option<String>> {
     let project = fs::canonicalize(project)?.to_string_lossy().into_owned();
+    let project = normalize(&project, cfg!(windows));
     let cwd = input["cwd"]
         .as_str()
         .filter(|p| Path::new(p).is_dir())
@@ -613,4 +690,59 @@ pub fn command(args: &[String]) -> Result<()> {
         Err(error) => eprintln!("squad-devkit-manager-guard: {error}; allowing the tool call"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_unc_paths_preserve_the_share_root() {
+        assert_eq!(
+            resolve(r"\\?\UNC\server\share\..\repo\.squad\plan.md", ""),
+            "//server/share/repo/.squad/plan.md"
+        );
+        assert!(under(
+            "//SERVER/SHARE/Repo/.Squad/p.md",
+            "//server/share/repo/.squad"
+        ));
+        assert!(!under("//SERVER/SHARE-other/Repo", "//server/share"));
+    }
+
+    #[test]
+    fn posix_path_prefixes_are_case_sensitive() {
+        assert!(!under("/Users/dev/Repo/.squad/p.md", "/Users/dev/repo"));
+    }
+
+    #[test]
+    fn windows_write_paths_respect_squad_boundary() {
+        let workspace = r"C:\Users\dev\repo";
+        let guard = Guard {
+            project: resolve(workspace, workspace),
+            cwd: workspace.into(),
+            dir: String::new(),
+            gd: String::new(),
+            wt: String::new(),
+            commits: 0,
+            pushes: 0,
+        };
+        for path in [
+            r"C:\Users\dev\repo\.squad\plans\p.md",
+            r"C:\USERS\DEV\Repo\.squad\plans\p.md",
+            "c:/Users/dev/repo/.squad/plans/p.md",
+            r"\\?\C:\Users\dev\repo\.squad\plans\p.md",
+            r".squad\plans\p.md",
+        ] {
+            assert!(guard.allowed(&resolve(path, &guard.cwd)), "{path}");
+        }
+        for path in [
+            r"C:\Users\dev\repo\src\main.rs",
+            r"C:\Users\dev\repo\.squad\..\src\main.rs",
+            r"C:\USERS\DEV\Repo\src\main.rs",
+            r"C:\USERS\DEV\Repo\.squad\..\src\main.rs",
+            r".squad\..\src\main.rs",
+        ] {
+            assert!(!guard.allowed(&resolve(path, &guard.cwd)), "{path}");
+        }
+    }
 }

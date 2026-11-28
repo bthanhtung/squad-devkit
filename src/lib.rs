@@ -1,6 +1,7 @@
 pub mod guard;
 pub mod init;
 pub mod plan;
+pub mod platform;
 pub mod roles;
 pub mod runs;
 pub mod session;

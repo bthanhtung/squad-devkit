@@ -85,7 +85,9 @@ jobs:
           shellcheck -S warning scripts/squad-devkit.sh scripts/squad-worker.sh \
             scripts/squad-worker-monitor.sh scripts/squad-orchestration.sh scripts/squad-ask.sh scripts/squad-route.sh \
             scripts/install-devkit.sh scripts/lib/squad-devkit-*.sh scripts/lib/squad-worktree.sh scripts/lib/squad-panes.sh scripts/lib/squad-worker-model.sh scripts/lib/squad-plan.sh \
-            scripts/lib/squad-engine.sh scripts/lib/engines/*.sh
+            scripts/lib/squad-engine.sh scripts/lib/engines/*.sh \
+            scripts/lib/squad-platform.sh scripts/lib/squad-notify.sh \
+            tests/squad_platform_smoke.sh tests/squad_devkit_install_smoke.sh
 
       - name: Build squad
         run: cargo build
@@ -93,6 +95,8 @@ jobs:
       - name: devkit smoke tests
         run: |
           export PATH="$PWD/target/debug:$PATH"
+          bash tests/squad_platform_smoke.sh
+          bash tests/squad_devkit_install_smoke.sh
           bash tests/squad_devkit_launcher_smoke.sh
           bash tests/squad_devkit_workers_smoke.sh
           bash tests/squad_completions_smoke.sh
@@ -120,3 +124,31 @@ jobs:
           bash tests/squad_orca_panes_regression.sh
           bash tests/squad_engine_adapters_smoke.sh
           bash tests/squad_scout_smoke.sh
+
+  windows-devkit:
+    name: Devkit (Windows Git Bash and PowerShell)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build squad
+        shell: pwsh
+        run: |
+          cargo build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Join-Path $PWD 'target/debug' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Git Bash devkit smoke tests
+        shell: bash
+        run: |
+          bash tests/squad_platform_smoke.sh
+          bash tests/squad_devkit_install_smoke.sh
+          bash tests/squad_devkit_clean_smoke.sh
+          bash tests/squad_devkit_tools_smoke.sh
+
+      - name: PowerShell installer smoke test
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/squad_install_ps1_smoke.ps1

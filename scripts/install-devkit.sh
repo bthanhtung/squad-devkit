@@ -64,13 +64,15 @@ while (( $# > 0 )); do
 done
 
 detect_squad_target() {
-  if ! command -v uname >/dev/null 2>&1; then
-    return 1
-  fi
-  local os arch
-  os="$(uname -s)"
-  arch="$(uname -m)"
-  case "$os" in
+  local arch
+  arch="${SQUAD_INSTALL_ARCH:-$(uname -m)}"
+  case "$install_os" in
+    MINGW*|MSYS*|CYGWIN*)
+      case "$arch" in
+        x86_64|amd64|AMD64) echo "x86_64-pc-windows-msvc" ;;
+        *) return 1 ;;
+      esac
+      ;;
     Darwin)
       case "$arch" in
         arm64|aarch64) echo "aarch64-apple-darwin" ;;
@@ -102,12 +104,12 @@ ensure_squad() {
     exit 1
   fi
 
-  if (( build_squad == 0 )) && command -v squad >/dev/null 2>&1; then
+  if (( build_squad == 0 )) && command -v "$squad_bin_name" >/dev/null 2>&1; then
     local version_output matched=0 token
-    version_output="$(squad --version 2>/dev/null || true)"
+    version_output="$("$squad_bin_name" --version 2>/dev/null || true)"
     local -a tokens=()
     read -r -a tokens <<<"$version_output"
-    for token in "${tokens[@]}"; do
+    for token in ${tokens[@]+"${tokens[@]}"}; do
       if [[ "$token" == "$cargo_version" ]]; then
         matched=1
         break
@@ -126,20 +128,39 @@ ensure_squad() {
       base_url="${SQUAD_DEVKIT_RELEASE_URL:-https://github.com/bthanhtung/squad-devkit/releases/download/v$cargo_version}"
       base_url="${base_url%/}"
       archive_name="squad-${target}.tar.gz"
+      if [[ "$target" == *-pc-windows-* ]]; then
+        archive_name="squad-${target}.zip"
+      fi
       archive_url="$base_url/$archive_name"
       checksums_url="$base_url/SHA256SUMS"
 
       tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/squad-install.XXXXXX")"
-      if curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS" 2>/dev/null && \
-         curl -fsSL "$archive_url" -o "$tmp_dir/$archive_name" 2>/dev/null; then
-        local checksum_line expected_hash actual_hash
-        checksum_line="$(grep -E "(^|[[:space:]])${archive_name}\$" "$tmp_dir/SHA256SUMS" || true)"
-        if [[ -z "$checksum_line" ]]; then
-          echo "Error: missing checksum for $archive_name in SHA256SUMS" >&2
+      if curl -fsSL "$archive_url" -o "$tmp_dir/$archive_name" 2>/dev/null; then
+        if ! curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS" 2>/dev/null; then
+          echo "Error: missing checksum manifest SHA256SUMS for $archive_name" >&2
           rm -rf "$tmp_dir"
           exit 1
         fi
-        expected_hash="$(awk '{print $1}' <<<"$checksum_line")"
+        local checksum_line expected_hash actual_hash
+        checksum_line="$(awk -v archive="$archive_name" '
+          { sub(/\r$/, "") }
+          {
+            start = length($0) - length(archive) + 1
+            if (start >= 1 && substr($0, start) == archive &&
+                (start == 1 || substr($0, start - 1, 1) ~ /[[:space:]*]/)) print
+          }
+        ' "$tmp_dir/SHA256SUMS")"
+        local checksum_error=""
+        case "$checksum_line" in
+          "") checksum_error=missing ;;
+          *$'\n'*) checksum_error=duplicate ;;
+        esac
+        if [[ -n "$checksum_error" ]]; then
+          echo "Error: $checksum_error checksum for $archive_name in SHA256SUMS" >&2
+          rm -rf "$tmp_dir"
+          exit 1
+        fi
+        expected_hash="$(awk '{print tolower($1)}' <<<"$checksum_line")"
         if command -v sha256sum >/dev/null 2>&1; then
           actual_hash="$(sha256sum "$tmp_dir/$archive_name" | awk '{print $1}')"
         elif command -v shasum >/dev/null 2>&1; then
@@ -156,13 +177,18 @@ ensure_squad() {
           exit 1
         fi
 
-        tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
-        if [[ -f "$tmp_dir/squad" ]]; then
-          mkdir -p "$bin_directory"
-          cp "$tmp_dir/squad" "$bin_directory/squad"
-          chmod 755 "$bin_directory/squad"
-          installed=1
+        mkdir "$tmp_dir/extracted"
+        if ! extract_squad "$tmp_dir/$archive_name" "$tmp_dir/extracted" ||
+          [[ ! -f "$tmp_dir/extracted/$squad_bin_name" || -L "$tmp_dir/extracted/$squad_bin_name" ]]; then
+          echo "Error: could not extract $squad_bin_name from $archive_name" >&2
+          rm -rf "$tmp_dir"
+          exit 1
         fi
+        if ! install_squad_binary "$tmp_dir/extracted/$squad_bin_name"; then
+          rm -rf "$tmp_dir"
+          exit 1
+        fi
+        installed=1
       fi
       rm -rf "$tmp_dir"
     fi
@@ -172,13 +198,11 @@ ensure_squad() {
     if command -v cargo >/dev/null 2>&1; then
       echo "Building squad from source..."
       cargo build --release --locked --manifest-path "$repo_dir/Cargo.toml"
-      mkdir -p "$bin_directory"
-      cp "$repo_dir/target/release/squad" "$bin_directory/squad"
-      chmod 755 "$bin_directory/squad"
+      install_squad_binary "$repo_dir/target/release/$squad_bin_name"
       installed=1
-    elif (( build_squad == 0 )) && command -v squad >/dev/null 2>&1; then
+    elif (( build_squad == 0 )) && command -v "$squad_bin_name" >/dev/null 2>&1; then
       local existing_version
-      existing_version="$(squad --version 2>/dev/null || true)"
+      existing_version="$("$squad_bin_name" --version 2>/dev/null || true)"
       echo "Warning: keeping existing squad on PATH ($existing_version)" >&2
       installed=1
     else
@@ -187,25 +211,70 @@ ensure_squad() {
     fi
   fi
 
-  if command -v squad >/dev/null 2>&1; then
+  if command -v "$squad_bin_name" >/dev/null 2>&1; then
     local current_squad
-    current_squad="$(command -v squad)"
-    if [[ "$current_squad" != "$bin_directory/squad" ]]; then
-      printf 'Warning: %s shadows %s/squad earlier on PATH\n' "$current_squad" "$bin_directory" >&2
+    current_squad="$(command -v "$squad_bin_name")"
+    if [[ "$current_squad" != "$bin_directory/$squad_bin_name" ]]; then
+      printf 'Warning: %s shadows %s earlier on PATH\n' "$current_squad" "$bin_directory/$squad_bin_name" >&2
     fi
   fi
 }
 
+extract_squad() {
+  local archive="$1" destination="$2"
+  if [[ "$archive" != *.zip ]]; then
+    tar -xzf "$archive" -C "$destination" squad
+  elif command -v unzip >/dev/null 2>&1; then
+    unzip -q "$archive" squad.exe -d "$destination"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -m zipfile -e "$archive" "$destination"
+  elif command -v python >/dev/null 2>&1; then
+    python -m zipfile -e "$archive" "$destination"
+  else
+    SQUAD_ZIP="$(cygpath -w "$archive")" SQUAD_EXTRACT="$(cygpath -w "$destination")" \
+      powershell.exe -NoProfile -Command '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:SQUAD_ZIP -DestinationPath $env:SQUAD_EXTRACT'
+  fi
+}
+
+install_squad_binary() {
+  local staged
+  [[ ! -d "$bin_directory/$squad_bin_name" ]] || return 1
+  mkdir -p "$bin_directory" && staged="$(mktemp "$bin_directory/.squad-install.XXXXXX")" || return 1
+  if ! cp "$1" "$staged" || ! chmod 755 "$staged" || ! mv -f "$staged" "$bin_directory/$squad_bin_name"; then
+    rm -f "$staged"
+    return 1
+  fi
+}
+
+install_command_entry() {
+  local source="$script_dir/$1.sh" target="$bin_directory/$2" escaped
+  if (( windows_install )); then
+    escaped=${source//\'/\'\\\'\'}
+    rm -f "$target"
+    printf '#!/usr/bin/env bash\nexec '\''%s'\'' "$@"\n' "$escaped" >"$target"
+    chmod 755 "$target"
+  else
+    ln -sfn "$source" "$target"
+    [[ -L "$target" ]] || { printf 'Error: expected symlink at %s\n' "$target" >&2; return 1; }
+  fi
+}
+
+install_os="${SQUAD_INSTALL_OS:-$(uname -s)}"
+windows_install=0
+squad_bin_name=squad
+case "$install_os" in
+  MINGW*|MSYS*|CYGWIN*) windows_install=1; squad_bin_name=squad.exe ;;
+esac
 bin_directory="${SQUAD_DEVKIT_BIN_DIR:-$HOME/.local/bin}"
 ensure_squad
 mkdir -p "$bin_directory"
-ln -sfn "$script_dir/squad-devkit.sh" "$bin_directory/squad-devkit"
-ln -sfn "$script_dir/squad-worker.sh" "$bin_directory/squad-worker"
-ln -sfn "$script_dir/squad-worker-monitor.sh" "$bin_directory/squad-monitor"
-ln -sfn "$script_dir/squad-orchestration.sh" "$bin_directory/squad-orchestration"
-ln -sfn "$script_dir/squad-route.sh" "$bin_directory/squad-route"
-ln -sfn "$script_dir/squad-ask.sh" "$bin_directory/squad-ask"
-ln -sfn "$script_dir/squad-telegram.sh" "$bin_directory/squad-telegram"
+install_command_entry squad-devkit squad-devkit
+install_command_entry squad-worker squad-worker
+install_command_entry squad-worker-monitor squad-monitor
+install_command_entry squad-orchestration squad-orchestration
+install_command_entry squad-route squad-route
+install_command_entry squad-ask squad-ask
+install_command_entry squad-telegram squad-telegram
 printf 'Linked squad-devkit, squad-worker, squad-monitor, squad-orchestration, squad-route, squad-ask, and squad-telegram into %s\n' "$bin_directory"
 
 # The skill is a link into this repository, so pulling updates it.
@@ -220,8 +289,16 @@ if (( install_skill == 1 )); then
       continue
     fi
     mkdir -p "$skills_directory"
-    ln -sfn "$skill_source" "$target"
-    printf 'Skill: linked %s\n' "$target"
+    if (( windows_install )); then
+      if MSYS=winsymlinks:nativestrict ln -sfn "$skill_source" "$target" && [[ -L "$target" ]]; then
+        printf 'Skill: linked %s\n' "$target"
+      else
+        printf 'Skill: skipped %s (native symlinks unavailable)\n' "$target" >&2
+      fi
+    else
+      ln -sfn "$skill_source" "$target"
+      printf 'Skill: linked %s\n' "$target"
+    fi
   done
 fi
 
@@ -268,7 +345,13 @@ if (( install_deck == 1 )); then
 fi
 case ":$PATH:" in
   *":$bin_directory:"*) ;;
-  *) printf 'Add %s to your PATH to run them from any terminal.\n' "$bin_directory" ;;
+  *)
+    if (( windows_install )); then
+      printf 'Add %s to PATH in ~/.bashrc for Git Bash/MSYS2.\n' "$bin_directory"
+    else
+      printf 'Add %s to PATH in your shell startup file.\n' "$bin_directory"
+    fi
+    ;;
 esac
 
 interactive=0
@@ -318,7 +401,7 @@ else
     fi
   done
 fi
-if (( ${#worker_engines[@]} == 0 )); then
+if [[ -z "${worker_engines[*]:-}" ]]; then
   echo 'Workers: none (install claude, codex, opencode, grok, or ccr; until then the manager does the work itself)'
 elif [[ "$(devkit_config_get setup_mode)" == custom ]]; then
   printf 'Workers (in the order you chose): %s\n' "${worker_engines[*]}"

@@ -6,7 +6,7 @@
   <a href="https://github.com/bthanhtung/squad-devkit/actions/workflows/ci.yml"><img src="https://github.com/bthanhtung/squad-devkit/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/bthanhtung/squad-devkit/releases"><img src="https://img.shields.io/github/v/release/bthanhtung/squad-devkit?style=flat-square" alt="Release" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-22c55e?style=flat-square" alt="License: GPL-3.0" /></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-7c3aed?style=flat-square" alt="macOS and Linux" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-7c3aed?style=flat-square" alt="macOS | Linux | Windows" />
 </p>
 
 squad-devkit turns one terminal into an engineering team. You talk to one manager agent.
@@ -34,7 +34,7 @@ squad-devkit/scripts/install-devkit.sh
 squad-devkit "your request"
 ```
 
-Needs macOS or Linux, bash, git, one manager CLI (such as `claude`) and one worker engine. Make sure `~/.local/bin` is on your `PATH`. Run `squad-devkit --doctor` to check your setup.
+Supports macOS, Linux, WSL2, and Windows with Git Bash/MSYS2. Run `./install.sh` from the checkout, or use `pwsh -File install.ps1` on Windows to install native `squad.exe` and the launchers. You need Bash, Git, one manager CLI (such as `claude`), and one worker engine. Make sure `~/.local/bin` is on your `PATH`. Run `squad-devkit --doctor` to check your setup.
 
 ## See your squad
 

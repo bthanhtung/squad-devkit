@@ -43,7 +43,7 @@ notified when each one finishes. The manager also chooses each worker's role
 
 ## Install
 
-You need macOS or Linux and `squad` (installed by scripts/install-devkit.sh (or
+You need macOS, Linux, WSL2, or native Windows with Git Bash/MSYS2 and `squad` (installed by scripts/install-devkit.sh (or
 `cargo build --release`)). You also need at least one manager CLI and, for
 workers, `codex` and/or `ccr` (`@musistudio/claude-code-router`). Ghostty and tmux
 are optional backends.
@@ -55,6 +55,12 @@ are optional backends.
 The installer links `squad-devkit`, `squad-worker`, `squad-monitor`, and `squad-orchestration` into
 `~/.local/bin` (set `SQUAD_DEVKIT_BIN_DIR` for another directory). It then picks the manager as
 described below and lists the worker engines it found.
+
+On macOS, Linux, and WSL2, run `./install.sh` from the checkout. Linux desktop notifications use `notify-send`.
+
+On Windows, run `pwsh -File install.ps1` to install native `squad.exe` and the command and Bash launchers, or run `./install.sh` from Git Bash/MSYS2. Run the Bash orchestration tools in Git Bash/MSYS2 or inside WSL2. Windows Terminal (`wt.exe`) provides splits and dashboard tabs. WSL2 launches the panes through `wsl.exe -d "$WSL_DISTRO_NAME"`.
+
+Run `squad-devkit --doctor` to check your platform, terminal, and notification backends.
 
 Bash and Zsh completions are in `scripts/completions/`; the installer prints
 how to enable them. Both shells suggest engine names after `--workers` and
@@ -624,7 +630,7 @@ The `cards` layout (`--layout cards`, key `c`) shows live activity and output ag
 
 In cards, tree and pipeline, Flow wraps message text and pins unanswered questions ahead of recent messages. `v` cycles all, questions and failures (`--flow-filter`, or `SQUAD_ORCHESTRATION_FLOW_FILTER`); `e` expands earlier worker rows (`SQUAD_ORCHESTRATION_EXPAND=1` starts expanded). `SQUAD_ORCHESTRATION_STALE_SECS` defaults to 120. These controls preserve `f` for focus and `p` for pinning.
 
-Use `j`/`k` or the arrow keys to select a worker and `i` to toggle details; `Esc` closes details or exits zoom. `d` pages its diff, `r` its report, `s` requests a stop (confirm with `y`), and `m` opens a monitor split. These actions are disabled in `--once`. Worker completion notifications use macOS or Linux desktop notifications when available; set `SQUAD_DEVKIT_NOTIFY=0` to disable them.
+Use `j`/`k` or the arrow keys to select a worker and `i` to toggle details; `Esc` closes details or exits zoom. `d` pages its diff, `r` its report, `s` requests a stop (confirm with `y`), and `m` opens a monitor split. These actions are disabled in `--once`. Worker completion notifications use `terminal-notifier` or `osascript` on macOS, `notify-send` on Linux, and PowerShell WinRT toasts on Windows and WSL2 when available. WSL2 can fall back to `notify-send`. To disable notifications, set `SQUAD_DEVKIT_NOTIFY=0` to disable them.
 
 `PAGER` must be a single executable name or path; embedded arguments such as `PAGER='less -R'` are unsupported.
 
@@ -644,6 +650,7 @@ in (`scripts/lib/squad-panes.sh`), checked in this order:
 | Zellij | `ZELLIJ` | Standalone runs float; manager runs require tmux because a split cannot be confirmed |
 | WezTerm | `WEZTERM_PANE` | `wezterm cli split-pane`, then focus returns to the manager |
 | Kitty | `KITTY_WINDOW_ID` | `kitten @ launch --keep-focus` (needs `allow_remote_control yes`; best with the `splits` layout) |
+| Windows Terminal | `WT_SESSION` and `wt.exe` | splits and dashboard tabs; WSL2 launches through `wsl.exe -d "$WSL_DISTRO_NAME"` |
 | iTerm2 | `ITERM_SESSION_ID` | AppleScript `split vertically/horizontally` |
 | Ghostty | terminal id recorded by `squad-devkit` | AppleScript `split` |
 | Anything else | | one dashboard window per manager session running `squad-monitor --all` |
@@ -1013,4 +1020,4 @@ Editing workers never touch your working tree. They work on a `squad/<id>` branc
 `squad-worker --merge`, which leaves the changes uncommitted for review.
 
 **Windows?**
-Not supported yet. WSL has not been tested; reports are welcome.
+Use Git Bash/MSYS2 with native `squad.exe`, or install and run the tools inside WSL2.

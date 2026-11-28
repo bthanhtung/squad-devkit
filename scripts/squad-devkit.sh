@@ -503,8 +503,10 @@ worker_enabled() {
 
 run_doctor() {
   local status=0
-  local tool path ver
+  local tool path ver os
+  os="$(squad_os_kind)"
   printf '=== squad-devkit doctor ===\n\n'
+  printf 'OS kind: %s\n\n' "$os"
 
   printf 'Core Tools:\n'
   for tool in squad git jq curl tmux; do
@@ -690,6 +692,8 @@ run_doctor() {
     pane_support="wezterm split-pane"
   elif [[ -n "${KITTY_WINDOW_ID:-}" ]] && command -v kitten >/dev/null 2>&1; then
     pane_support="kitty split-window"
+  elif [[ -n "${WT_SESSION:-}" ]] && squad_find_wt >/dev/null; then
+    pane_support="Windows Terminal split-pane"
   elif [[ -n "${ITERM_SESSION_ID:-}" ]] && command -v "$osascript_cmd" >/dev/null 2>&1; then
     pane_support="iTerm2 split-pane (AppleScript)"
   elif [[ -n "${SQUAD_DEVKIT_GHOSTTY_TERMINAL:-}" ]] && command -v "$osascript_cmd" >/dev/null 2>&1; then
@@ -697,6 +701,27 @@ run_doctor() {
   elif [[ -z "${TMUX:-}" && "$term_prog" == "ghostty" ]] && command -v "$osascript_cmd" >/dev/null 2>&1; then
     pane_support="Ghostty (splits supported on launch)"
   fi
+  local notification_status=unavailable
+  if [[ "${SQUAD_DEVKIT_NOTIFY:-1}" == 0 ]]; then
+    notification_status='disabled (SQUAD_DEVKIT_NOTIFY=0)'
+  elif [[ "$os" == windows || "$os" == wsl || "${SQUAD_DEVKIT_NOTIFY_BACKEND:-}" == powershell ]] &&
+    squad_find_powershell >/dev/null; then
+    notification_status='PowerShell toast'
+  elif [[ "$os" == macos ]] && command -v terminal-notifier >/dev/null 2>&1; then
+    notification_status='terminal-notifier'
+  elif [[ "$os" == macos ]] && command -v osascript >/dev/null 2>&1; then
+    notification_status='osascript'
+  elif [[ "$os" == linux || "$os" == wsl ]] && command -v notify-send >/dev/null 2>&1; then
+    notification_status='notify-send'
+  fi
+  if [[ "$os" == windows || "$os" == wsl ]]; then
+    printf '  Windows Terminal (wt.exe): %s\n' "$(squad_find_wt || echo unavailable)"
+    printf '  PowerShell toast backend: %s\n' "$(squad_find_powershell || echo unavailable)"
+  fi
+  if [[ "$os" == linux || "$os" == wsl ]]; then
+    printf '  notify-send: %s\n' "$(command -v notify-send || echo unavailable)"
+  fi
+  printf '  Desktop notifications: %s\n' "$notification_status"
   printf '  Monitor pane mode: %s\n' "$pane_support"
   printf '  View: %s (%s)\n' "$view_opt" "$view_source"
   if (( split_test )); then

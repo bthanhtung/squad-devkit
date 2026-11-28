@@ -18,6 +18,10 @@ while [[ -L "$source_file" ]]; do
   fi
 done
 script_dir="$(cd "$(dirname "$source_file")" && pwd)"
+source "$script_dir/lib/squad-platform.sh"
+if ! command -v squad >/dev/null 2>&1 && command -v squad.exe >/dev/null 2>&1; then
+  squad() { command squad.exe "$@"; }
+fi
 source "$script_dir/lib/squad-worktree.sh"
 source "$script_dir/lib/squad-panes.sh"
 # shellcheck source=lib/squad-plan.sh
@@ -424,8 +428,13 @@ reconcile_status() {
   [[ "$(status_get "$file" state)" == running ]] || return 0
   pid="$(status_get "$file" pid)"
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
-  table="$(LC_ALL=C ps -axo pid=,lstart=,stat= 2>/dev/null)" || return 0
-  actual="$(printf '%s\n' "$table" | awk -v pid="$pid" '$1 == pid { $1=""; sub(/^ +/, ""); print; exit }')"
+  if table="$(LC_ALL=C ps -axo pid=,lstart=,stat= 2>/dev/null)"; then
+    actual="$(printf '%s\n' "$table" | awk -v pid="$pid" '$1 == pid { $1=""; sub(/^ +/, ""); print; exit }')"
+  elif squad_is_windows && squad_pid_missing "$pid"; then
+    actual=""
+  else
+    return 0
+  fi
   expected="$(status_get "$file" process_started)"
   if [[ -z "$actual" ]]; then
     reason="worker process disappeared; exit status unavailable"
@@ -1343,7 +1352,7 @@ stop_reason=""
 finish_run() {
   local exit_status="$1"
   if [[ -n "$engine_pid" ]] && kill -0 "$engine_pid" 2>/dev/null; then
-    pkill -TERM -P "$engine_pid" 2>/dev/null || true
+    squad_kill_children "$engine_pid" TERM || true
     kill -TERM "$engine_pid" 2>/dev/null || true
   fi
   if [[ -n "$status_file" && -f "$status_file" ]] && grep -qx 'state=running' "$status_file"; then
@@ -1361,10 +1370,10 @@ trap 'finish_run "$?"' EXIT
 on_stop() {
   stop_reason="stopped by request"
   if [[ -n "$engine_pid" ]]; then
-    pkill -TERM -P "$engine_pid" 2>/dev/null || true
+    squad_kill_children "$engine_pid" TERM || true
     kill -TERM "$engine_pid" 2>/dev/null || true
   elif [[ -n "$verify_pid" ]]; then
-    pkill -KILL -P "$verify_pid" 2>/dev/null || true
+    squad_kill_children "$verify_pid" KILL || true
     kill -KILL "$verify_pid" 2>/dev/null || true
   else
     exit 143
@@ -1513,7 +1522,7 @@ report_file="$output_directory/$run_name.md"
 log_file="$output_directory/$run_name.log"
 status_file="$output_directory/$run_name.status"
 started_at="$(date +%s)"
-process_started="$(LC_ALL=C ps -p "$$" -o lstart= | awk '{$1=$1; print}' || true)"
+process_started="$(squad_pid_started "$$" || true)"
 run_profile=""
 [[ "$engine" == codex ]] && run_profile="$profile"
 actual_model=unknown
@@ -1632,7 +1641,8 @@ open_monitor_pane() {
       local monitor_pid=""
       if [[ -f "$marker_path" ]]; then
         IFS= read -r monitor_pid <"$marker_path" || true
-        if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+        monitor_pid="${monitor_pid%$'\r'}"
+        if squad_monitor_pid_alive "$monitor_pid"; then
           return 0
         fi
       fi
@@ -1642,21 +1652,26 @@ open_monitor_pane() {
       fi
       if [[ -f "$marker_path" ]]; then
         IFS= read -r monitor_pid <"$marker_path" || true
-        if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+        monitor_pid="${monitor_pid%$'\r'}"
+        if squad_monitor_pid_alive "$monitor_pid"; then
           squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
           return 0
         fi
       fi
-      local ready_file
+      local ready_file winpid
       ready_file="$(mktemp "$workspace_root/$output_directory/.monitor-ready.XXXXXXXX")" || {
         squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
         return 1
       }
       rm -f "$ready_file"
+      winpid="${SQUAD_DEVKIT_MANAGER_WRAPPER_WINPID:-$(squad_win_pid "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}")}"
       {
         printf '#!/bin/bash\n'
         printf 'export SQUAD_WORKER_MONITOR_READY=%q\n' "$ready_file"
         printf 'export SQUAD_DEVKIT_MANAGER_WRAPPER_PID=%q\n' "${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-}"
+        if [[ -n "$winpid" ]]; then
+          printf 'export SQUAD_DEVKIT_MANAGER_WRAPPER_WINPID=%q\n' "$winpid"
+        fi
         printf 'export SQUAD_DEVKIT_SESSION_START=%q\n' "${SQUAD_DEVKIT_SESSION_START:-}"
         printf 'export SQUAD_MANAGER_ID=%q\n' "$mgr_id"
         printf 'exec %q %q\n' "$script_dir/squad-orchestration.sh" "$workspace_root/$output_directory"
@@ -1673,7 +1688,8 @@ open_monitor_pane() {
       for _ in $(seq 1 "$max_wait"); do
         if [[ -f "$ready_file" ]]; then
           IFS= read -r monitor_pid <"$ready_file" || true
-          if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+          monitor_pid="${monitor_pid%$'\r'}"
+          if squad_monitor_pid_alive "$monitor_pid"; then
             printf '%s\n' "$monitor_pid" >"$marker_path"
             rm -f "$ready_file"
             squad_panes_unlock "$workspace_root/$output_directory" .orchestration.lock
@@ -1719,7 +1735,8 @@ open_monitor_pane() {
   for _ in $(seq 1 40); do
     if [[ -f "$ready_file" ]]; then
       IFS= read -r monitor_pid <"$ready_file" || true
-      if [[ "$monitor_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+      monitor_pid="${monitor_pid%$'\r'}"
+      if squad_monitor_pid_alive "$monitor_pid"; then
         rm -f "$ready_file"; return 0
       fi
     fi
@@ -1786,8 +1803,7 @@ run_engine() {
 
 file_age() {
   local modified
-  # GNU stat first: on Linux, BSD-style `stat -f` succeeds with other output.
-  modified="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)"
+  modified="$(squad_file_mtime "$1" || echo 0)"
   printf '%d' $(( $(date +%s) - modified ))
 }
 
@@ -1856,14 +1872,14 @@ if (( status == 0 )); then
       stop_reason="no output for $(( stall_seconds / 60 ))m"
     fi
     if [[ -n "$stop_reason" ]]; then
-      pkill -TERM -P "$engine_pid" 2>/dev/null || true
+      squad_kill_children "$engine_pid" TERM || true
       kill -TERM "$engine_pid" 2>/dev/null || true
       break
     fi
   done
   wait "$engine_pid" 2>/dev/null || status=$?
   if [[ -n "$live_pid" ]] && kill -0 "$live_pid" 2>/dev/null; then
-    pkill -TERM -P "$live_pid" 2>/dev/null || true
+    squad_kill_children "$live_pid" TERM || true
     kill -TERM "$live_pid" 2>/dev/null || true
   fi
   engine_pid=""
@@ -1958,7 +1974,7 @@ if [[ -n "$verify_command" ]]; then
   while kill -0 "$verify_pid" 2>/dev/null; do
     if (( $(date +%s) - verify_started >= 10#$verify_timeout * 60 )); then
       verify=timeout
-      pkill -KILL -P "$verify_pid" 2>/dev/null || true
+      squad_kill_children "$verify_pid" KILL || true
       kill -KILL "$verify_pid" 2>/dev/null || true
       break
     fi

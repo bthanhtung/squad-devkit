@@ -239,8 +239,9 @@ squad send manager @all "API contract changed, update your implementations"
 
 ## Requirements
 
-- Rust 1.77+ (for building)
-- macOS or Linux
+- Rust 1.85+ (for building)
+- macOS, Linux (including WSL2), or Windows. On Windows, install native `squad.exe` with `install.ps1`, download the `.zip` from GitHub Releases, or run `cargo build --release`.
+- Configuration resolves the home directory using `HOME`, falling back to `USERPROFILE`.
 
 ## License
 

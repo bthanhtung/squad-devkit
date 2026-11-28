@@ -10,6 +10,7 @@
 # Environment: SQUAD_DEVKIT_RETENTION_DAYS (default 7),
 #              SQUAD_DEVKIT_MAX_MB (default 200)
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/squad-platform.sh"
 
 workspace="$1"
 shift
@@ -31,13 +32,15 @@ cutoff=$(( $(date +%s) - retention_days * 86400 ))
 removed=0
 
 status_value() {
-  sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
+  local value
+  value="$(sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1)" || return
+  printf '%s\n' "${value%$'\r'}"
 }
 
 is_running() {
   local pid
   pid="$(status_value "$1" pid)"
-  [[ "$(status_value "$1" state)" == running && -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+  [[ "$(status_value "$1" state)" == running ]] && squad_pid_alive "$pid"
 }
 
 remove_run() {
@@ -71,7 +74,7 @@ while (( $(du -sk "$workers" | cut -f 1) > max_kilobytes )); do
   remove_run "$oldest"
 done
 
-find "$workspace/.squad/managers" -name '*.handoff.md' -mtime +"$retention_days" -delete 2>/dev/null || true
+find "$workspace/.squad/managers" -type f -name '*.handoff.md' -mtime +"$retention_days" -exec rm -f -- {} + 2>/dev/null || true
 router_log="$workers/ccr-server.log"
 if [[ -f "$router_log" ]] && (( $(du -sk "$router_log" | cut -f 1) > 10240 )); then
   tail -n 2000 "$router_log" >"$router_log.tmp" && mv "$router_log.tmp" "$router_log"

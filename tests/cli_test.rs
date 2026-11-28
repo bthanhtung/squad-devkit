@@ -16,10 +16,14 @@ fn make_executable(path: &std::path::Path) {
 }
 
 fn create_fake_binary(dir: &std::path::Path, name: &str) {
-    let path = dir.join(name);
-    std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
     #[cfg(unix)]
-    make_executable(&path);
+    {
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        make_executable(&path);
+    }
+    #[cfg(windows)]
+    std::fs::write(dir.join(format!("{name}.cmd")), "@exit /b 0\r\n").unwrap();
 }
 
 fn squad(workspace: &std::path::Path) -> Command {
@@ -1581,6 +1585,37 @@ fn test_doctor_reports_template_archived_task_and_protocol_warnings_without_muta
         .unwrap();
     assert_eq!(after_last_seen, before_last_seen);
     assert_eq!(after_status, before_status);
+}
+
+#[test]
+fn userprofile_falls_back_when_home_is_empty_or_unset() {
+    let tmp = TempDir::new().unwrap();
+    let profile = tmp.path().join("profile");
+    let home = tmp.path().join("home");
+    for dir in [&profile, &home] {
+        std::fs::create_dir(dir).unwrap();
+    }
+    let setup = || {
+        let mut command = squad(tmp.path());
+        command
+            .args(["setup", "claude"])
+            .env("USERPROFILE", &profile);
+        command
+    };
+    setup().env("HOME", &home).assert().success();
+    let template = ".claude/commands/squad.md";
+    assert!(home.join(template).exists());
+    for empty in [false, true] {
+        let mut command = setup();
+        if empty {
+            command.env("HOME", "");
+        } else {
+            command.env_remove("HOME");
+        }
+        command.assert().success();
+        assert!(profile.join(template).is_file());
+        std::fs::remove_file(profile.join(template)).unwrap();
+    }
 }
 
 #[test]

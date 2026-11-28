@@ -56,6 +56,10 @@ jobs:
             os: ubuntu-latest
             use-cross: true
 
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use-cross: false
+
     steps:
       - uses: actions/checkout@v4
 
@@ -88,6 +92,7 @@ jobs:
           fi
 
       - name: Strip binary
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           BIN="target/${{ matrix.target }}/release/squad"
@@ -100,7 +105,8 @@ jobs:
               ;;
           esac
 
-      - name: Create archive
+      - name: Create tar.gz archive
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           TARGET="${{ matrix.target }}"
@@ -110,11 +116,21 @@ jobs:
           cp "target/$TARGET/release/squad" "$STAGING/"
           tar -czf "$ARCHIVE" -C "$STAGING" squad
 
+      - name: Create Windows zip archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = '${{ matrix.target }}'
+          Compress-Archive -LiteralPath "target/$target/release/squad.exe" -DestinationPath "squad-$target.zip"
+
       - name: Upload archive artifact
         uses: actions/upload-artifact@v4
         with:
           name: squad-${{ matrix.target }}
-          path: squad-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          path: |
+            squad-${{ matrix.target }}.tar.gz
+            squad-${{ matrix.target }}.zip
 
   release:
     name: Publish release
@@ -143,17 +159,25 @@ jobs:
         shell: bash
         run: |
           cd dist
-          for f in squad-*.tar.gz; do
-            [ -e "$f" ] && shasum -a 256 "$f"
-          done | tee SHA256SUMS
+          shopt -s nullglob
+          archives=(squad-*.tar.gz squad-*.zip)
+          test "${#archives[@]}" -gt 0
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${archives[@]}" >SHA256SUMS
+          else
+            shasum -a 256 "${archives[@]}" >SHA256SUMS
+          fi
 
       - name: Create GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          shopt -s nullglob
+          archives=(dist/squad-*.tar.gz dist/squad-*.zip)
           gh release create "$GITHUB_REF_NAME" \
             --title "squad-devkit $GITHUB_REF_NAME" \
             --notes-file release-notes.md \
             --verify-tag \
-            dist/squad-*.tar.gz \
+            "${archives[@]}" \
             dist/SHA256SUMS

@@ -417,7 +417,7 @@ fn run_bounded(program: &str, args: &[&str], timeout: Duration) -> Result<(bool,
 pub fn codex_cache_path() -> Option<PathBuf> {
     let home = match std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()) {
         Some(home) => PathBuf::from(home),
-        None => PathBuf::from(std::env::var_os("HOME").filter(|v| !v.is_empty())?).join(".codex"),
+        None => crate::platform::home_dir()?.join(".codex"),
     };
     Some(home.join("models_cache.json"))
 }

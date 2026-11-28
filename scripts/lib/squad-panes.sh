@@ -3,7 +3,7 @@
 # manager runs in. Terminals with a split API get a pane beside the manager
 # (the first worker to its right, later workers stacked below the previous
 # one, focus kept on the manager): tmux, Orca, Herdr, WezTerm, Kitty, iTerm2,
-# Ghostty, and Zellij (floating panes). Other terminals, such as macOS
+# Ghostty, Windows Terminal, and Zellij (floating panes). Other terminals, such as macOS
 # Terminal.app, GNOME Terminal, or Konsole, get one dashboard window per
 # manager session running `squad-worker-monitor --all`.
 #
@@ -13,6 +13,7 @@
 
 squad_panes_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$squad_panes_lib/squad-jq.sh"
+source "$squad_panes_lib/squad-platform.sh"
 
 # Serialise splits so parallel workers stack instead of splitting the same pane.
 squad_panes_lock() {
@@ -109,7 +110,7 @@ squad_open_monitor() {
     echo "squad-worker: split disabled; enable panes and use a supported terminal or tmux" >&2; return 1
   fi
   local osascript_command="${SQUAD_DEVKIT_OSASCRIPT:-osascript}"
-  local backend="" manager=""
+  local backend="" manager="" wt_cmd
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     backend=tmux; manager="$TMUX_PANE"
   elif [[ -n "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]] &&
@@ -132,6 +133,8 @@ squad_open_monitor() {
     backend=wezterm; manager="$WEZTERM_PANE"
   elif [[ -n "${KITTY_WINDOW_ID:-}" ]] && command -v kitten >/dev/null 2>&1; then
     backend=kitty; manager="$KITTY_WINDOW_ID"
+  elif [[ -n "${WT_SESSION:-}" ]] && wt_cmd="$(squad_find_wt)" && [[ -n "$wt_cmd" ]]; then
+    backend=wt; manager="$WT_SESSION"
   elif [[ -n "${ITERM_SESSION_ID:-}" ]] && command -v "$osascript_command" >/dev/null 2>&1; then
     backend=iterm; manager="${ITERM_SESSION_ID#*:}"
   elif [[ -n "${SQUAD_DEVKIT_GHOSTTY_TERMINAL:-}" ]] && command -v "$osascript_command" >/dev/null 2>&1; then
@@ -168,7 +171,7 @@ squad_open_monitor() {
     echo "squad-worker: no supported split terminal; use tmux or a supported terminal" >&2
     return 1
   fi
-  squad_panes_dashboard "$dashboard_script" "$state"
+  squad_panes_dashboard "$dashboard_script" "$state" "$workspace"
 }
 
 squad_panes_tmux() {
@@ -392,12 +395,46 @@ squad_panes_zellij() {
   printf 'floating\n'
 }
 
+squad_panes_wt_launch() {
+  local wt_cmd="$1" action="$2" script="$3" title="$4" workspace="$5"
+  local safe_title safe_script safe_workspace git_bash
+  safe_title="$(squad_wt_escape "$title")"
+  safe_script="$(squad_wt_escape "$script")"
+  if squad_is_wsl; then
+    safe_workspace="$(squad_wt_escape "$workspace")"
+    local -a distro=()
+    [[ -z "${WSL_DISTRO_NAME:-}" ]] || distro=(-d "$(squad_wt_escape "$WSL_DISTRO_NAME")")
+    "$wt_cmd" -w 0 "$action" --title "$safe_title" -- wsl.exe ${distro[@]+"${distro[@]}"} \
+      --cd "$safe_workspace" -- bash "$safe_script"
+  else
+    workspace="$(squad_win_path "$workspace")" || return 1
+    safe_workspace="$(squad_wt_escape "$workspace")"
+    git_bash="$(squad_find_git_bash)" || return 1
+    # Keep MSYS from rewriting the POSIX script argument meant for Git Bash.
+    MSYS2_ARG_CONV_EXCL='*' "$wt_cmd" -w 0 "$action" -d "$safe_workspace" --title "$safe_title" -- \
+      "$(squad_wt_escape "$git_bash")" "$safe_script"
+  fi
+}
+
+squad_panes_wt() {
+  local wt_cmd
+  wt_cmd="$(squad_find_wt)" && [[ -n "$wt_cmd" ]] || return 1
+  squad_panes_wt_launch "$wt_cmd" split-pane "$3" "$4" "$5" >/dev/null || return 1
+  printf 'wt-%s\n' "${WT_SESSION:-0}"
+}
+
 # One dashboard window per manager session for terminals without a split API.
 squad_panes_dashboard() {
-  local dashboard_script="$1" state="$2" marker
+  local dashboard_script="$1" state="$2" workspace="${3:-$PWD}" marker wt_cmd
   [[ "${SQUAD_WORKER_DASHBOARD:-1}" != 0 && -n "$dashboard_script" ]] || return 0
   marker="$state/.dashboard-${SQUAD_DEVKIT_MANAGER_WRAPPER_PID:-$PPID}"
   [[ -e "$marker" ]] && return 0
+  if { squad_is_windows || squad_is_wsl; } && wt_cmd="$(squad_find_wt)" && [[ -n "$wt_cmd" ]]; then
+    if squad_panes_wt_launch "$wt_cmd" new-tab "$dashboard_script" 'squad workers' "$workspace" >/dev/null 2>&1; then
+      : >"$marker"
+      return
+    fi
+  fi
   local osascript_command="${SQUAD_DEVKIT_OSASCRIPT:-osascript}" quoted
   quoted="$(printf '%q' "$dashboard_script")"
   case "${TERM_PROGRAM:-}" in
