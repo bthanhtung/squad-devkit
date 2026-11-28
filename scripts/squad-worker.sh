@@ -430,7 +430,7 @@ reconcile_status() {
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
   if table="$(LC_ALL=C ps -axo pid=,lstart=,stat= 2>/dev/null)"; then
     actual="$(printf '%s\n' "$table" | awk -v pid="$pid" '$1 == pid { $1=""; sub(/^ +/, ""); print; exit }')"
-  elif squad_is_windows && squad_pid_missing "$pid"; then
+  elif declare -F squad_is_windows >/dev/null 2>&1 && squad_is_windows && squad_pid_missing "$pid"; then
     actual=""
   else
     return 0

@@ -150,6 +150,7 @@ squad_open_monitor() {
       echo "squad-worker: timed out waiting for pane lock; check $state/.pane.lock" >&2
       return 1
     fi
+    [[ "$backend" != herdr ]] || squad_panes_herdr_reap_stale "$manager"
     local last_file="$state/.$backend-${manager//[^A-Za-z0-9_-]/_}.last" previous="" created=""
     [[ -f "$last_file" ]] && previous="$(cat "$last_file")"
     local errfile="$state/.$backend.err" detail=""
@@ -338,7 +339,6 @@ squad_panes_herdr_reap_stale() {
 
 squad_panes_herdr() {
   local manager="$1" previous="$2" command_script="$3" title="$4" workspace="$5" output="" created
-  squad_panes_herdr_reap_stale "$manager"
   if [[ -n "$previous" ]]; then
     output="$(herdr pane split "$previous" --direction down --cwd "$workspace" --no-focus 2>/dev/null || true)"
   fi
