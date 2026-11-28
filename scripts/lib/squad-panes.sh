@@ -41,7 +41,7 @@ squad_panes_orca_cli() {
   fi
 }
 
-# Only the launcher resolves shell identity; workers inherit the frozen handle.
+# Prefer the launcher’s frozen handle, then resolve the calling Orca pane.
 squad_panes_orca_manager() {
   local workspace="$1" cli
   if [[ -n "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]]; then
@@ -112,9 +112,9 @@ squad_open_monitor() {
   local backend="" manager=""
   if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
     backend=tmux; manager="$TMUX_PANE"
-  elif [[ -n "${SQUAD_DEVKIT_ORCA_TERMINAL:-}" ]] &&
+  elif manager="$(squad_panes_orca_manager "$workspace")" && [[ -n "$manager" ]] &&
     command -v "$(squad_panes_orca_cli)" >/dev/null 2>&1 && squad_has_jq; then
-    backend=orca; manager="$SQUAD_DEVKIT_ORCA_TERMINAL"
+    backend=orca
   elif [[ "$(squad_panes_herdr_kind)" == herdr_app ]]; then
     manager="$(squad_panes_herdr_app_manager)"
     if [[ -z "$manager" || "$manager" == *[[:space:]]* ]]; then

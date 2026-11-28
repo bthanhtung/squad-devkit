@@ -497,6 +497,28 @@ grep -q '^<<<<<<< ' "$repo/app.txt"
 [[ "$("$worker" --discard wt-2)" == *'Discarded wt-2'* ]] || fail
 [[ "$("$worker" --merge wt-2 2>&1 || true)" == *'No worktree for wt-2'* ]] || fail
 
+# Orphan worktrees can be reused only when they have no changes.
+orphan_repo="$temp_directory/orphan-repo"
+mkdir -p "$orphan_repo"
+git -C "$orphan_repo" init -q
+printf 'base\n' >"$orphan_repo/base.txt"
+git -C "$orphan_repo" add base.txt
+git -C "$orphan_repo" -c user.name=t -c user.email=t@t commit -qm init
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Empty' >/dev/null
+orphan_path="$(ls -d "$PWD"/.squad/worktrees/orphan-repo-*/orphan-1)"
+rm .squad/workers/orphan-1-*.status
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Reuse' >/dev/null 2>"$temp_directory/orphan-error"
+grep -q 'squad-worker: reusing empty orphan worktree for orphan-1' "$temp_directory/orphan-error"
+grep -q '^attempt=1$' .squad/workers/orphan-1-*.status
+rm .squad/workers/orphan-1-*.status
+printf 'change\n' >"$orphan_path/change.txt"
+status=0
+"$worker" orphan-1 --engine codex --project "$orphan_repo" --brief 'Changed' >/dev/null 2>"$temp_directory/orphan-error" || status=$?
+[[ "$status" == 2 ]] || fail
+grep -Fq "squad-worker: orphan-1 has an orphan worktree with changes at $orphan_path but no run record; inspect it, then run squad-worker --discard orphan-1 (or --merge orphan-1)" "$temp_directory/orphan-error"
+"$worker" --discard orphan-1 --project "$orphan_repo" >/dev/null
+[[ ! -d "$orphan_path" && ! -e "$orphan_path.base" && -z "$(git -C "$orphan_repo" branch --list squad/orphan-1)" ]] || fail
+
 # Reviewers read the project directly; --no-worktree does the same for any role.
 "$worker" rev-1 --engine codex --role reviewer --project "$repo" --brief 'Review app.txt' >/dev/null
 grep -q "codex:exec --json --cd $(cd "$repo" && pwd) " "$WORKER_TEST_LOG"
@@ -535,12 +557,12 @@ EOF
   [[ "$(squad_panes_orca_manager "$PWD")" == manager ]] || fail
   export ORCA_PANE_KEY=missing:leaf
   [[ -z "$(squad_panes_orca_manager "$PWD")" ]] || fail
-  export SQUAD_DEVKIT_ORCA_TERMINAL=manager
   mkdir -p "$temp_directory/workspace 'quoted'"
   printf '#!/bin/sh\nprintf quoted-ok\n' >"$temp_directory/worker 'quoted' script"
   chmod +x "$temp_directory/worker 'quoted' script"
-  squad_open_monitor "$temp_directory/worker 'quoted' script" 'worker · codex' "$temp_directory/workspace 'quoted'" "$temp_directory/orca-state" ''
+  ORCA_PANE_KEY=tab:leaf squad_open_monitor "$temp_directory/worker 'quoted' script" 'worker · codex' "$temp_directory/workspace 'quoted'" "$temp_directory/orca-state" '' required
   [[ "$(bash -c "$(cat "$ORCA_TEST_LOG.command")")" == quoted-ok ]] || fail
+  export SQUAD_DEVKIT_ORCA_TERMINAL=manager
   squad_open_monitor /tmp/next 'next · codex' "$PWD" "$temp_directory/orca-state" ''
   grep -q '^terminal split --terminal manager --direction vertical --command ' "$ORCA_TEST_LOG"
   grep -q '^terminal split --terminal worker-pane --direction horizontal --command ' "$ORCA_TEST_LOG"
@@ -573,7 +595,7 @@ EOF
   TMUX=fake TMUX_PANE=%1 squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
   [[ ! -s "$ORCA_TEST_LOG" ]] || fail
   unset -f tmux
-  unset SQUAD_DEVKIT_ORCA_TERMINAL
+  unset SQUAD_DEVKIT_ORCA_TERMINAL ORCA_PANE_KEY
   squad_open_monitor /tmp/next next "$PWD" "$temp_directory/orca-state" ''
   [[ ! -s "$ORCA_TEST_LOG" ]] || fail
   export SQUAD_DEVKIT_ORCA_TERMINAL=manager

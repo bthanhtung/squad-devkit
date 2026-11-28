@@ -1,6 +1,6 @@
 // The deck's drawing: calm, one accent, dim secondary text. Every function
 // takes the surface's element table (`$.ui.resolve(e)`) and plain data.
-import { bar, elapsed, percent, progressText, summary, timeFraction, timeLimit, tokenFraction, tokens } from './deck'
+import { bar, elapsed, needsYou, percent, progressText, summary, timeFraction, timeLimit, tokenFraction, tokens } from './deck'
 import type { Kind, Perms, PlanProgress, Run, Shape } from './deck'
 
 type Ui = { Box: any; Text: any }
@@ -186,6 +186,7 @@ export function Deck(
 ) {
   const { Box, Text } = ui
   const { runs, now, perms, commands, plans, shape } = data
+  const attention = needsYou(runs)
   const rows =
     shape === 'mini'
       ? runs.map(run => MiniRow(ui, run, now))
@@ -208,6 +209,16 @@ export function Deck(
       ) : (
         <Box flexDirection="column">
           {Totals(ui, runs)}
+          {attention.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold>{`Needs you (${attention.length})`}</Text>
+              {attention.map(item => (
+                <Text key={item.run.id} wrap="truncate-end">
+                  {`  ${item.run.id} · ${item.reason} · ${item.action}`}
+                </Text>
+              ))}
+            </Box>
+          )}
           {plans.length > 0 && <Box flexDirection="column">{PlanRows(ui, plans)}</Box>}
           <Box flexDirection="column" marginTop={1}>
             {body}

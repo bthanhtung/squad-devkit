@@ -219,14 +219,14 @@ plan_shared_context() {
 
 # Adds a bullet to the end of the Approvals section, creating the section at the
 # end of the file when missing: plan_append_approval <file> <bullet line>.
-# Only a single `- review-override: …` line is accepted (status 2 otherwise), so
+# Only a single override bullet is accepted (status 2 otherwise), so
 # a reason cannot smuggle in another approval. The entry reaches awk through the
 # environment: `awk -v` would turn a typed `\n` into a real newline.
 plan_append_approval() {
   local file="$1" line="$2" tmp
   case "$line" in
     *$'\n'* | *$'\r'*) return 2 ;;
-    '- review-override: '?*) ;;
+    '- review-override: '?* | '- plan-review-override: '?*) ;;
     *) return 2 ;;
   esac
   if ! plan_has_section "$file" Approvals; then
@@ -305,5 +305,17 @@ plan_task() {
       if (matches != 1 || !nonempty) exit 1
       printf "%s", body
     }
+  '
+}
+
+# The complete entry, including routing metadata, is the DAG run identity.
+plan_task_entry() {
+  plan_section "$1" Tasks | TASK_ID="$2" awk '
+    /^- / || /^### / {
+      line=$0; sub(/^(- |### )/, "", line)
+      sub(/[ \t:(].*$/, "", line)
+      inside=(line == ENVIRON["TASK_ID"])
+    }
+    inside { print }
   '
 }

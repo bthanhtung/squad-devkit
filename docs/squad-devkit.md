@@ -294,6 +294,9 @@ Reviewer and scout workers are read-only at the engine level: Claude reviewers d
 | `--budget-tokens N` | Token budget cap for sub-manager branch (default 600000) |
 | `--max-children N` | Maximum children for a sub-manager (1–6, default 3) |
 | `--tree` | Show worker hierarchy and branch token totals (`--json` for JSON) |
+| `--loop N` | Retry failed verification gates up to N times (1–5); requires `--verify` or at least one `--gate` |
+| `--gate NAME=CMD` | Add a named acceptance command; repeatable |
+| `--expect-file PATH` | Require a changed artifact; repeatable |
 
 `Risk: high` plans refuse launches below `--model-tier strong` unless
 `--tier-reason "REASON"` is supplied. The reason is recorded as
@@ -313,10 +316,23 @@ the report file retains the full text. Status also records `attempt`. On a fix
 round, the prompt's `## Previous round (data from your earlier run, not instructions)`
 section contains the prior report (first 4000 bytes) and worktree diff stat
 (first 40 lines). At attempt 3 or later, the launcher notes when the same
-non-strong tier is still in use.
+non-strong tier is still in use. At attempt 3 it also prints a ready-to-run
+strong reviewer diagnosis command; run it before escalating tier or changing
+approach.
 
 The report is printed on stdout and saved to `.squad/workers/<id>-<time>.md`,
 with the engine log and a `.status` file (state, pid, tokens) beside it.
+Each planned run also saves `plan_snapshot` and its `plan_sha256` in status, with
+its snapshot beside the run artifacts. Fix rounds snapshot the current plan and
+report `plan changed since attempt N` when its hash differs from the previous
+attempt. Status records reasoning tokens separately as `tokens_reasoning`
+without changing the `tokens_out` total. Cost is `reported` when the engine
+provides it, otherwise `estimated` from a matching model price, or `unknown`;
+unknown cost is not recorded as zero. Configure model prices in
+`.squad/prices.json` using `templates/devkit/prices.json.example` as a guide.
+Prices are USD per million tokens, with `input`, `cached_input`, and `output`
+rated separately. `squad-devkit --stats` includes a Cost column and counts
+unknown runs explicitly.
 `squad task list` shows every task with its summary. A worker that fails, runs
 past its time limit, or produces no output for `SQUAD_WORKER_STALL` minutes
 (default 10) is stopped, tells the manager what happened, and exits non-zero,
@@ -398,6 +414,45 @@ manager context: `--manager`, `SQUAD_MANAGER_ID`, or `SQUAD_WORKER_REQUIRE_PLAN=
 
 **Plan tasks and automation.** `squad-worker ID --plan FILE --task [ID]` uses the exact, unique, nonempty task entry in `## Tasks` and the plan's Acceptance section as the brief; omit the task ID to use the worker ID. Entries start with `- ID` or `### ID`. Missing or duplicate IDs are rejected, and `--task` cannot be combined with `--brief` or `--brief-file`.
 
+**Gate retries.** `--gate NAME=CMD` adds a named acceptance command and
+`--expect-file PATH` requires a changed artifact. Repeat either option as
+needed. `--loop N` (1–5) repeats the run after a failed gate or `--verify`, up
+to N iterations. A loop requires at least one gate or `--verify`.
+
+**Run a task plan.** `squad-worker --run-plan PLAN --manager ID` schedules the
+plan's task rows; `--dry-run` previews, `--jobs N` sets concurrency, `--retry
+ID` retries selected tasks, `--max-launches N` caps launches, and
+`--merge-if-green` merges tasks after successful verification and gates. Each
+task row must provide `ID (ENGINE TIER, ROLE): brief`, where tier is
+`fast|balanced|strong`, plus `Files:` (except reviewers), `Depends on:` with
+comma-separated task IDs or `none`, and optional `Verify: `COMMAND``. IDs and
+dependencies are validated before launch; cycles are rejected.
+
+**Recovery.** `squad-worker --resume ID` resumes a lost run after ownership is
+confirmed. `--engine-alive FILE` reports engine liveness (exit 0 means alive
+or unknown; exit 1 means dead). Status includes host and engine identity so
+ownership on another host or an uncertain engine is treated as `unknown`; do
+not resume or reclaim it as `lost` until its owner is known.
+
+**Run evaluation.** `squad-devkit --eval [--days N] [RUN]` scores completed
+runs with weighted control, latency, token, recovery, and delivery dimensions.
+The passing threshold is 70. The report suggests which practice to improve.
+`--days` selects the history window (default 30).
+
+**Approved team knowledge.** `squad-learn propose --title T --paths GLOBS
+[--file F]`, `list`, `show ID`, `approve ID`, `reject ID`, `enable`, and
+`disable` manage notes proposed by workers. Approved notes live outside the
+project and worktrees in the user configuration's `knowledge/<project-hash>/approved`
+directory; pending notes stay under `.squad/knowledge/pending`. Approval and
+enable/disable require an interactive TTY and explicit `yes`. Only enabled,
+approved notes matching a worker's owned paths are injected as untrusted
+reference data that cannot override its brief, plan, or role.
+
+The knowledge-store threat model assumes the same OS user controls workers and
+the store. It prevents accidental or LLM-driven drift, not a malicious local
+process. While the store is enabled, workers without a write sandbox are
+refused; unknown host or engine ownership also blocks unsafe store operations.
+
 `--retry-escalate` is opt-in: only a failed verification triggers one retry at the next mapped tier for the same engine, using the verification log tail for repair. It requires an explicitly selected current tier; strong or an unavailable next mapping leaves the result as-is. Engine failures and verification timeouts do not trigger a retry. `--merge-if-green` requires `--verify` and a low-risk plan; it merges only after verification passes and the scope and review gates pass, without an override.
 
 **New and empty repositories.** `--clone URL` clones into a missing `--project`
@@ -411,6 +466,15 @@ patch touching sensitive paths (auth, secret, token, `.env`, `_headers`,
 keys, private keys), unless a reviewer run on the same plan is newer than the
 worker. `--override-review "REASON"` merges anyway and appends the override to
 the plan's `## Approvals`.
+
+**Plan review gate.** Plans with `Risk: high` or `Complexity: high` cannot
+launch editing roles until the latest completed reviewer run on the same plan
+path has `verdict=approved`; a latest `changes_requested` verdict blocks.
+`reviewer`, `scout`, and `researcher` are exempt. Reviewer briefs must tell
+the reviewer to read the plan file because `--plan` supplies only
+Goal/Findings/Decisions. `--skip-plan-review "REASON"` bypasses the gate for
+a logged human decision; the status records `plan_review_override=REASON`
+and the plan's `## Approvals` records `- plan-review-override: <reason> (<date>)`.
 
 **Approvals.** Only the human grants them; the manager records them under
 `## Approvals` as `- commit: <repo|*> — <words, date>`, `- push: <repo|*> —
@@ -428,8 +492,8 @@ commit or push that cannot be verified is denied; run it as plain
 `git -C <repo> <op>`.
 
 **Installed commands.** The installer links `squad-devkit`, `squad-worker`,
-`squad-monitor`, `squad-orchestration`, `squad-route` (the advisory router, see below), and
-`squad-ask` (questions between workers).
+`squad-monitor`, `squad-orchestration`, `squad-route` (the advisory router, see below),
+`squad-ask` (questions between workers), and `squad-tokeneconomizer` (opt-in experimental Codex plugin manager).
 
 ### Limitations
 
@@ -606,7 +670,7 @@ In a manager session, `orchestration` is the default view: the first worker open
 
 The pane shows only that manager's workers and messages. Status files carry a `manager=<id>` key; when `SQUAD_MANAGER_ID` is known, a worker is shown only if its `manager=` matches, or its `parent=` chain reaches such a worker. Legacy status files without `manager=` are hidden (they appear only with `--all-managers` / key `a`, grouped under the manager inferred from the history). Messages are kept only when their sender or recipient is the manager or a shown worker.
 
-The default `graph` layout is a lifecycle flow chart, top to bottom:
+The default `g2` swarm view (`w`) shows the active plan DAG with text states and dependency arrows, a worker card grid and `done N:` summary, the selected worker’s IN → RUN → OUT → NEXT data flow, and a conversation timeline with unanswered questions. Use `j`/`k` to cycle workers; the initial selection prioritizes questions, failures and merge reviews. The existing model legend, manager sidebar, owner/session boxes, worker cards, review return and status footer remain. The header counts active-plan tasks; each DAG task appears once with dependency references. Short panes use compact cards; below 24 rows, the DAG is limited to three rows and the data flow takes priority over cards and conversation. System conversation messages are summarised without UUIDs or absolute paths. `c` opens cards and `g` opens graph. Use `--layout list` or `SQUAD_ORCHESTRATION_LAYOUT=list` for the list view. The `graph` layout is a lifecycle flow chart, top to bottom:
 
 1. **Header**: `● manager-2 · claude  ·  plan <active plan>  ·  ●2 running ✓5 ✗1  ·  12m  1.2M tok` (the engine comes from `SQUAD_DEVKIT_MANAGER_CLIENT`).
 2. **Main lane** for the most recent plan: the manager node, then numbered worker nodes (`01`, `02`, ...) in start order, joined by edges labelled with the last verb (`brief`, `fix`, `ask`, `answer`, `done`, `failed`). Each node shows `NN name`, `role · model` and a status chip (`● running 3m`, `✓ done`, `✗ failed`, `? waiting`). Nodes wrap to further rows when the pane is narrow (it works from 48 columns up and uses up to about 160). A sub-manager's children appear as an indented mini-row under it (`└ 01 child · ✓`).
@@ -619,6 +683,12 @@ The default `graph` layout is a lifecycle flow chart, top to bottom:
 Keys: `l` (or Tab) cycles layouts and `g` / `w` / `c` / `t` pick graph, swarm (`--layout g2`), cards or tree directly; `p` pins the pane (cancels auto-close); `a` toggles all managers (`--all-managers`); `h` expands or collapses the older-plans list; `f` toggles focus (present) mode, which shows only the header, the main lane and the waiting group at full height (`--focus` starts in it, including with `--once`). The `pipeline` and `tree` layouts keep their previous look with the same manager scoping. `--once` prints one frame without escape codes.
 
 The swarm layout (`--layout g2`, key `w`) shows the manager’s latest brief, plan tasks, worker activity, tokens and review status. Cards wrap to fit the pane. Short panes use compact cards, and `j`/`k` shows live details for the selected worker. Set `SQUAD_ORCHESTRATION_ANIMATE=0` to disable motion.
+
+In the swarm view, task titles come from the plan's `Goal:` line and the active
+plan is the newest orchestration run. Outcome colours are paired with text
+labels for clarity, and `done N:` reports completion. Card row 5 prioritizes
+scope violations, then questions and answers, then running/idle state and
+tokens, then ownership.
 
 The `cards` layout (`--layout cards`, key `c`) shows live activity and output age, stale workers, waiting age, model tier, verification failures, merge state, scope violations and the reason for another round. Live token counts and activity are updated while a worker runs when log output changes; missing live data is simply unavailable. Cards grow with the pane width. Cards, tree and pipeline show plan task progress and token totals; unlaunched tasks appear as pending with `after <id>` dependencies. Missing or older plan/status fields are accepted.
 
@@ -638,7 +708,7 @@ in (`scripts/lib/squad-panes.sh`), checked in this order:
 | Terminal | Detected by | How the monitor opens |
 |---|---|---|
 | tmux | `TMUX_PANE` | `split-window`, `main-vertical` layout (`squad-devkit --tmux` works in any terminal) |
-| Orca | `SQUAD_DEVKIT_ORCA_TERMINAL` captured at manager launch | `terminal split`, pane title, then focus returns to manager |
+| Orca | `SQUAD_DEVKIT_ORCA_TERMINAL` or exact `ORCA_PANE_KEY` match | `terminal split`, pane title, then focus returns to manager |
 | Herdr desktop | `HC_TERMINAL_ID` | `herdr-app do pane.split` with explicit pane and `argv`, verified in `herdr-app ls`, then `pane.focus` returns to manager |
 | Herdr TUI | `HERDR_ENV=1` (`HERDR_PANE_ID`) | `herdr pane split` |
 | Zellij | `ZELLIJ` | Standalone runs float; manager runs require tmux because a split cannot be confirmed |
@@ -652,8 +722,8 @@ Orca requires a running Orca runtime, its CLI, and `jq`. Launch with
 `squad-devkit --here` from an Orca terminal: the launcher matches `ORCA_PANE_KEY`
 against runtime-listed `tabId:leafId` and exports the exact manager handle once.
 Alternatively, supply `SQUAD_DEVKIT_ORCA_TERMINAL` with a runtime-issued handle.
-Direct `squad-worker` calls need this exported handle; workers never infer
-handles or select the active terminal. `ORCA_CLI_COMMAND`
+Direct `squad-worker` calls from Orca can also resolve their own pane
+by matching `ORCA_PANE_KEY` in the workspace. `ORCA_CLI_COMMAND`
 selects a CLI executable; dev sessions use `orca-dev` when `ORCA_DEV_REPO_ROOT`
 is set. tmux retains priority. A stale previous pane falls back to the manager;
 a failed or ambiguous split is never retried as a fresh request and does not
@@ -942,6 +1012,8 @@ Regenerate with `vhs scripts/demo/<name>.tape`.
 
 Environment variables that tune a run. Related settings appear in the sections above.
 
+`.squad/prices.json` optionally sets per-model USD prices per million tokens; copy `templates/devkit/prices.json.example` and fill its `input`, `cached_input`, and `output` rates. Missing prices leave cost `unknown`.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `SQUAD_DEVKIT_MANAGER` | saved choice, else `claude` | Manager CLI for a run (`--manager`) |
@@ -958,6 +1030,7 @@ Environment variables that tune a run. Related settings appear in the sections a
 | `SQUAD_WORKER_SCOUT_ENGINE` / `SQUAD_WORKER_SCOUT_MODEL` | unset | Explicit engine (and optional model) used when `--role scout` omits `--engine` |
 | `SQUAD_WORKER_SCOUT_TIMEOUT` | `10` | Default timeout in minutes for `--role scout` workers |
 | `SQUAD_WORKER_VIEW` | `orchestration` (manager) / `panes` (direct) | Worker progress view: `orchestration` (one live flow view) or `panes` (one split per worker; `--view`, or `view=` in config) |
+| `SQUAD_LEARN_LOCK_TIMEOUT` | `60` | Seconds to wait for the approved knowledge-store lock |
 | `SQUAD_WORKER_VERIFY_TIMEOUT` | `10` | Minutes allowed for `--verify` |
 | `SQUAD_WORKER_REPORT_LINES` | `40` | Maximum report lines printed by a worker |
 | `SQUAD_ORCHESTRATION_HOLD` | `SQUAD_WORKER_PANE_HOLD`, else `60` | Seconds before an idle orchestration pane closes itself (`0` = never) |
@@ -1014,3 +1087,89 @@ Editing workers never touch your working tree. They work on a `squad/<id>` branc
 
 **Windows?**
 Not supported yet. WSL has not been tested; reports are welcome.
+
+## Optional TokenEconomizer Codex integration (experimental)
+
+`squad-devkit` provides an opt-in, experimental Codex plugin manager (`squad-tokeneconomizer`)
+for [microsoft/TokenEconomizer](https://github.com/microsoft/TokenEconomizer) (`Apache-2.0`,
+pinned commit `583fff78bf504b59d542f953c31e87d01d02ab42`). Default `install-devkit.sh`
+and worker launches remain unchanged and perform no TokenEconomizer network calls or plugin
+registrations.
+
+```sh
+scripts/install-devkit.sh --with-tokeneconomizer   # optional during devkit install (warns on failure)
+squad-tokeneconomizer install [--repo PATH]         # standalone install (+ optional repo-scoped defaults)
+squad-tokeneconomizer status [--json]               # read-only state, pin, Codex PATH/Python check
+squad-tokeneconomizer disable                       # remove devkit-owned Codex plugin registration only
+squad-tokeneconomizer uninstall                     # remove devkit-owned plugin, marketplace, and cache
+```
+
+### Ownership, configuration, and safety
+
+- **Devkit-owned cache:** The pinned checkout and `ownership.json` live under
+  `${XDG_CACHE_HOME:-~/.cache}/squad-devkit/tokeneconomizer` (override with
+  `SQUAD_TOKENECONOMIZER_CACHE_DIR`). Official `codex plugin` commands manage Codex
+  registration without editing Codex TOML directly. Symlinked managed paths
+  (including broken symlinks) and dirty/untracked upstream checkouts are rejected
+  before mutation. Re-running `install` refreshes the cached Codex plugin on pin
+  changes or disabled registrations.
+- **No global config side effects:** Installing never modifies
+  `${TOKENECONOMIZER_HOME:-~/.tokeneconomizer}/config.json`. Pass `--repo PATH` to set
+  missing repo-scoped preferences (`microskills=envfacts`, `toolprune=propose`,
+  `loopguard=on`) for that repository only; existing preferences are never overwritten.
+- **Preserved user state:** `disable` and `uninstall` act only on registrations proven
+  to be owned by `squad-devkit` for the current canonical `CODEX_HOME`, fail closed
+  without clearing ownership when Codex plugin discovery fails or when `ownership.json`
+  has a missing/invalid `codex_home`, report `unowned` and refuse mutations when
+  `ownership.json` belongs to a different `CODEX_HOME` (preserving the marker, cache,
+  and both profiles), preserve a shared marketplace along with its checkout and
+  ownership marker while other plugins reference it, and leave user-owned clones,
+  plugins, marketplaces, and learned data under `~/.tokeneconomizer` intact.
+- **Read-only status and doctor integration:** `squad-tokeneconomizer status` and
+  `squad-devkit --doctor`'s TokenEconomizer check never execute `codex` (not even
+  `codex --version`, which can create `$CODEX_HOME/tmp/arg0-*` files) and inspect
+  the pinned checkout with `GIT_OPTIONAL_LOCKS=0` so `.git/index` and `.git` mtimes
+  stay unchanged. In read-only mode, Codex presence is discovered via `PATH`
+  (`command -v codex`) with `codex_version` and `codex_compatibility` reported as
+  `"unprobed"` when found (or `"missing"` when absent), while `install`, `disable`,
+  and `uninstall` run full `codex --version` and `codex plugin` JSON checks. They
+  inspect local ownership, checkout cleanliness/pin, and `$CODEX_HOME/config.toml`
+  conservatively (reporting `registration_state: "unknown"` when unconfirmed), report
+  absent/disabled integrations as optional, and report active installations as
+  `registered_unverified` (`[INFO]`) or `unsupported` (`[WARN]`) without failing
+  ordinary doctor checks.
+
+### Known limitations and compatibility
+
+- **Ephemeral Codex workers (`codex exec --ephemeral`):** `squad-worker` runs Codex
+  with `--ephemeral` (no session rollout files written to disk). Upstream
+  TokenEconomizer's `SessionEnd` fold requires a readable rollout file and records
+  `transcript unreadable` when none exists, so ephemeral worker cross-session learning
+  (`microskills`, `toolprune`, and usage accounting) is unavailable. `--ephemeral` is
+  preserved by `squad-devkit`; upstream hooks fail open (`{}` on exit 0) and do not
+  gate worker launches. Interactive Codex manager sessions (`squad-devkit --manager codex`)
+  persist rollouts and may benefit once hooks are approved.
+- **Worktree identity:** Upstream TokenEconomizer canonicalizes git worktrees by
+  normalized `origin` remote (or main checkout via `.git` `commondir`). However,
+  `toolprune=auto` writes per-checkout `.codex/config.toml` files in trusted checkouts,
+  which fresh worker worktrees are not and which `worktree_patch` does not exclude;
+  keep `toolprune=propose`.
+- **CLI and Python prerequisites:** Upstream documents Codex `0.153.1`–`0.164.0` and
+  requires Python `>= 3.10` (or `TE_PYTHON`). Newer Codex releases (such as `0.169.0`)
+  are probed for `codex plugin` JSON contracts and reported as `registered_unverified`
+  until interactive `/hooks` approval (`Trust all and continue`) and live execution are
+  verified.
+
+### Manual A/B pilot procedure (no measured savings claimed)
+
+No token savings are claimed for `squad-devkit` workloads without measurement. To
+evaluate TokenEconomizer manually on a non-ephemeral Codex pilot:
+
+1. Verify `squad-tokeneconomizer status` and approve hooks interactively in the pilot
+   repository via `/hooks` -> `Trust all and continue`.
+2. Run matched A/B tasks (control without plugin vs. treatment with plugin) using the
+   identical model, reasoning effort, and repository starting state.
+3. Account for total cost across manager, workers, retries, and plugin side calls
+   (proposer/judge), separating cached input, uncached input, and output tokens.
+4. Require quality parity on acceptance tests; only promote beyond experimental if net
+   cost per accepted task improves by at least 10%.
